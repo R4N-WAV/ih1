@@ -65,3 +65,19 @@
 - Left column (~35 % width): carousel (previous/next names faded above/below the selected name, ▲▼ arrows to the right), a bordered settings panel with **S** (SOLO FX) and **M** (MUTE FX) toggles at its top-right, COMMIT and RESET below.
 - Right area (~65 %): the formation field. Sketch annotations: "no fx = empty", "fx = formation of supercluster", "more fx = bigger formation / less fx = smaller formation", "colour of the parts of the formation is supposed to be of the committed fx".
 - The sketch is white with black text; it is a layout sketch only. The video governs colour/mood, so the whole editor will be dark-themed.
+
+## 5. Implementation results (formation v1, 2026-11-18)
+
+Simulation: `core/src/visual/Formation.cpp`. GL renderer: `plugin/Source/FormationView.cpp`. Offline CPU preview: `tools/formation_preview.cpp`.
+
+| Metric (tone-mapped luma, 10 committed FX, exposure 20) | Reference | IH1 |
+|---|---|---|
+| Mean | 0.174 | 0.221 |
+| Median | 0.069 | 0.113 |
+| Area below 0.05 (near-black) | 42 % | 41 % |
+| 99th percentile (hot cores) | 0.957 | 0.924 |
+| Hue range of strands | 210–330° (cyan/teal trace) | 222–325° per FX, plus about 6 % faint cyan/pink edge tints |
+
+`docs/img/formation_compare_v1.jpg` shows the reference next to 1, 4 and 10 committed FX and SOLO. The scaling rules (none = empty, more FX = larger and more intricate) and SOLO desaturation are covered by `tests/test_formation.cpp`.
+
+**Remaining gap.** The reference has sharper, straighter "electric" hair-lines and a whiter heart. A fast hair-strand layer was tried and rejected because it produced evenly spaced dashed streaks, which the brief rules out as grid-like. The next attempt should use per-strand curvature continuity rather than speed.
