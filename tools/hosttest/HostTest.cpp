@@ -6,7 +6,10 @@
 
 #include <cmath>
 #include <cstdio>
+#include <atomic>
+#include <chrono>
 #include <random>
+#include <thread>
 
 using namespace juce;
 
@@ -239,6 +242,95 @@ int main(int argc, char** argv) {
         run(*t, 96000.0, 1024, 10, static_cast<uint32_t>(30 + k));
     }
     check(true, "5 create / prepare / re-prepare / destroy cycles");
+
+    // 9. editor lifecycle under host-driven resizing (V1 feedback 4.8: FL Studio crashed on fast, dramatic
+    //    resizes). The hosted VST3 view is resized through IPlugView::onSize exactly as a host does, 300+
+    //    times with random and extreme sizes, while an audio thread keeps processing and the chain changes;
+    //    the editor is closed and reopened right after resizes. Set IH1_HOSTTEST_NO_EDITOR=1 to skip.
+    if (SystemStats::getEnvironmentVariable("IH1_HOSTTEST_NO_EDITOR", {}).isEmpty()) {
+        auto e = load(fm, path, 48000.0, 512);
+        e->prepareToPlay(48000.0, 512);
+        e->setStateInformation(st.getData(), static_cast<int>(st.getSize()));
+        std::atomic<bool> stop{false}, audioOk{true};
+        std::atomic<int> blocks{0};
+        std::thread audio([&] {
+            AudioBuffer<float> buf(2, 512);
+            MidiBuffer m;
+            std::mt19937 r(5);
+            std::uniform_real_distribution<float> u(-0.2f, 0.2f);
+            while (!stop.load()) {
+                for (int c = 0; c < 2; ++c) for (int i = 0; i < 512; ++i) buf.setSample(c, i, u(r));
+                e->processBlock(buf, m);
+                for (int i = 0; i < 512; ++i) if (!std::isfinite(buf.getSample(0, i))) audioOk = false;
+                ++blocks;
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            }
+        });
+        std::unique_ptr<DocumentWindow> win;
+        AudioProcessorEditor* ed = nullptr;
+        auto openEditor = [&] {
+            ed = e->createEditorAndMakeActive();
+            if (!ed) return;
+            win = std::make_unique<DocumentWindow>("IH1 host test", Colours::black, 0);
+            win->setUsingNativeTitleBar(true);
+            win->setContentNonOwned(ed, true);
+            win->setTopLeftPosition(20, 20);
+            win->setVisible(true);
+        };
+        auto closeEditor = [&] {
+            if (win) win->clearContentComponent();
+            win.reset();
+            delete ed;  // the host owns the editor wrapper
+            ed = nullptr;
+        };
+        openEditor();
+        MessageManager::getInstance()->runDispatchLoopUntil(1500);
+        check(ed != nullptr, "editor opens in a host window");
+        if (ed) {
+            const auto w0 = ed->getWidth(), h0 = ed->getHeight();
+            check(w0 >= 1400 && h0 >= 850, "first-run editor size is large (" + String(w0) + " x " + String(h0) + ")");
+        }
+        std::mt19937 rr(77);
+        int resizes = 0, reopens = 0;
+        const auto t0 = Time::getMillisecondCounterHiRes();
+        for (int k = 0; k < 320 && ed != nullptr; ++k) {
+            int w, h;
+            switch (k % 5) {
+                case 0: w = 300 + static_cast<int>(rr() % 4000); h = 200 + static_cast<int>(rr() % 3000); break;  // anything, incl. out of range
+                case 1: w = (k % 2) ? 400 : 4000; h = (k % 2) ? 300 : 3000; break;                                 // huge <-> tiny
+                case 2: w = 1120 + static_cast<int>(rr() % 40); h = 700 + static_cast<int>(rr() % 40); break;      // near the minimum
+                case 3: w = 2400 + static_cast<int>(rr() % 300); h = 700; break;                                   // wide and short
+                default: w = 1120; h = 2000 + static_cast<int>(rr() % 300); break;                                 // narrow and tall
+            }
+            ed->setSize(w, h);
+            ++resizes;
+            MessageManager::getInstance()->runDispatchLoopUntil(static_cast<int>(rr() % 25));  // often no frame in between
+            if (k % 40 == 20) e->setStateInformation(st.getData(), static_cast<int>(st.getSize()));  // chain swap mid-resize
+            if (k % 64 == 63) {  // close immediately after a resize, then reopen
+                closeEditor();
+                MessageManager::getInstance()->runDispatchLoopUntil(30);
+                openEditor();
+                ++reopens;
+                MessageManager::getInstance()->runDispatchLoopUntil(100);
+            }
+        }
+        MessageManager::getInstance()->runDispatchLoopUntil(800);
+        const auto secs = (Time::getMillisecondCounterHiRes() - t0) / 1000.0;
+        check(ed != nullptr, String(resizes) + " host resizes (" + String(secs, 1) + " s) and " + String(reopens) + " close/reopen cycles survived");
+        if (ed) {
+            ed->setSize(1700, 1000);
+            MessageManager::getInstance()->runDispatchLoopUntil(600);
+            check(std::abs(ed->getWidth() - 1700) <= 2 && std::abs(ed->getHeight() - 1000) <= 2, "editor settles at a requested in-range size (" + String(ed->getWidth()) + " x " + String(ed->getHeight()) + ")");
+        }
+        closeEditor();
+        MessageManager::getInstance()->runDispatchLoopUntil(200);
+        stop = true;
+        audio.join();
+        check(audioOk.load() && blocks.load() > 50, "audio kept processing, finite, throughout (" + String(blocks.load()) + " blocks)");
+        // repeated open / close cycles with no resizing in between
+        for (int k = 0; k < 8; ++k) { openEditor(); MessageManager::getInstance()->runDispatchLoopUntil(120); closeEditor(); }
+        check(true, "8 quick editor open / close cycles");
+    }
 
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED", failures);
     p.reset();

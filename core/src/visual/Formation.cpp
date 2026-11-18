@@ -167,8 +167,8 @@ void Formation::layout(const FrameInput& in) {
         Rng jr(mix64(c.seed ^ 0xC0FFEEull));
         if (n == 1) {
             pos = {0, 0, 0};
-            tan = {0.25f, 1.0f, -0.1f};
-            plume = 0.55f;
+            tan = {0.1f, 1.0f, -0.12f};  // a single FX is a small vertical plume, not a radial burst
+            plume = 0.85f;
         } else {
             const float t = static_cast<float>(i) / static_cast<float>(n - 1);
             if (t <= 0.5f) {

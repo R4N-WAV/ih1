@@ -54,15 +54,31 @@ public:
     void uiSetParam(int paramIndex, float plainValue);
     void uiGesture(int paramIndex, bool begin);
     void uiReset();
-    bool uiCommit();
+    uint64_t uiCommit();  // id of the new committed instance, 0 if nothing was committed
     bool uiMove(int from, int to);
     bool uiRemove(uint64_t id);
     void uiClearChain();
     void uiSetSolo(bool on);
     void uiSetMute(bool on);
-    bool savePreset(const juce::File& file);
-    bool loadPreset(const juce::File& file, juce::String& message);
     uint64_t revision() const { return revision_.load(); }
+
+    // ---- presets (message thread) -------------------------------------------------------------
+    // Keys: "f:<factory id>" or "u:<absolute file path>". Order: factory categories, then user presets.
+    struct PresetEntry { juce::String key, name, category, description; bool factory = true; };
+    std::vector<PresetEntry> presetList();
+    bool loadPresetKey(const juce::String& key, juce::String& message);   // atomic: all or nothing
+    bool stepPreset(int direction, juce::String& message);                // wraps at both ends
+    juce::String currentPresetKey() const { return presetKey_; }
+    juce::String currentPresetName() const { return presetName_; }
+    bool presetModified();                                                // chain differs from the loaded preset
+    bool saveUserPreset(const juce::String& name, bool overwrite, juce::String& message, bool& exists);
+    bool renameUserPreset(const juce::String& key, const juce::String& newName, juce::String& message);
+    bool deleteUserPreset(const juce::String& key, juce::String& message);
+    static juce::File userPresetDir();
+
+    double hostBpm() const { return hostBpm_.load(); }
+    juce::Point<int> lastEditorSize() const { return {editorW_.load(), editorH_.load()}; }
+    void setLastEditorSize(int w, int h) { editorW_.store(w); editorH_.store(h); }
 
     juce::AudioProcessorValueTreeState& params() { return apvts_; }
 
@@ -94,6 +110,13 @@ private:
     std::atomic<double> tail_{0.0};
     std::atomic<uint64_t> revision_{1};
     int reportedLatency_ = 0;
+    std::array<double, kNumMacros> uiEditMs_{};  // last UI edit per macro (host echoes are absorbed for 400 ms)
+    std::atomic<double> hostBpm_{120.0};
+    std::atomic<int> editorW_{0}, editorH_{0};
+    juce::String presetKey_, presetName_;
+    std::string presetSig_;      // chain signature when the preset was loaded / saved
+    std::string chainSignature() const;  // lock held
+    bool applyPresetJson(const std::string& text, const juce::String& key, const juce::String& name, juce::String& message);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Processor)
 };

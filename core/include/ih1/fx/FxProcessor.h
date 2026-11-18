@@ -1,6 +1,8 @@
 // IH1 — FX processor interface and FX type descriptor.
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -32,6 +34,17 @@ struct ProcessContext {
     int blockOffset = 0;             // subtract from MidiEvent::sampleOffset to get the index in this call
 };
 
+// Read-only live state for the settings panel (written by the audio thread through atomics, read by the
+// message thread). Only effects with meaningful internal state (the Looper) provide it.
+struct FxDisplay {
+    static constexpr int kPeaks = 96;
+    int state = 0;          // Looper: 0 waiting, 1 recording, 2 playing
+    float position = 0.0f;  // 0..1 playback position in the loop
+    float filled = 0.0f;    // 0..1 of the loop recorded
+    float seconds = 0.0f;   // loop length
+    std::array<float, kPeaks> peaks{};
+};
+
 // One instance of an effect. All methods except prepare() and the destructor must be real-time safe.
 // Audio is always stereo, processed in place: ch[0] = left, ch[1] = right.
 class FxProcessor {
@@ -49,6 +62,8 @@ public:
 
     virtual int latencySamples() const { return 0; }
     virtual double tailSeconds() const { return 0.0; }
+    // Message thread, lock-free. False if this effect has no live display state.
+    virtual bool readDisplay(FxDisplay&) const { return false; }
 };
 
 enum class FxFamily : uint8_t { TimeSpace, PitchVoice, Modulation, TextureSpectral, ToneDynamics };

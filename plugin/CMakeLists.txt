@@ -40,7 +40,10 @@ target_sources(IH1 PRIVATE
     Source/Ih1LookAndFeel.cpp
     Source/Carousel.cpp
     Source/SettingsPanel.cpp
-    Source/FormationView.cpp)
+    Source/FormationView.cpp
+    Source/Widgets.cpp
+    Source/FxGraph.cpp
+    Source/PresetBrowser.cpp)
 
 target_compile_definitions(IH1 PUBLIC
     JUCE_WEB_BROWSER=0
@@ -66,5 +69,18 @@ if(IH1_BUILD_HOSTTEST)
     target_sources(ih1_hosttest PRIVATE ${CMAKE_SOURCE_DIR}/tools/hosttest/HostTest.cpp)
     target_compile_definitions(ih1_hosttest PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(ih1_hosttest PRIVATE juce::juce_audio_processors juce::juce_audio_utils
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+endif()
+
+# UI interaction test (drives the real editor through its peer; needs a display). Not shipped.
+option(IH1_BUILD_UITEST "Build ih1_uitest" ON)
+if(IH1_BUILD_UITEST)
+    juce_add_console_app(ih1_uitest PRODUCT_NAME "ih1_uitest")
+    target_sources(ih1_uitest PRIVATE
+        ${CMAKE_SOURCE_DIR}/tools/uitest/UiTest.cpp
+        Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/Ih1LookAndFeel.cpp Source/Carousel.cpp
+        Source/SettingsPanel.cpp Source/FormationView.cpp Source/Widgets.cpp Source/FxGraph.cpp Source/PresetBrowser.cpp)
+    target_compile_definitions(ih1_uitest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="IH1" IH1_UITEST=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(ih1_uitest PRIVATE ih1_core juce::juce_audio_utils juce::juce_opengl
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

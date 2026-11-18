@@ -48,6 +48,7 @@ public:
 
     // ---- staged / carousel ---------------------------------------------------------------
     int selected() const { return selected_; }       // registry index or -1 (nothing staged)
+    const FxProcessor* stagedProcessor() const { return staged_; }  // message thread only (display read-outs)
     void select(int typeIndex);                       // -1 clears the staged FX
     void step(int direction);                         // carousel up (-1) / down (+1)
     const ParamValues& draft(int typeIndex) const { return drafts_[static_cast<size_t>(typeIndex)]; }

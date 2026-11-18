@@ -1,15 +1,16 @@
 #include "Carousel.h"
 
 #include "Ih1LookAndFeel.h"
+#include "Widgets.h"
 #include "ih1/fx/FxProcessor.h"
 
 namespace ih1::plugin {
 
 namespace {
-juce::Path triangle(bool up) {
+juce::Path chevron(bool up) {
     juce::Path p;
-    if (up) p.addTriangle(0.0f, 10.0f, 7.0f, 0.0f, 14.0f, 10.0f);
-    else p.addTriangle(0.0f, 0.0f, 14.0f, 0.0f, 7.0f, 10.0f);
+    if (up) { p.startNewSubPath(0.0f, 7.0f); p.lineTo(7.0f, 0.0f); p.lineTo(14.0f, 7.0f); }
+    else { p.startNewSubPath(0.0f, 0.0f); p.lineTo(7.0f, 7.0f); p.lineTo(14.0f, 0.0f); }
     return p;
 }
 int wrap(int i, int n) { return ((i % n) + n) % n; }
@@ -18,20 +19,21 @@ int wrap(int i, int n) { return ((i % n) + n) % n; }
 Carousel::Carousel() {
     order_ = fxCarouselOrder();
     for (auto* b : {&up_, &down_}) {
-        b->setShape(triangle(b == &up_), false, true, false);
-        b->setOutline(Colours::textDim, 1.4f);
-        b->setOnColours(Colours::accent, Colours::accent, Colours::accent);
-        b->setColours(juce::Colours::transparentBlack, Colours::accent.withAlpha(0.25f), Colours::accent.withAlpha(0.5f));
+        b->setShape(chevron(b == &up_), false, true, false);
+        b->setOutline(Colours::textDim, 1.3f);
+        b->setColours(juce::Colours::transparentBlack, juce::Colours::transparentBlack, juce::Colours::transparentBlack);
         b->setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        b->setWantsKeyboardFocus(false);
         addAndMakeVisible(*b);
     }
-    up_.setTooltip("Previous effect (or scroll the mouse wheel over the list).");
+    up_.setTooltip("Previous effect. You can also scroll over the list, use the arrow keys, or right-click for the full list.");
     down_.setTooltip("Next effect.");
     up_.onClick = [this] { step(-1); };
     down_.onClick = [this] { step(1); };
     setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(true);
     setTitle("Effect carousel");
-    setDescription("Scroll or use the arrows to choose the effect to stage.");
+    setDescription("Scroll or use the arrows to choose the effect to stage. Right-click for the full list.");
 }
 
 int Carousel::orderPosOf(int typeIndex) const {
@@ -61,18 +63,19 @@ void Carousel::setSelected(int typeIndex) {
 void Carousel::step(int dir) {
     if (order_.empty()) return;
     const int n = static_cast<int>(order_.size());
-    const int pos = selected_ >= 0 ? wrap(orderPosOf(selected_) + dir, n) : (dir > 0 ? lastPos_ : lastPos_);
+    // from "None", the first step lands on the effect the carousel was resting on
+    const int pos = selected_ >= 0 ? wrap(orderPosOf(selected_) + dir, n) : lastPos_;
     if (onSelect) onSelect(order_[static_cast<size_t>(pos)]);
 }
 
-juce::Rectangle<int> Carousel::nameArea() const { return getLocalBounds().withTrimmedRight(44); }
+juce::Rectangle<int> Carousel::nameArea() const { return getLocalBounds().withTrimmedRight(40); }
 
 void Carousel::resized() {
     auto r = getLocalBounds();
-    auto arrows = r.removeFromRight(40).withSizeKeepingCentre(22, 64);
-    up_.setBounds(arrows.removeFromTop(26).reduced(2));
-    arrows.removeFromTop(12);
-    down_.setBounds(arrows.removeFromTop(26).reduced(2));
+    auto arrows = r.removeFromRight(34).withSizeKeepingCentre(22, 60);
+    up_.setBounds(arrows.removeFromTop(22).reduced(3));
+    arrows.removeFromTop(16);
+    down_.setBounds(arrows.removeFromTop(22).reduced(3));
 }
 
 void Carousel::timerCallback() {
@@ -86,80 +89,132 @@ void Carousel::paint(juce::Graphics& g) {
     const auto& reg = fxRegistry();
     const int n = static_cast<int>(order_.size());
     const auto area = nameArea().toFloat();
-    const float cy = area.getCentreY() + 6.0f;
-    const float spacing = std::min(44.0f, area.getHeight() / 4.2f);
+    const float cy = area.getCentreY();
+    const float spacing = std::min(40.0f, area.getHeight() / 4.6f);
     const int base = static_cast<int>(std::floor(anim_));
     const float frac = anim_ - static_cast<float>(base);
     const bool none = selected_ < 0;
-    const auto mouse = getMouseXYRelative();
+    const auto mouse = getMouseXYRelative().toFloat();
+    const bool mouseIn = isMouseOver(true);
     for (int k = -3; k <= 3; ++k) {
         const int idx = order_[static_cast<size_t>(wrap(base + k, n))];
         const float off = static_cast<float>(k) - frac;
         const float a = std::abs(off);
-        const float dist = a <= 1.0f ? a * spacing * 1.45f : (1.45f + (a - 1.0f)) * spacing;
-        const float y = cy + (off < 0.0f ? -dist : dist);
         if (a > 2.6f) continue;
         const bool centre = a < 0.5f && !none;
-        float alpha = centre ? 1.0f : juce::jmax(0.0f, 0.55f - 0.22f * a);
-        if (none) alpha *= 0.55f;
-        const float size = centre ? juce::jmin(32.0f, area.getHeight() * 0.22f) : 16.0f - 2.0f * juce::jmin(a, 1.5f);
+        if (none && a < 0.5f) continue;  // the centre reads "None"
+        const float dist = a <= 1.0f ? a * spacing * 1.5f : (1.5f + (a - 1.0f)) * spacing;
+        const float y = cy + (off < 0.0f ? -dist : dist);
+        float alpha = centre ? 1.0f : juce::jmax(0.0f, 0.75f - 0.27f * a);
+        const float size = centre ? juce::jmin(30.0f, area.getHeight() * 0.2f) : 15.0f - 1.6f * juce::jmin(a, 1.5f);
         auto row = juce::Rectangle<float>(area.getX(), y - size * 0.75f, area.getWidth(), size * 1.5f);
-        if (!centre && row.contains(mouse.toFloat())) alpha = juce::jmin(1.0f, alpha + 0.25f);
-        g.setColour((centre ? Colours::text : Colours::textDim).withAlpha(alpha));
-        g.setFont(LookAndFeel::font(size, centre));
+        if (!centre && mouseIn && row.contains(mouse)) alpha = juce::jmin(1.0f, alpha + 0.3f);
+        const auto col = readable(fxColourForIndex(idx), centre ? 0.88f : 0.8f);
+        g.setColour(col.withAlpha(alpha));
+        g.setFont(LookAndFeel::font(size, centre).withExtraKerningFactor(centre ? 0.04f : 0.08f));
         g.drawText(juce::String(reg[static_cast<size_t>(idx)].name).toUpperCase(), row, juce::Justification::centred, false);
         if (centre) {
-            g.setColour(Colours::accent.withAlpha(0.75f));
-            g.setFont(LookAndFeel::font(10.5f, true));
-            g.drawText(juce::String(familyName(reg[static_cast<size_t>(idx)].family)).toUpperCase(), juce::Rectangle<float>(row.getX(), y + size * 0.62f, row.getWidth(), 14.0f), juce::Justification::centred, false);
+            g.setColour(Colours::textDim.withAlpha(0.8f));
+            g.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
+            g.drawText(juce::String(familyName(reg[static_cast<size_t>(idx)].family)).toUpperCase(),
+                       juce::Rectangle<float>(row.getX(), y + size * 0.62f, row.getWidth(), 14.0f), juce::Justification::centred, false);
         }
     }
     if (none) {
-        g.setColour(Colours::text.withAlpha(0.85f));
-        g.setFont(LookAndFeel::font(15.0f));
-        auto r = juce::Rectangle<float>(area.getX(), cy - 14.0f, area.getWidth(), 28.0f);
-        g.setColour(Colours::background.withAlpha(0.85f));
-        g.fillRoundedRectangle(r.withSizeKeepingCentre(200.0f, 26.0f), 13.0f);
-        g.setColour(Colours::text.withAlpha(0.8f));
-        g.drawText("Choose an effect", r, juce::Justification::centred, false);
+        g.setColour(Colours::text.withAlpha(0.72f));
+        g.setFont(LookAndFeel::font(juce::jmin(26.0f, area.getHeight() * 0.18f)).withExtraKerningFactor(0.04f));
+        g.drawText("None", juce::Rectangle<float>(area.getX(), cy - 18.0f, area.getWidth(), 36.0f), juce::Justification::centred, false);
     }
-    // soft fades at the top/bottom edges
-    juce::ColourGradient top(Colours::background, 0.0f, area.getY(), Colours::background.withAlpha(0.0f), 0.0f, area.getY() + spacing * 0.9f, false);
+    // soft fades at the top/bottom edges (tone only, no lines)
+    const float fade = spacing * 0.9f;
+    juce::ColourGradient top(Colours::background, 0.0f, area.getY(), Colours::background.withAlpha(0.0f), 0.0f, area.getY() + fade, false);
     g.setGradientFill(top);
-    g.fillRect(area.withHeight(spacing * 0.9f));
-    juce::ColourGradient bot(Colours::background.withAlpha(0.0f), 0.0f, area.getBottom() - spacing * 0.9f, Colours::background, 0.0f, area.getBottom(), false);
+    g.fillRect(area.withHeight(fade));
+    juce::ColourGradient bot(Colours::background.withAlpha(0.0f), 0.0f, area.getBottom() - fade, Colours::background, 0.0f, area.getBottom(), false);
     g.setGradientFill(bot);
-    g.fillRect(area.withTrimmedTop(area.getHeight() - spacing * 0.9f));
-    if (hasKeyboardFocus(false)) {
-        g.setColour(Colours::accent.withAlpha(0.25f));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 6.0f, 1.0f);
+    g.fillRect(area.withTrimmedTop(area.getHeight() - fade));
+    // keyboard focus only (never on mouse clicks): a small accent tick at the left of the selected name
+    if (keyFocus_ && hasKeyboardFocus(false)) {
+        g.setColour(Colours::accent.withAlpha(0.8f));
+        g.fillRect(area.getX() + 4.0f, cy - 9.0f, 2.0f, 18.0f);
     }
+}
+
+void Carousel::focusGained(FocusChangeType cause) {
+    keyFocus_ = cause == focusChangedByTabKey;
+    if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown()) keyFocus_ = false;
+    repaint();
 }
 
 void Carousel::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& w) {
-    const double now = juce::Time::getMillisecondCounterHiRes();
+    // accumulate high-resolution wheels and trackpads; one step per notch, at most one every 70 ms
     wheelAcc_ += w.deltaY * (w.isReversed ? -1.0f : 1.0f);
-    if (std::fabs(wheelAcc_) < 0.07f) return;
-    if (now - lastWheelMs_ < 110.0) { wheelAcc_ = 0.0f; return; }  // not disorientingly fast
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (std::fabs(wheelAcc_) < 0.1f) return;
+    if (now - lastStepMs_ < 70.0) { wheelAcc_ = juce::jlimit(-0.1f, 0.1f, wheelAcc_); return; }
     step(wheelAcc_ > 0.0f ? -1 : 1);
     wheelAcc_ = 0.0f;
-    lastWheelMs_ = now;
+    lastStepMs_ = now;
+}
+
+void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
+    auto* ov = MenuOverlay::find(this);
+    if (ov == nullptr || ov->isOpen()) return;
+    // the full catalogue, grouped by family, each name in its identity colour; choosing stages (never commits)
+    std::vector<MenuItem> items;
+    const auto& reg = fxRegistry();
+    int lastFamily = -1;
+    for (int idx : order_) {
+        const auto& d = reg[static_cast<size_t>(idx)];
+        if (static_cast<int>(d.family) != lastFamily) {
+            lastFamily = static_cast<int>(d.family);
+            MenuItem h;
+            h.header = true;
+            h.text = familyName(d.family);
+            items.push_back(h);
+        }
+        MenuItem it;
+        it.id = idx + 1;
+        it.text = d.name;
+        it.colour = fxColourForIndex(idx);
+        it.ticked = idx == selected_;
+        items.push_back(it);
+    }
+    MenuOverlay::Options o;
+    o.atPoint = true;
+    o.point = ov->getLocalPoint(this, atLocal);
+    o.minWidth = 200;
+    o.maxVisibleRows = 22;
+    o.rowHeight = 23;
+    ov->open(std::move(items), o, [safe = juce::Component::SafePointer<Carousel>(this)](int id) {
+        if (safe != nullptr && id > 0 && safe->onSelect) safe->onSelect(id - 1);
+    }, this);
+}
+
+void Carousel::mouseDown(const juce::MouseEvent& e) {
+    rightDown_ = e.mods.isPopupMenu();
+    if (rightDown_) showCatalogueMenu(e.getPosition());  // opens beside the pointer on the press
 }
 
 void Carousel::mouseUp(const juce::MouseEvent& e) {
-    grabKeyboardFocus();
+    if (rightDown_) {
+        rightDown_ = false;
+        if (auto* ov = MenuOverlay::find(this); ov && ov->isOpenFor(this)) ov->ownerMouseUp(e);
+        return;
+    }
+    if (!nameArea().contains(e.getPosition()) || e.mouseWasDraggedSinceMouseDown()) return;
     const auto area = nameArea().toFloat();
-    const float cy = area.getCentreY() + 6.0f;
-    const float spacing = std::min(44.0f, area.getHeight() / 4.2f);
+    const float cy = area.getCentreY();
+    const float spacing = std::min(40.0f, area.getHeight() / 4.6f);
     const float dy = static_cast<float>(e.y) - cy;
     const float ady = std::fabs(dy) / spacing;
-    const float slots = ady <= 1.45f ? ady / 1.45f : 1.0f + (ady - 1.45f);
+    const float slots = ady <= 1.5f ? ady / 1.5f : 1.0f + (ady - 1.5f);
     const int k = static_cast<int>(std::round(dy < 0.0f ? -slots : slots));
     if (k == 0) {
         if (selected_ < 0) step(1);
         return;
     }
-    if (std::abs(k) <= 2) {
+    if (std::abs(k) <= 2 && !order_.empty()) {
         const int n = static_cast<int>(order_.size());
         const int pos = wrap((selected_ >= 0 ? orderPosOf(selected_) : lastPos_) + k, n);
         if (onSelect) onSelect(order_[static_cast<size_t>(pos)]);
@@ -167,10 +222,12 @@ void Carousel::mouseUp(const juce::MouseEvent& e) {
 }
 
 bool Carousel::keyPressed(const juce::KeyPress& key) {
-    if (key == juce::KeyPress::upKey) { step(-1); return true; }
-    if (key == juce::KeyPress::downKey) { step(1); return true; }
+    if (key == juce::KeyPress::upKey) { keyFocus_ = true; step(-1); return true; }
+    if (key == juce::KeyPress::downKey) { keyFocus_ = true; step(1); return true; }
+    if (key == juce::KeyPress::escapeKey && selected_ >= 0) { if (onSelect) onSelect(-1); return true; }
+    if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown()) return false;
     const auto ch = key.getTextCharacter();
-    if (juce::CharacterFunctions::isLetterOrDigit(ch) || ch == ' ') {
+    if (juce::CharacterFunctions::isLetterOrDigit(ch)) {
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (now - typedMs_ > 1000.0) typed_.clear();
         typedMs_ = now;

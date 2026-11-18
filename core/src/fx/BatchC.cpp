@@ -135,6 +135,8 @@ class Looper final : public FxBase {
     }
     void reset() override {
         for (auto& b : buf_) std::fill(b.begin(), b.end(), 0.0f);
+        for (auto& pk : peaks_) pk.store(0.0f, std::memory_order_relaxed);
+        dState_.store(0); dPos_.store(0.0f); dFilled_.store(0.0f);
         state_ = Waiting;
         pos_ = 0.0;
         recorded_ = 0;
@@ -171,6 +173,11 @@ class Looper final : public FxBase {
             float out[2] = {0, 0};
             if (state_ == Recording) {
                 for (int c = 0; c < 2; ++c) buf_[c][static_cast<size_t>(recorded_)] = in[c];
+                // coarse waveform for the settings panel (lock-free, one bin per 1/96 of the loop)
+                const int bin = std::min(FxDisplay::kPeaks - 1, static_cast<int>(static_cast<int64_t>(recorded_) * FxDisplay::kPeaks / L));
+                if (recorded_ == 0) for (auto& pk : peaks_) pk.store(0.0f, std::memory_order_relaxed);
+                const float a = std::max(std::fabs(in[0]), std::fabs(in[1]));
+                if (a > peaks_[static_cast<size_t>(bin)].load(std::memory_order_relaxed)) peaks_[static_cast<size_t>(bin)].store(a, std::memory_order_relaxed);
                 if (++recorded_ >= L) { state_ = Playing; pos_ = 0.0; loops_ = 0; }
             } else if (state_ == Playing) {
                 const double p = rev ? (L - 1 - pos_) : pos_;
@@ -199,7 +206,22 @@ class Looper final : public FxBase {
             ch[1][i] = out[1];
         }
         mix_.apply(ch, n);
+        dState_.store(static_cast<int>(state_), std::memory_order_relaxed);
+        dPos_.store(state_ == Playing ? static_cast<float>(pos_ / L) : 0.0f, std::memory_order_relaxed);
+        dFilled_.store(state_ == Recording ? static_cast<float>(recorded_) / static_cast<float>(L) : (state_ == Playing ? 1.0f : 0.0f), std::memory_order_relaxed);
+        dSeconds_.store(static_cast<float>(L / sr_), std::memory_order_relaxed);
     }
+    bool readDisplay(FxDisplay& d) const override {
+        d.state = dState_.load(std::memory_order_relaxed);
+        d.position = dPos_.load(std::memory_order_relaxed);
+        d.filled = dFilled_.load(std::memory_order_relaxed);
+        d.seconds = dSeconds_.load(std::memory_order_relaxed);
+        for (int i = 0; i < FxDisplay::kPeaks; ++i) d.peaks[static_cast<size_t>(i)] = peaks_[static_cast<size_t>(i)].load(std::memory_order_relaxed);
+        return true;
+    }
+    std::array<std::atomic<float>, FxDisplay::kPeaks> peaks_{};
+    std::atomic<int> dState_{0};
+    std::atomic<float> dPos_{0.0f}, dFilled_{0.0f}, dSeconds_{0.0f};
     static constexpr int c0 = 0, c1 = 1;
     enum State { Waiting, Recording, Playing };
     std::vector<float> buf_[2];

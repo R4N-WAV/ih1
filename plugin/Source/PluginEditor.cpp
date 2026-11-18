@@ -4,99 +4,143 @@
 
 namespace ih1::plugin {
 
+juce::Point<int> Editor::defaultSize(juce::Rectangle<int> user) {
+    // A wide layout with room for the formation: 1500 x 900 on a typical desktop. On small or high-DPI
+    // screens it shrinks to 92 % of the usable area, never below the minimum (hosts can scroll that).
+    int w = 1500, h = 900;
+    if (!user.isEmpty()) {
+        w = std::min(w, static_cast<int>(user.getWidth() * 0.92));
+        h = std::min(h, static_cast<int>(user.getHeight() * 0.92));
+    }
+    return {juce::jlimit(kMinW, kMaxW, w), juce::jlimit(kMinH, kMaxH, h)};
+}
+
 Editor::Editor(Processor& p)
-    : AudioProcessorEditor(p), proc_(p), renderer_(p, gl_), settings_(p), formation_(p, renderer_) {
+    : AudioProcessorEditor(p), proc_(p), renderer_(p, gl_), settings_(p), formation_(p, renderer_), presetBar_(p), browser_(p) {
+    const auto last = proc_.lastEditorSize();  // read first: layout below records sizes as it goes
+    // The look and feel is set on this editor's component tree only. V1 also made it the global default,
+    // which left a dangling global when one of several open IH1 editors closed.
     setLookAndFeel(&lnf_);
-    juce::LookAndFeel::setDefaultLookAndFeel(&lnf_);
+    setOpaque(false);
 
     carousel_.onSelect = [this](int type) { proc_.uiSelect(type); };
     addAndMakeVisible(carousel_);
-    addAndMakeVisible(settings_);
+    addChildComponent(settings_);
     addAndMakeVisible(formation_);
+    addAndMakeVisible(presetBar_);
 
     commit_.getProperties().set("primary", true);
-    commit_.getProperties().set("fontSize", 16.0);
-    reset_.getProperties().set("fontSize", 14.0);
+    commit_.getProperties().set("fontSize", 14.0);
+    reset_.getProperties().set("fontSize", 13.0);
     commit_.setTooltip("Add the staged effect, with its current settings, to the end of the committed chain. Committed effects can be moved or deleted but never edited.");
-    reset_.setTooltip("Return the staged effect's settings to their defaults. Nothing already committed is touched.");
-    commit_.onClick = [this] {
-        const double now = juce::Time::getMillisecondCounterHiRes();
-        if (now < commitLockMs_) return;  // guards against a double-click committing twice
-        commitLockMs_ = now + 350.0;
-        juce::String name;
-        {
-            const juce::ScopedLock sl(proc_.sessionLock());
-            const int sel = proc_.session().selected();
-            if (sel >= 0) name = fxRegistry()[static_cast<size_t>(sel)].name;
-        }
-        if (proc_.uiCommit()) formation_.showToast(name + " joined the formation");
-        else if (name.isNotEmpty()) formation_.showToast("The chain is full (" + juce::String(kMaxChain) + " effects)");
-    };
+    reset_.setTooltip("Return the staged effect to its defaults and clear what it holds (a Looper's recording, echoes, tails). Nothing committed is touched.");
+    commit_.onClick = [this] { doCommit(); };
     reset_.onClick = [this] { proc_.uiReset(); };
-    presets_.setTooltip("Save or load a committed chain (user presets store the committed chain only).");
-    presets_.onClick = [this] { showPresetMenu(); };
     addAndMakeVisible(commit_);
     addAndMakeVisible(reset_);
-    addAndMakeVisible(presets_);
+
+    presetBar_.onOpenBrowser = [this] {
+        if (browser_.isOpen()) { browser_.close(); return; }
+        browser_.open(getLocalArea(&presetBar_, presetBar_.getLocalBounds()));
+    };
+    presetBar_.onMessage = [this](const juce::String& m) { if (m.isNotEmpty()) formation_.showToast(m); };
+    browser_.onMessage = [this](const juce::String& m) { if (m.isNotEmpty()) formation_.showToast(m); presetBar_.refresh(); };
+    addChildComponent(browser_);
+    addChildComponent(menu_);  // added last: above everything
 
     if (juce::SystemStats::getEnvironmentVariable("IH1_NO_OPENGL", {}).isNotEmpty()) {
         formation_.setSoftwareFallback(true);
     } else {
-    gl_.setRenderer(&renderer_);
-    gl_.setPreferredVersion(juce::OpenGLContext::Version{3, 2});
-    gl_.setComponentPaintingEnabled(true);
-    gl_.setContinuousRepainting(true);
-    gl_.attachTo(*this);
+        gl_.setRenderer(&renderer_);
+        gl_.setPreferredVersion(juce::OpenGLContext::Version{3, 2});
+        gl_.setComponentPaintingEnabled(true);
+        gl_.setContinuousRepainting(true);
+        gl_.attachTo(*this);
+        glAttached_ = true;
     }
 
     setResizable(true, true);
-    setResizeLimits(980, 620, 2560, 1600);
-    setSize(1280, 780);
+    setResizeLimits(kMinW, kMinH, kMaxW, kMaxH);
+    juce::Rectangle<int> user;
+    if (const auto* d = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()) user = d->userBounds.toNearestInt();
+    auto size = defaultSize(user);
+    if (last.x >= kMinW && last.y >= kMinH) size = {std::min(last.x, kMaxW), std::min(last.y, kMaxH)};
+    setSize(size.x, size.y);
     startTimerHz(30);
 }
 
 Editor::~Editor() {
     stopTimer();
+    // stop the render thread and free GL resources while every component it reads still exists
     if (gl_.isAttached()) gl_.detach();
-    juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     setLookAndFeel(nullptr);
 }
 
 void Editor::paint(juce::Graphics& g) {
-    // only the left column is opaque; the formation area is drawn by OpenGL underneath
+    // Only the left column is painted here. The field must stay transparent in the component layer: with
+    // OpenGL, components are composited over the GL frame, so painting it would hide the formation. The GL
+    // renderer clears it to pure black; the software fallback paints it itself.
     g.setColour(Colours::background);
     g.fillRect(left_);
-    g.setColour(Colours::border);
-    g.fillRect(left_.getRight(), 0, 1, getHeight());
     g.setColour(Colours::text);
-    g.setFont(LookAndFeel::font(20.0f, true));
-    g.drawText("IH1", left_.reduced(18, 0).withHeight(46).withY(10), juce::Justification::centredLeft);
+    g.setFont(LookAndFeel::font(19.0f, true).withExtraKerningFactor(0.18f));
+    g.drawText("IH1", header_.withWidth(64), juce::Justification::centredLeft);
 }
 
 void Editor::resized() {
-    const int lw = juce::jlimit(360, 470, static_cast<int>(getWidth() * 0.33));
-    left_ = getLocalBounds().removeFromLeft(lw);
-    auto r = left_.reduced(18, 12);
-    auto header = r.removeFromTop(44);
-    presets_.setBounds(header.removeFromRight(96).withSizeKeepingCentre(96, 30));
-    r.removeFromTop(4);
-    carousel_.setBounds(r.removeFromTop(juce::jlimit(170, 240, getHeight() / 4)));
+    const int W = std::max(1, getWidth()), H = std::max(1, getHeight());
+    proc_.setLastEditorSize(W, H);
+    const int lw = juce::jlimit(400, 500, static_cast<int>(W * 0.30));
+    left_ = juce::Rectangle<int>(0, 0, lw, H);
+    auto r = left_.reduced(Tokens::gutter, 16);
+    header_ = r.removeFromTop(36);
+    presetBar_.setBounds(header_.withTrimmedLeft(84));
     r.removeFromTop(10);
-    auto buttons = r.removeFromBottom(46);
+    carousel_.setBounds(r.removeFromTop(juce::jlimit(180, 250, H / 4)));
+    r.removeFromTop(14);
+    auto buttons = r.removeFromBottom(40);
     commit_.setBounds(buttons.removeFromLeft(buttons.getWidth() / 2 - 6));
     buttons.removeFromLeft(12);
     reset_.setBounds(buttons);
-    r.removeFromBottom(14);
+    r.removeFromBottom(16);
     settings_.setBounds(r);
-    const auto field = getLocalBounds().withTrimmedLeft(lw + 1);
+    const auto field = juce::Rectangle<int>(lw, 0, W - lw, H);
     formation_.setBounds(field);
-    renderer_.setArea(field, getHeight());
+    renderer_.setArea(formation_.artworkArea().translated(field.getX(), field.getY()), H);
+    menu_.setBounds(getLocalBounds());
+    if (browser_.isOpen()) browser_.close();
+}
+
+void Editor::doCommit() {
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (now < commitLockMs_) return;  // a double-click never commits twice
+    commitLockMs_ = now + 350.0;
+    bool staged;
+    {
+        const juce::ScopedLock sl(proc_.sessionLock());
+        staged = proc_.session().selected() >= 0;
+    }
+    if (!staged) return;
+    if (const uint64_t id = proc_.uiCommit()) {
+        // the audio chain has already changed; the transfer animation is UI-only and starts at the
+        // workflow column's edge, level with the carousel
+        const float originY = static_cast<float>(carousel_.getBounds().getCentreY()) / static_cast<float>(std::max(1, formation_.artworkArea().getHeight()));
+        formation_.requestTransfer(id, originY);
+    } else {
+        formation_.showToast("The chain is full (" + juce::String(kMaxChain) + " effects)");
+    }
+}
+
+bool Editor::keyPressed(const juce::KeyPress& k) {
+    if ((k.getModifiers().isCommandDown() || k.getModifiers().isCtrlDown()) && k.getKeyCode() == juce::KeyPress::returnKey) { doCommit(); return true; }
+    return false;
 }
 
 void Editor::timerCallback() {
-    if (renderer_.glFailed() && gl_.isAttached()) {
-        // OpenGL 3.2 unavailable (old driver, VM, remote desktop): fall back to software painting
+    if (glAttached_ && renderer_.glFailed()) {
+        // OpenGL 3.2 unavailable or a render target could not be created: software formation, audio unaffected
         gl_.detach();
+        glAttached_ = false;
         formation_.setSoftwareFallback(true);
         repaint();
     }
@@ -111,43 +155,10 @@ void Editor::timerCallback() {
         carousel_.setSelected(sel);
         commit_.setEnabled(sel >= 0 && chain < kMaxChain);
         reset_.setEnabled(sel >= 0);
-        settings_.sync();
+        settings_.setVisible(sel >= 0);  // no empty panel when nothing is staged
+        presetBar_.refresh();
     }
-}
-
-void Editor::showPresetMenu() {
-    juce::PopupMenu m;
-    m.addItem(1, "Save committed chain as preset...");
-    m.addItem(2, "Load chain preset...");
-    m.addSeparator();
-    m.addItem(3, "Clear committed chain...");
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(presets_), [this](int r) {
-        const auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("IH1").getChildFile("Presets");
-        dir.createDirectory();
-        if (r == 1) {
-            chooser_ = std::make_unique<juce::FileChooser>("Save chain preset", dir.getChildFile("My Chain.ih1chain"), "*.ih1chain");
-            chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-                                  [this](const juce::FileChooser& fc) {
-                                      const auto f = fc.getResult();
-                                      if (f == juce::File()) return;
-                                      formation_.showToast(proc_.savePreset(f.withFileExtension("ih1chain")) ? "Preset saved" : "Could not save the preset");
-                                  });
-        } else if (r == 2) {
-            chooser_ = std::make_unique<juce::FileChooser>("Load chain preset", dir, "*.ih1chain");
-            chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
-                const auto f = fc.getResult();
-                if (f == juce::File()) return;
-                juce::String msg;
-                const bool ok = proc_.loadPreset(f, msg);
-                formation_.showToast(ok ? (msg.isEmpty() ? "Preset loaded" : "Loaded with warnings: " + msg) : "Could not load: " + msg);
-            });
-        } else if (r == 3) {
-            auto opts = juce::MessageBoxOptions().withIconType(juce::MessageBoxIconType::WarningIcon).withTitle("Clear committed chain?")
-                            .withMessage("This removes every committed effect. The staged effect and its settings are kept.")
-                            .withButton("Clear", 1).withButton("Cancel", 0).withAssociatedComponent(this);
-            juce::AlertWindow::showAsync(opts, [this](int result) { if (result == 1) proc_.uiClearChain(); });
-        }
-    });
+    if (settings_.isVisible()) settings_.sync();
 }
 
 }  // namespace ih1::plugin

@@ -2,6 +2,7 @@
 
 #include "PluginEditor.h"
 #include "ih1/model/Json.h"
+#include "ih1/presets/Presets.h"
 
 namespace ih1::plugin {
 
@@ -94,7 +95,7 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
     ctx.sampleRate = getSampleRate();
     if (auto* ph = getPlayHead()) {
         if (const auto pos = ph->getPosition()) {
-            if (const auto bpm = pos->getBpm()) ctx.bpm = *bpm;
+            if (const auto bpm = pos->getBpm()) { ctx.bpm = *bpm; hostBpm_.store(*bpm); }
             if (const auto ppq = pos->getPpqPosition()) { ctx.ppqPosition = *ppq; ctx.ppqValid = true; }
             ctx.hostPlaying = pos->getIsPlaying();
         }
@@ -167,6 +168,7 @@ void Processor::uiSetParam(int paramIndex, float plainValue) {
         const auto& spec = fxRegistry()[static_cast<size_t>(sel)].params[static_cast<size_t>(paramIndex)];
         const float norm = spec.toNormalised(session_->draft(sel)[static_cast<size_t>(paramIndex)]);
         lastMacro_[static_cast<size_t>(paramIndex)] = norm;
+        uiEditMs_[static_cast<size_t>(paramIndex)] = juce::Time::getMillisecondCounterHiRes();
         macros_[static_cast<size_t>(paramIndex)]->setValueNotifyingHost(norm);
     }
     revision_.fetch_add(1);
@@ -186,17 +188,16 @@ void Processor::uiReset() {
     revision_.fetch_add(1);
 }
 
-bool Processor::uiCommit() {
+uint64_t Processor::uiCommit() {
     const juce::ScopedLock sl(lock_);
     const bool ok = session_->commit();
-    if (ok) {
-        apvts_.getParameter("solo")->setValueNotifyingHost(0.0f);
-        apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
-        lastSolo_ = lastMute_ = false;
-        syncMacrosFromDraft();
-        afterModelChange();
-    }
-    return ok;
+    if (!ok) return 0;
+    apvts_.getParameter("solo")->setValueNotifyingHost(0.0f);
+    apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
+    lastSolo_ = lastMute_ = false;
+    syncMacrosFromDraft();
+    afterModelChange();
+    return session_->chain().back().id();
 }
 
 bool Processor::uiMove(int from, int to) {
@@ -270,6 +271,13 @@ void Processor::pullHostParams(bool enforceExclusive) {
         const auto& d = fxRegistry()[static_cast<size_t>(sel)];
         for (int k = 0; k < kNumMacros && k < static_cast<int>(d.params.size()); ++k) {
             const float v = macros_[static_cast<size_t>(k)]->getValue();
+            // A UI edit owns this macro briefly: a host that echoes (or replays a stale value of) the
+            // parameter we just set must not overwrite the draft. In V1 that echo could revert a dropdown
+            // choice right after it was made.
+            if (juce::Time::getMillisecondCounterHiRes() - uiEditMs_[static_cast<size_t>(k)] < 400.0) {
+                lastMacro_[static_cast<size_t>(k)] = v;
+                continue;
+            }
             if (std::fabs(v - lastMacro_[static_cast<size_t>(k)]) > 1e-5f) {
                 lastMacro_[static_cast<size_t>(k)] = v;
                 session_->setDraftParam(k, d.params[static_cast<size_t>(k)].fromNormalised(v));
@@ -299,6 +307,15 @@ void Processor::getStateInformation(juce::MemoryBlock& dest) {
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(prm))
             plug.set(rp->getParameterID().toStdString(), json::Value(static_cast<double>(rp->getValue())));  // normalised
     root.set("plugin", std::move(plug));
+    json::Value pref = json::Value::object();
+    pref.set("key", presetKey_.toStdString());
+    pref.set("name", presetName_.toStdString());
+    pref.set("sig", presetSig_);
+    root.set("presetRef", std::move(pref));
+    json::Value ed = json::Value::object();
+    ed.set("w", editorW_.load());
+    ed.set("h", editorH_.load());
+    root.set("editor", std::move(ed));
     const std::string text = root.dump(0);
     juce::MemoryOutputStream out(dest, false);
     out.write(kStateMagic, std::strlen(kStateMagic));
@@ -325,30 +342,183 @@ void Processor::setStateInformation(const void* data, int size) {
             if (v.isNumber()) rp->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, static_cast<float>(v.asNumber())));
         }
     }
+    if (json::parse(text, root, &err)) {
+        const auto& pref = root.get("presetRef");
+        presetKey_ = juce::String::fromUTF8(pref.get("key").asString().c_str());
+        presetName_ = juce::String::fromUTF8(pref.get("name").asString().c_str());
+        presetSig_ = pref.get("sig").asString();
+        const auto& ed = root.get("editor");
+        const int w = static_cast<int>(ed.get("w").asNumber(0)), h = static_cast<int>(ed.get("h").asNumber(0));
+        if (w >= 600 && w <= 8000 && h >= 400 && h <= 8000) { editorW_.store(w); editorH_.store(h); }
+    }
     for (int k = 0; k < kNumMacros; ++k) lastMacro_[static_cast<size_t>(k)] = macros_[static_cast<size_t>(k)]->getValue();
     lastSolo_ = pSolo_->load() > 0.5f;
     lastMute_ = pMute_->load() > 0.5f;
     afterModelChange();
 }
 
-bool Processor::savePreset(const juce::File& file) {
-    std::string text;
+// ---- presets --------------------------------------------------------------------------------
+
+juce::File Processor::userPresetDir() {
+    return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("IH1").getChildFile("Presets");
+}
+
+std::string Processor::chainSignature() const {
+    std::string sig;
+    for (const auto& ci : session_->chain()) {
+        sig += ci.descriptor().typeId + "{";
+        char buf[32];
+        for (size_t i = 0; i < ci.descriptor().params.size(); ++i) { std::snprintf(buf, sizeof buf, "%.5g,", static_cast<double>(ci.values()[i])); sig += buf; }
+        sig += "}";
+    }
+    return sig;
+}
+
+bool Processor::presetModified() {
+    if (presetKey_.isEmpty()) return false;
+    const juce::ScopedLock sl(lock_);
+    return chainSignature() != presetSig_;
+}
+
+namespace {
+struct UserMeta { juce::String name, description; };
+UserMeta readUserMeta(const juce::File& f) {
+    UserMeta m{f.getFileNameWithoutExtension(), {}};
+    if (f.getSize() > (8 << 20)) return m;
+    ih1::json::Value root;
+    std::string err;
+    if (ih1::json::parse(f.loadFileAsString().toStdString(), root, &err)) {
+        const auto& p = root.get("preset");
+        if (p.get("name").isString() && !p.get("name").asString().empty()) m.name = juce::String::fromUTF8(p.get("name").asString().c_str());
+        if (p.get("description").isString()) m.description = juce::String::fromUTF8(p.get("description").asString().c_str());
+    }
+    return m;
+}
+juce::String safeFileName(const juce::String& name) {
+    auto n = juce::File::createLegalFileName(name.trim()).trim();
+    return n.isEmpty() ? juce::String("Preset") : n;
+}
+}  // namespace
+
+std::vector<Processor::PresetEntry> Processor::presetList() {
+    std::vector<PresetEntry> v;
+    for (const auto& p : factoryPresets())
+        v.push_back({"f:" + juce::String(p.id), juce::String::fromUTF8(p.name.c_str()), juce::String::fromUTF8(p.category.c_str()), juce::String::fromUTF8(p.description.c_str()), true});
+    auto files = userPresetDir().findChildFiles(juce::File::findFiles, false, "*.ih1chain");
+    std::vector<PresetEntry> user;
+    for (const auto& f : files) {
+        const auto m = readUserMeta(f);
+        user.push_back({"u:" + f.getFullPathName(), m.name, "User", m.description, false});
+    }
+    std::sort(user.begin(), user.end(), [](const PresetEntry& a, const PresetEntry& b) { return a.name.compareNatural(b.name) < 0; });
+    v.insert(v.end(), user.begin(), user.end());
+    return v;
+}
+
+bool Processor::applyPresetJson(const std::string& text, const juce::String& key, const juce::String& name, juce::String& message) {
+    const juce::ScopedLock sl(lock_);
+    std::string err;
+    // Session::fromJson validates everything first and swaps the whole chain in one program hand-over;
+    // on failure nothing changes and the preset name is not updated.
+    const bool ok = session_->fromJson(text, false, &err);
+    message = juce::String(err);
+    if (ok) {
+        presetKey_ = key;
+        presetName_ = name;
+        presetSig_ = chainSignature();
+    }
+    afterModelChange();
+    return ok;
+}
+
+bool Processor::loadPresetKey(const juce::String& key, juce::String& message) {
+    if (key.startsWith("f:")) {
+        const int i = factoryPresetIndex(key.substring(2).toStdString());
+        if (i < 0) { message = "Unknown factory preset."; return false; }
+        const auto& p = factoryPresets()[static_cast<size_t>(i)];
+        return applyPresetJson(presetToJson(p), key, juce::String::fromUTF8(p.name.c_str()), message);
+    }
+    if (key.startsWith("u:")) {
+        const juce::File f(key.substring(2));
+        if (!f.existsAsFile() || f.getSize() > (8 << 20)) { message = "Preset file not found or too large."; return false; }
+        return applyPresetJson(f.loadFileAsString().toStdString(), key, readUserMeta(f).name, message);
+    }
+    message = "No preset selected.";
+    return false;
+}
+
+bool Processor::stepPreset(int direction, juce::String& message) {
+    const auto list = presetList();
+    if (list.empty()) { message = "No presets."; return false; }
+    int cur = -1;
+    for (size_t i = 0; i < list.size(); ++i) if (list[i].key == presetKey_) cur = static_cast<int>(i);
+    const int n = static_cast<int>(list.size());
+    // from "no preset", next = first and previous = last; otherwise wrap around the whole list
+    const int next = cur < 0 ? (direction >= 0 ? 0 : n - 1) : ((cur + (direction >= 0 ? 1 : -1)) % n + n) % n;
+    return loadPresetKey(list[static_cast<size_t>(next)].key, message);
+}
+
+bool Processor::saveUserPreset(const juce::String& name, bool overwrite, juce::String& message, bool& exists) {
+    const auto dir = userPresetDir();
+    if (!dir.createDirectory()) { message = "Cannot create " + dir.getFullPathName(); return false; }
+    const auto file = dir.getChildFile(safeFileName(name) + ".ih1chain");
+    exists = file.existsAsFile();
+    if (exists && !overwrite) { message = "A preset with that name exists."; return false; }
+    std::string text, sig;
     {
         const juce::ScopedLock sl(lock_);
         text = session_->toJson(false);
+        sig = chainSignature();
     }
-    return file.replaceWithText(juce::String::fromUTF8(text.data(), static_cast<int>(text.size())));
+    ih1::json::Value root;
+    std::string err;
+    if (ih1::json::parse(text, root, &err)) {
+        ih1::json::Value meta = ih1::json::Value::object();
+        meta.set("name", name.trim().toStdString());
+        meta.set("category", "User");
+        meta.set("description", "");
+        root.set("preset", std::move(meta));
+        text = root.dump(1);
+    }
+    // write to a temporary file and move it into place: a failed write never corrupts an existing preset
+    const auto tmp = file.getSiblingFile(file.getFileName() + ".tmp");
+    if (!tmp.replaceWithText(juce::String::fromUTF8(text.data(), static_cast<int>(text.size()))) || !tmp.moveFileTo(file)) {
+        tmp.deleteFile();
+        message = "Could not write " + file.getFullPathName();
+        return false;
+    }
+    const juce::ScopedLock sl(lock_);
+    presetKey_ = "u:" + file.getFullPathName();
+    presetName_ = name.trim();
+    presetSig_ = sig;
+    revision_.fetch_add(1);
+    return true;
 }
 
-bool Processor::loadPreset(const juce::File& file, juce::String& message) {
-    if (!file.existsAsFile() || file.getSize() > (8 << 20)) { message = "Preset file not found or too large."; return false; }
-    const auto text = file.loadFileAsString().toStdString();
-    const juce::ScopedLock sl(lock_);
+bool Processor::renameUserPreset(const juce::String& key, const juce::String& newName, juce::String& message) {
+    if (!key.startsWith("u:")) { message = "Factory presets are read-only."; return false; }
+    const juce::File f(key.substring(2));
+    const auto target = f.getSiblingFile(safeFileName(newName) + ".ih1chain");
+    if (target != f && target.existsAsFile()) { message = "A preset with that name exists."; return false; }
+    ih1::json::Value root;
     std::string err;
-    const bool ok = session_->fromJson(text, false, &err);
-    message = juce::String(err);
-    afterModelChange();
-    return ok;
+    if (!ih1::json::parse(f.loadFileAsString().toStdString(), root, &err)) { message = "That preset file is damaged."; return false; }
+    ih1::json::Value meta = root.get("preset").isObject() ? root.get("preset") : ih1::json::Value::object();
+    meta.set("name", newName.trim().toStdString());
+    root.set("preset", std::move(meta));
+    const auto text = root.dump(1);
+    if (!target.replaceWithText(juce::String::fromUTF8(text.data(), static_cast<int>(text.size())))) { message = "Could not write the preset."; return false; }
+    if (target != f) f.deleteFile();
+    if (presetKey_ == key) { presetKey_ = "u:" + target.getFullPathName(); presetName_ = newName.trim(); revision_.fetch_add(1); }
+    return true;
+}
+
+bool Processor::deleteUserPreset(const juce::String& key, juce::String& message) {
+    if (!key.startsWith("u:")) { message = "Factory presets are read-only."; return false; }
+    const juce::File f(key.substring(2));
+    if (!f.isAChildOf(userPresetDir()) || !f.deleteFile()) { message = "Could not delete the preset."; return false; }
+    if (presetKey_ == key) { presetKey_.clear(); presetName_.clear(); presetSig_.clear(); revision_.fetch_add(1); }
+    return true;
 }
 
 juce::AudioProcessorEditor* Processor::createEditor() { return new Editor(*this); }

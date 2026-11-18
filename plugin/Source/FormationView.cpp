@@ -1,5 +1,7 @@
 #include "FormationView.h"
 
+#include <map>
+
 #include "Ih1LookAndFeel.h"
 #include "PluginProcessor.h"
 
@@ -7,8 +9,14 @@ namespace ih1::plugin {
 
 using namespace juce::gl;
 
-// =============================================================================================== GLSL
 namespace {
+constexpr float kExposure = 2.2f;
+constexpr float kBloomGain = 1.6f;
+constexpr double kMaxPixels = 2.4e6;
+constexpr int kMaxSide = 4096;
+constexpr double kResizeSettleMs = 150.0;
+
+// =============================================================================================== GLSL
 const char* kLineVS = R"(#version 150
 in vec2 aPos; in vec3 aCol; uniform float uAspect; out vec3 vCol;
 void main() { vCol = aCol; gl_Position = vec4(aPos.x / uAspect * 2.0 - 1.0, 1.0 - aPos.y * 2.0, 0.0, 1.0); })";
@@ -33,23 +41,21 @@ void main() {
   vec4 s = texture(uTex, vUv) * w[0];
   for (int i = 1; i < 5; ++i) { s += texture(uTex, vUv + uDir * float(i) * 1.5) * w[i]; s += texture(uTex, vUv - uDir * float(i) * 1.5) * w[i]; }
   o = s; })";
-// Mirrors ih1::visual::toneMap() (core/src/visual/Formation.cpp).
+// Mirrors ih1::visual::toneMap (core/src/visual/Formation.cpp): hue-preserving, black stays exactly black.
 const char* kCompFS = R"(#version 150
-uniform sampler2D uAccum; uniform sampler2D uBloom; uniform vec2 uTexel; uniform float uExposure; in vec2 vUv; out vec4 o;
+uniform sampler2D uAccum; uniform sampler2D uBloom; uniform float uExposure; uniform float uBloomGain; in vec2 vUv; out vec4 o;
 vec3 tone(vec3 a) {
-  vec3 c = 1.0 - exp(-a * uExposure);
-  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float w = clamp((l - 0.45) * 1.6, 0.0, 1.0);
-  vec3 white = vec3(0.93, 0.86, 0.98);
-  c += w * (white * max(l, 0.0) * 1.15 - c) * 0.6;
-  return min(vec3(1.0), c + vec3(0.039, 0.031, 0.051));
+  a = max(a, vec3(0.0));
+  float m = max(a.r, max(a.g, a.b));
+  if (m <= 0.0) return vec3(0.0);
+  float t = 1.0 - exp(-m * uExposure);
+  vec3 c = a * (t / m);
+  float u = clamp((t - 0.80) / 0.20, 0.0, 1.0);
+  float w = u * u * (3.0 - 2.0 * u) * 0.55;
+  return mix(c, vec3(0.95, 0.91, 1.0) * t, w);
 }
 void main() {
-  vec3 a = texture(uAccum, vUv).rgb;
-  float r = texture(uAccum, vUv + vec2(uTexel.x, 0.0)).r;  // slight chromatic fringe
-  float b = texture(uAccum, vUv - vec2(uTexel.x, 0.0)).b;
-  vec3 bl = texture(uBloom, vUv).rgb;
-  vec3 acc = vec3(0.8 * a.r + 0.2 * r, a.g, 0.8 * a.b + 0.2 * b) + 0.9 * bl;
+  vec3 acc = texture(uAccum, vUv).rgb + uBloomGain * texture(uBloom, vUv).rgb;
   o = vec4(tone(acc), 1.0);
 })";
 
@@ -61,21 +67,41 @@ std::unique_ptr<juce::OpenGLShaderProgram> makeProgram(juce::OpenGLContext& ctx,
     if (!p->link()) { DBG(p->getLastError()); return nullptr; }
     return p;
 }
+
+// Internal render size for a field of w x h physical pixels: bounded memory whatever the host asks for.
+void cappedSize(int w, int h, int& tw, int& th) {
+    w = std::max(1, w);
+    h = std::max(1, h);
+    double s = std::min({1.0, std::sqrt(kMaxPixels / (static_cast<double>(w) * h)), static_cast<double>(kMaxSide) / w, static_cast<double>(kMaxSide) / h});
+    tw = std::max(1, static_cast<int>(w * s));
+    th = std::max(1, static_cast<int>(h * s));
+}
 }  // namespace
 
-// =============================================================================================== telemetry
-static void fillFromTelemetry(Processor& proc, visual::FrameInput& in) {
+// =============================================================================================== chain inputs
+std::vector<visual::InstanceInput> chainInputs(Processor& proc) {
+    std::vector<visual::InstanceInput> out;
+    const juce::ScopedLock sl(proc.sessionLock());
+    const auto& c = proc.session().chain();
+    // duplicate shade = rank of this instance's id among same-type instances (stable under reorder)
+    std::map<int, std::vector<uint64_t>> byType;
+    for (const auto& ci : c) byType[ci.typeIndex()].push_back(ci.id());
+    for (auto& kv : byType) std::sort(kv.second.begin(), kv.second.end());
+    for (const auto& ci : c) {
+        const auto& ids = byType[ci.typeIndex()];
+        const int shade = static_cast<int>(std::find(ids.begin(), ids.end(), ci.id()) - ids.begin());
+        out.push_back({ci.id(), visual::fxColour(ci.descriptor().typeId, shade), ci.visualSeed(), 0.0f});
+    }
+    return out;
+}
+
+void fillLevels(Processor& proc, std::vector<visual::InstanceInput>& chain) {
+    // committed-chain telemetry only: the staged FX never influences the formation
     auto& tel = proc.telemetry();
-    const int n = std::min(tel.chainSize.load(), kMaxChain);
-    for (auto& ii : in.chain)
+    const int n = std::clamp(tel.chainSize.load(), 0, kMaxChain);
+    for (auto& ii : chain)
         for (int s = 0; s < n; ++s)
             if (tel.slotIds[static_cast<size_t>(s)].load() == ii.id) ii.level = tel.slotRms[static_cast<size_t>(s)].load();
-    in.stagedLevel = tel.stagedRms.load();
-    in.solo = tel.soloAmount.load();
-    in.outLevel = tel.outRms.load();
-    in.low = tel.outLow.load();
-    in.mid = tel.outMid.load();
-    in.high = tel.outHigh.load();
 }
 
 // =============================================================================================== renderer
@@ -88,22 +114,21 @@ void FormationRenderer::setArea(juce::Rectangle<int> a, int editorHeight) {
     editorHeight_ = editorHeight;
 }
 
-void FormationRenderer::setChain(std::vector<visual::InstanceInput> chain, bool hasStaged) {
+void FormationRenderer::setChain(std::vector<visual::InstanceInput> chain) {
     const juce::SpinLock::ScopedLockType sl(lock_);
     chain_ = std::move(chain);
-    hasStaged_ = hasStaged;
 }
 
-std::vector<visual::CoreInfo> FormationRenderer::cores() {
+void FormationRenderer::requestTransfer(uint64_t id, float originY) {
     const juce::SpinLock::ScopedLockType sl(lock_);
-    return cores_;
+    if (transfers_.size() < 64) transfers_.push_back({id, originY});
 }
 
 void FormationRenderer::newOpenGLContextCreated() {
     // Machines without a real driver (VMs, remote desktop, CI) only offer GL 1.1: never call GL3 there.
     const auto v = ctx_.getVersion();
     if (v.major < 3 || (v.major == 3 && v.minor < 2) || glGenVertexArrays == nullptr || glCreateShader == nullptr ||
-        glGenFramebuffers == nullptr || glBindAttribLocation == nullptr) {
+        glGenFramebuffers == nullptr || glBindAttribLocation == nullptr || glCheckFramebufferStatus == nullptr) {
         failed_ = true;
         return;
     }
@@ -119,15 +144,16 @@ void FormationRenderer::newOpenGLContextCreated() {
     const float quad[12] = {-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
     glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
-    verts_.reserve(26000 * 10);
+    verts_.reserve(400000);
     lastMs_ = juce::Time::getMillisecondCounterHiRes();
+    wantW_ = wantH_ = 0;
 }
 
-void FormationRenderer::ensureTarget(Target& t, int w, int h) {
-    if (t.fbo && t.w == w && t.h == h) return;
+bool FormationRenderer::ensureTarget(Target& t, int w, int h) {
+    w = std::clamp(w, 1, kMaxSide);
+    h = std::clamp(h, 1, kMaxSide);
+    if (t.fbo && t.w == w && t.h == h) return true;
     freeTarget(t);
-    t.w = w;
-    t.h = h;
     glGenTextures(1, &t.tex);
     glBindTexture(GL_TEXTURE_2D, t.tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -138,14 +164,28 @@ void FormationRenderer::ensureTarget(Target& t, int w, int h) {
     glGenFramebuffers(1, &t.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || glGetError() == GL_OUT_OF_MEMORY) {
+        freeTarget(t);
+        return false;
+    }
+    t.w = w;
+    t.h = h;
+    glViewport(0, 0, w, h);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
+    return true;
 }
 
 void FormationRenderer::freeTarget(Target& t) {
     if (t.fbo) glDeleteFramebuffers(1, &t.fbo);
     if (t.tex) glDeleteTextures(1, &t.tex);
     t = Target{};
+}
+
+void FormationRenderer::freeAll() {
+    freeTarget(accum_);
+    freeTarget(bloomA_);
+    freeTarget(bloomB_);
 }
 
 void FormationRenderer::drawQuad() {
@@ -157,8 +197,8 @@ void FormationRenderer::drawQuad() {
 }
 
 void FormationRenderer::renderOpenGL() {
-    if (failed_) return;
-    juce::OpenGLHelpers::clear(Colours::background);
+    juce::OpenGLHelpers::clear(Colours::field);  // the whole surface starts pure black
+    if (failed_ || !vao_) return;
     GLint screenFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &screenFbo);
 
@@ -170,50 +210,66 @@ void FormationRenderer::renderOpenGL() {
         area = area_;
         edH = editorHeight_;
         in.chain = chain_;
-        in.hasStaged = hasStaged_;
+        in.transfers.swap(transfers_);
     }
-    if (area.isEmpty()) return;
     const double scale = ctx_.getRenderingScale();
+    if (area.isEmpty() || edH <= 0 || !std::isfinite(scale) || scale <= 0.0 || scale > 8.0) return;
+    // screen viewport (physical pixels)
     const int x = juce::roundToInt(area.getX() * scale), w = juce::roundToInt(area.getWidth() * scale);
     const int h = juce::roundToInt(area.getHeight() * scale);
     const int y = juce::roundToInt((edH - area.getBottom()) * scale);
+    if (w < 2 || h < 2 || w > 32768 || h > 32768) return;
 
-    // ---- simulation input from telemetry ----
-    fillFromTelemetry(proc_, in);
+    // ---- render-target size: capped, and coalesced while the host is resizing ----
+    int tw, th;
+    cappedSize(w, h, tw, th);
     const double now = juce::Time::getMillisecondCounterHiRes();
+    if (tw != wantW_ || th != wantH_) { wantW_ = tw; wantH_ = th; sizeChangedMs_ = now; }
+    const bool haveTargets = accum_.fbo != 0;
+    const bool settled = now - sizeChangedMs_ >= kResizeSettleMs;
+    if (!haveTargets || (settled && (accum_.w != tw || accum_.h != th))) {
+        if (!ensureTarget(accum_, tw, th) || !ensureTarget(bloomA_, std::max(1, tw / 4), std::max(1, th / 4)) ||
+            !ensureTarget(bloomB_, std::max(1, tw / 4), std::max(1, th / 4))) {
+            freeAll();
+            failed_ = true;  // the editor switches to the software formation; audio is unaffected
+            glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(screenFbo));
+            return;
+        }
+    }
+    const int rw = accum_.w, rh = accum_.h;  // may differ from (tw, th) during a live resize: stretched
+
+    // ---- simulation (committed chain + telemetry only) ----
+    fillLevels(proc_, in.chain);
     in.dt = static_cast<float>(juce::jlimit(0.001, 0.1, (now - lastMs_) * 0.001));
     lastMs_ = now;
-    in.aspect = static_cast<float>(w) / static_cast<float>(std::max(1, h));
+    in.aspect = static_cast<float>(w) / static_cast<float>(h);
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
     formation_.update(in);
-    {
-        const juce::SpinLock::ScopedLockType sl(lock_);
-        cores_ = formation_.cores();
-    }
+    const double sim = juce::Time::getMillisecondCounterHiRes() - t0;
+    simMs_.store(sim);
+    // adaptive workload: the visual gets cheaper on slow machines, never the audio
+    if (sim > 12.0) { if (++slowFrames_ > 30 && formation_.quality() != visual::Quality::Low) { formation_.setQuality(visual::Quality::Low); slowFrames_ = 0; } }
+    else slowFrames_ = 0;
 
     // ---- accumulate lines ----
-    ensureTarget(accum_, w, h);
-    ensureTarget(bloomA_, std::max(1, w / 4), std::max(1, h / 4));
-    ensureTarget(bloomB_, std::max(1, w / 4), std::max(1, h / 4));
     glBindVertexArray(vao_);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, accum_.fbo);
-    glViewport(0, 0, w, h);
+    glViewport(0, 0, rw, rh);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_ZERO, GL_SRC_COLOR);  // multiply: trail persistence
+    glBlendFunc(GL_ZERO, GL_SRC_COLOR);  // multiply: light persistence
     decayProg_->use();
     decayProg_->setUniform("uDecay", formation_.decay(in.dt));
     drawQuad();
     const auto& segs = formation_.segments();
     verts_.clear();
-    for (const auto& s : segs) {
-        verts_.insert(verts_.end(), {s.x0, s.y0, s.r, s.g, s.b, s.x1, s.y1, s.r, s.g, s.b});
-    }
+    for (const auto& s : segs) verts_.insert(verts_.end(), {s.x0, s.y0, s.r, s.g, s.b, s.x1, s.y1, s.r, s.g, s.b});
     if (!verts_.empty()) {
-        glBlendFunc(GL_ONE, GL_ONE);  // additive
+        glBlendFunc(GL_ONE, GL_ONE);  // additive light
         lineProg_->use();
         lineProg_->setUniform("uAspect", in.aspect);
-        lineProg_->setUniform("uGain", static_cast<float>(juce::jlimit(0.4, 2.5, 600.0 / std::max(1, h))));
+        lineProg_->setUniform("uGain", static_cast<float>(std::sqrt(juce::jlimit(0.36, 2.6, 860.0 / rh))));
         glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts_.size() * sizeof(float)), verts_.data(), GL_STREAM_DRAW);
         glEnableVertexAttribArray(0);
@@ -224,13 +280,13 @@ void FormationRenderer::renderOpenGL() {
     }
     glDisable(GL_BLEND);
 
-    // ---- bloom (quarter resolution) ----
+    // ---- bloom (quarter resolution): the smoky wisps around the strands ----
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomA_.fbo);
     glViewport(0, 0, bloomA_.w, bloomA_.h);
     copyProg_->use();
     copyProg_->setUniform("uTex", 0);
-    copyProg_->setUniform("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    copyProg_->setUniform("uTexel", 1.0f / static_cast<float>(rw), 1.0f / static_cast<float>(rh));
     glBindTexture(GL_TEXTURE_2D, accum_.tex);
     drawQuad();
     blurProg_->use();
@@ -252,77 +308,95 @@ void FormationRenderer::renderOpenGL() {
     compProg_->use();
     compProg_->setUniform("uAccum", 0);
     compProg_->setUniform("uBloom", 1);
-    compProg_->setUniform("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
-    compProg_->setUniform("uExposure", 20.0f);
+    compProg_->setUniform("uExposure", kExposure);
+    compProg_->setUniform("uBloomGain", kBloomGain);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, accum_.tex);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloomA_.tex);
     drawQuad();
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glBindVertexArray(0);
+    if (glGetError() == GL_OUT_OF_MEMORY) { freeAll(); failed_ = true; }
 }
 
 void FormationRenderer::openGLContextClosing() {
-    if (failed_ && !vao_) { lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset(); return; }
-    freeTarget(accum_);
-    freeTarget(bloomA_);
-    freeTarget(bloomB_);
+    // called by JUCE with the context current, before it is destroyed (editor close, host hide/show)
+    freeAll();
     if (lineVbo_) glDeleteBuffers(1, &lineVbo_);
     if (quadVbo_) glDeleteBuffers(1, &quadVbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
     lineVbo_ = quadVbo_ = vao_ = 0;
     lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset();
+    wantW_ = wantH_ = 0;
 }
 
 // =============================================================================================== confirm
 class FormationView::Confirm final : public juce::Component {
 public:
-    Confirm(const juce::String& name, std::function<void(bool)> done) : done_(std::move(done)), name_(name) {
+    Confirm(const juce::String& name, juce::Colour colour, std::function<void(bool)> done) : done_(std::move(done)), name_(name), colour_(colour) {
         cancel_.setButtonText("Cancel");
         del_.setButtonText("Delete");
-        del_.getProperties().set("primary", true);
-        cancel_.onClick = [this] { done_(false); };
-        del_.onClick = [this] { done_(true); };
+        cancel_.getProperties().set("quiet", true);
+        del_.getProperties().set("quiet", true);
+        del_.setColour(juce::TextButton::textColourOffId, Colours::danger);
+        cancel_.onClick = [this] { finish(false); };
+        del_.onClick = [this] { finish(true); };
         addAndMakeVisible(cancel_);
         addAndMakeVisible(del_);
         setWantsKeyboardFocus(true);
         setTitle("Delete " + name);
     }
     void paint(juce::Graphics& g) override {
-        g.fillAll(juce::Colours::black.withAlpha(0.55f));
-        auto box = box_.toFloat();
-        g.setColour(Colours::panelRaised);
-        g.fillRoundedRectangle(box, 8.0f);
-        g.setColour(Colours::danger.withAlpha(0.6f));
-        g.drawRoundedRectangle(box, 8.0f, 1.2f);
+        g.fillAll(juce::Colours::black.withAlpha(0.6f));
+        g.setColour(Colours::panel);
+        g.fillRect(box_);
+        g.setColour(Colours::border);
+        g.drawRect(box_.toFloat(), 1.0f);
+        auto r = box_.reduced(22, 18);
+        g.setFont(LookAndFeel::font(18.0f, true));
         g.setColour(Colours::text);
-        g.setFont(LookAndFeel::font(19.0f, true));
-        g.drawText("Delete " + name_ + "?", box.reduced(20.0f).removeFromTop(30.0f), juce::Justification::centredLeft);
+        juce::AttributedString t;
+        t.append("Delete ", LookAndFeel::font(18.0f, true), Colours::text);
+        t.append(name_, LookAndFeel::font(18.0f, true), readable(colour_));
+        t.append("?", LookAndFeel::font(18.0f, true), Colours::text);
+        t.draw(g, r.removeFromTop(28).toFloat());
         g.setColour(Colours::textDim);
-        g.setFont(LookAndFeel::font(13.5f));
-        g.drawFittedText("This removes this " + name_ + " from the committed chain. Other effects, including copies of the same type, are not affected.",
-                         box.reduced(20.0f).withTrimmedTop(36.0f).withHeight(40.0f).toNearestInt(), juce::Justification::topLeft, 3);
+        g.setFont(LookAndFeel::font(13.0f));
+        g.drawFittedText("This removes this one " + name_ + " from the committed chain. Every other effect, including other " + name_ +
+                             " instances, stays as it is.",
+                         r.withHeight(40), juce::Justification::topLeft, 3);
     }
     void resized() override {
-        box_ = getLocalBounds().withSizeKeepingCentre(std::min(420, getWidth() - 40), 160);
-        auto b = box_.reduced(20).removeFromBottom(34);
-        del_.setBounds(b.removeFromRight(110));
-        b.removeFromRight(10);
-        cancel_.setBounds(b.removeFromRight(110));
+        box_ = getLocalBounds().withSizeKeepingCentre(std::min(430, getWidth() - 40), 150);
+        auto b = box_.reduced(16, 14).removeFromBottom(30);
+        del_.setBounds(b.removeFromRight(84));
+        b.removeFromRight(8);
+        cancel_.setBounds(b.removeFromRight(84));
     }
-    void mouseDown(const juce::MouseEvent& e) override { if (!box_.contains(e.getPosition())) done_(false); }
+    void mouseDown(const juce::MouseEvent& e) override { if (!box_.contains(e.getPosition())) finish(false); }
     bool keyPressed(const juce::KeyPress& k) override {
-        if (k == juce::KeyPress::escapeKey) { done_(false); return true; }
+        if (k == juce::KeyPress::escapeKey) { finish(false); return true; }
+        if (k == juce::KeyPress::returnKey && del_.hasKeyboardFocus(false)) { finish(true); return true; }
         return true;  // swallow everything else while open
     }
-    void parentHierarchyChanged() override { if (isShowing()) grabKeyboardFocus(); }
+    void parentHierarchyChanged() override { if (isShowing()) cancel_.grabKeyboardFocus(); }
 
 private:
+    void finish(bool del) {
+        if (finished_) return;  // exactly once
+        finished_ = true;
+        done_(del);
+    }
     std::function<void(bool)> done_;
     juce::String name_;
+    juce::Colour colour_;
     juce::Rectangle<int> box_;
     juce::TextButton cancel_, del_;
+    bool finished_ = false;
 };
 
 // =============================================================================================== overlay
@@ -336,9 +410,9 @@ FormationView::FormationView(Processor& p, FormationRenderer& r) : proc_(p), ren
         s.setTooltip(tip);
         addAndMakeVisible(s);
     };
-    setupMini(inGain_, "Input level into the whole plug-in (dB). Double-click to reset.");
-    setupMini(mix_, "Global mix of everything IH1 does versus the untouched input.");
-    setupMini(outGain_, "Final output level (dB). Double-click to reset.");
+    setupMini(inGain_, "IN: level into the whole plug-in (dB). Double-click to reset to 0 dB.");
+    setupMini(mix_, "MIX: everything IH1 does against the untouched input. Double-click for 100 %.");
+    setupMini(outGain_, "OUT: final output level (dB). Double-click to reset to 0 dB.");
     inGain_.getProperties().set("zeroNorm", 0.5);
     outGain_.getProperties().set("zeroNorm", 0.5);
     inAtt_ = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(proc_.params(), "in_gain", inGain_);
@@ -352,343 +426,307 @@ FormationView::FormationView(Processor& p, FormationRenderer& r) : proc_(p), ren
 
 FormationView::~FormationView() { stopTimer(); }
 
+juce::Rectangle<int> FormationView::artworkArea() const { return getLocalBounds().withTrimmedBottom(kStripH); }
+
 void FormationView::setSoftwareFallback(bool on) {
     software_ = on;
     setOpaque(on);
-    if (on && !cpuForm_) cpuForm_ = std::make_unique<visual::Formation>(12000);
+    if (on && !cpuForm_) cpuForm_ = std::make_unique<visual::Formation>(visual::Quality::Low);
     repaint();
 }
 
+void FormationView::requestTransfer(uint64_t id, float originY) {
+    if (software_) softTransfers_.push_back({id, originY});
+    else renderer_.requestTransfer(id, originY);
+}
+
 void FormationView::renderSoftware() {
-    const int w = std::max(1, getWidth() / 2), h = std::max(1, getHeight() / 2);
-    if (acc_.size() != static_cast<size_t>(w * h * 3)) { acc_.assign(static_cast<size_t>(w * h * 3), 0.0f); image_ = juce::Image(juce::Image::RGB, w, h, true); }
+    const auto art = artworkArea();
+    const int w = std::clamp(art.getWidth() / 2, 1, 1600), h = std::clamp(art.getHeight() / 2, 1, 1000);
+    if (canvas_.width() != w || canvas_.height() != h) { canvas_.resize(w, h); image_ = juce::Image(juce::Image::RGB, w, h, true); }
     visual::FrameInput in;
     in.chain = chain_;
-    in.hasStaged = hasStaged_;
-    fillFromTelemetry(proc_, in);
+    fillLevels(proc_, in.chain);
+    in.transfers.swap(softTransfers_);
     in.dt = 1.0f / 30.0f;
     in.aspect = static_cast<float>(w) / static_cast<float>(h);
     cpuForm_->update(in);
-    const float d = cpuForm_->decay(in.dt);
-    for (auto& v : acc_) v *= d;
-    const float scale = static_cast<float>(h), gain = 0.55f * 600.0f / static_cast<float>(h);  // no bloom, half res: tame to match the GL look
-    for (const auto& sg : cpuForm_->segments()) {
-        const float x0 = sg.x0 * scale, y0 = sg.y0 * scale, x1 = sg.x1 * scale, y1 = sg.y1 * scale;
-        const int steps = std::max(1, static_cast<int>(std::max(std::fabs(x1 - x0), std::fabs(y1 - y0))));
-        for (int k = 0; k <= steps; ++k) {
-            const float t = static_cast<float>(k) / static_cast<float>(steps);
-            const int x = static_cast<int>(x0 + (x1 - x0) * t), y = static_cast<int>(y0 + (y1 - y0) * t);
-            if (x < 0 || y < 0 || x >= w || y >= h) continue;
-            float* px = &acc_[static_cast<size_t>((y * w + x) * 3)];
-            px[0] += sg.r * gain; px[1] += sg.g * gain; px[2] += sg.b * gain;
+    canvas_.decay(cpuForm_->decay(in.dt));
+    canvas_.draw(cpuForm_->segments(), static_cast<float>(h), std::sqrt(juce::jlimit(0.36f, 2.6f, 860.0f / static_cast<float>(h))));
+    canvas_.composite(rgb_, kExposure, kBloomGain);
+    juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < h; ++y) {
+        auto* line = bd.getLinePointer(y);
+        for (int x = 0; x < w; ++x) {
+            const uint8_t* s = &rgb_[static_cast<size_t>((y * w + x) * 3)];
+            auto* px = reinterpret_cast<juce::PixelRGB*>(line + x * bd.pixelStride);
+            px->setARGB(255, s[0], s[1], s[2]);
         }
     }
-    juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) {
-            const float* px = &acc_[static_cast<size_t>((y * w + x) * 3)];
-            const auto c = visual::toneMap({px[0], px[1], px[2]}, 20.0f);
-            bd.setPixelColour(x, y, juce::Colour::fromFloatRGBA(std::min(1.0f, c.r), std::min(1.0f, c.g), std::min(1.0f, c.b), 1.0f));
-        }
-    softCores_ = cpuForm_->cores();
 }
 
 void FormationView::syncChain() {
-    std::vector<visual::InstanceInput> chain;
-    pills_.clear();
+    chain_ = chainInputs(proc_);
+    renderer_.setChain(chain_);
+    items_.clear();
     {
         const juce::ScopedLock sl(proc_.sessionLock());
         const auto& c = proc_.session().chain();
-        hasStaged_ = proc_.session().selected() >= 0;
-        stagedName_ = hasStaged_ ? juce::String(fxRegistry()[static_cast<size_t>(proc_.session().selected())].name) : juce::String();
         for (size_t i = 0; i < c.size(); ++i) {
-            const auto& d = c[i].descriptor();
-            const float hue = visual::hueForType(d.typeId);
-            chain.push_back({c[i].id(), hue, c[i].visualSeed(), 0.0f});
-            const auto rgb = visual::hsvToRgb(hue, 0.48f, 1.0f);
-            pills_.push_back({c[i].id(), static_cast<int>(i), juce::String(d.name), juce::Colour::fromFloatRGBA(rgb.r, rgb.g, rgb.b, 1.0f), {}});
+            const auto col = juce::Colour::fromFloatRGBA(chain_[i].colour.r, chain_[i].colour.g, chain_[i].colour.b, 1.0f);
+            items_.push_back({c[i].id(), static_cast<int>(i), juce::String(c[i].descriptor().name), col, {}});
         }
     }
-    chain_ = chain;
-    renderer_.setChain(std::move(chain), hasStaged_);
-    layoutLane();
+    // a drag whose instance disappeared (preset load, delete elsewhere) is cancelled, never retargeted
+    if (pressed_ && std::none_of(items_.begin(), items_.end(), [this](const Item& it) { return it.id == dragId_; })) cancelDrag();
+    layoutStrip();
 }
 
-void FormationView::layoutLane() {
-    const float pad = 14.0f, h = 24.0f, gap = 6.0f;
-    float x = pad, y = static_cast<float>(getHeight()) - pad - h;
-    const float maxW = static_cast<float>(getWidth()) - 2 * pad;
-    const auto font = LookAndFeel::font(12.0f, true);
-    // flow layout bottom-up (rows wrap upward) so the lane stays compact
-    std::vector<float> widths;
-    for (auto& p : pills_) widths.push_back(juce::GlyphArrangement::getStringWidth(font, juce::String(p.index + 1) + "  " + p.name) + 26.0f);
-    int rowStart = 0;
-    std::vector<std::pair<int, int>> rows;
-    float rowW = 0;
-    for (int i = 0; i < static_cast<int>(pills_.size()); ++i) {
-        if (rowW + widths[static_cast<size_t>(i)] > maxW && i > rowStart) { rows.push_back({rowStart, i}); rowStart = i; rowW = 0; }
-        rowW += widths[static_cast<size_t>(i)] + gap;
+void FormationView::layoutStrip() {
+    // the chain strip lives in a reserved band below the artwork: minimal text items, no pills or boxes
+    const float pad = 14.0f, gap = 20.0f;
+    const auto font = LookAndFeel::font(12.5f, true);
+    strip_ = juce::Rectangle<float>(0.0f, static_cast<float>(getHeight() - kStripH), static_cast<float>(getWidth()), static_cast<float>(kStripH));
+    float x = pad;
+    const float y = strip_.getY() + 12.0f;
+    const float maxX = static_cast<float>(getWidth()) - pad;
+    bool overflow = false;
+    for (auto& it : items_) {
+        const float w = juce::GlyphArrangement::getStringWidth(font, it.name) + 18.0f;
+        if (overflow || x + w > maxX - 30.0f) { overflow = true; it.r = {}; continue; }  // the rest: "+n" marker
+        it.r = {x, y, w, 22.0f};
+        x += w + gap;
     }
-    if (rowStart < static_cast<int>(pills_.size())) rows.push_back({rowStart, static_cast<int>(pills_.size())});
-    y -= static_cast<float>(std::max(0, static_cast<int>(rows.size()) - 1)) * (h + gap);
-    lane_ = {pad, y - 4.0f, maxW, static_cast<float>(rows.size()) * (h + gap) + 4.0f};
-    for (const auto& row : rows) {
-        x = pad;
-        for (int i = row.first; i < row.second; ++i) {
-            pills_[static_cast<size_t>(i)].r = {x, y, widths[static_cast<size_t>(i)], h};
-            x += widths[static_cast<size_t>(i)] + gap;
-        }
-        y += h + gap;
-    }
-    deleteZone_ = {static_cast<float>(getWidth()) - 150.0f, 16.0f, 134.0f, 44.0f};
+    deleteZone_ = {16.0f, 14.0f, 120.0f, 34.0f};  // upper-left corner of the field
 }
 
 void FormationView::timerCallback() {
     if (proc_.revision() != seenRevision_) {
         seenRevision_ = proc_.revision();
         syncChain();
+        repaint();
     }
-    if (software_ && cpuForm_ && getWidth() > 0) renderSoftware();
-    // labels follow the cores the renderer reports
-    labels_.clear();
-    const auto cores = software_ ? softCores_ : renderer_.cores();
-    const float hgt = static_cast<float>(getHeight());
-    for (const auto& c : cores) {
-        for (const auto& p : pills_) {
-            if (p.id != c.id) continue;
-            const float px = c.x * hgt, py = c.y * hgt;
-            labels_.push_back({p.id, p.index, p.name, p.colour, juce::Rectangle<float>(px - 50.0f, py - 9.0f, 100.0f, 18.0f)});
-        }
-    }
-    repaint();
+    if (software_ && cpuForm_ && getWidth() > 0) { renderSoftware(); repaint(artworkArea()); }
+    const double age = juce::Time::getMillisecondCounterHiRes() - toastMs_;
+    if (toast_.isNotEmpty() && age < 3000.0) repaint();
 }
 
 void FormationView::resized() {
-    layoutLane();
-    auto r = getLocalBounds().removeFromTop(66).removeFromRight(170).reduced(8, 8);
-    outGain_.setBounds(r.removeFromRight(44));
-    mix_.setBounds(r.removeFromRight(50));
-    inGain_.setBounds(r.removeFromRight(44));
+    layoutStrip();
+    auto r = getLocalBounds().removeFromTop(64).removeFromRight(160).reduced(10, 10);
+    outGain_.setBounds(r.removeFromRight(40));
+    r.removeFromRight(6);
+    mix_.setBounds(r.removeFromRight(40));
+    r.removeFromRight(6);
+    inGain_.setBounds(r.removeFromRight(40));
+    if (confirm_) confirm_->setBounds(getLocalBounds());
 }
 
 void FormationView::paint(juce::Graphics& g) {
     // GL path: no background, the GL formation shows through. Software fallback: draw the CPU image.
     if (software_) {
-        g.fillAll(Colours::background);
-        if (image_.isValid()) g.drawImage(image_, getLocalBounds().toFloat());
-    }
-    const bool empty = pills_.empty();
-    if (empty && !hasStaged_) {
-        g.setColour(Colours::textFaint);
-        g.setFont(LookAndFeel::font(14.0f));
-        g.drawText("Commit an effect to grow the formation", getLocalBounds().toFloat(), juce::Justification::centred);
-    }
-    // staged preview caption (the neutral halo drawn by the renderer at 16% / 80% of the field)
-    if (hasStaged_ && !stagedName_.isEmpty()) {
-        const float hgt = static_cast<float>(getHeight());
-        g.setColour(Colours::textDim.withAlpha(0.7f));
-        g.setFont(LookAndFeel::font(11.0f));
-        g.drawText("staged: " + stagedName_, juce::Rectangle<float>(static_cast<float>(getWidth()) * 0.16f - 80.0f, 0.80f * hgt + 0.06f * hgt, 160.0f, 16.0f), juce::Justification::centred);
+        g.fillAll(Colours::field);
+        if (image_.isValid()) g.drawImage(image_, artworkArea().toFloat());
     }
     // global control captions
-    g.setColour(Colours::textFaint);
-    g.setFont(LookAndFeel::font(10.0f, true));
+    g.setFont(LookAndFeel::font(9.5f, true).withExtraKerningFactor(0.12f));
     for (auto* s : {&inGain_, &mix_, &outGain_}) {
         const juce::String cap = s == &inGain_ ? "IN" : (s == &mix_ ? "MIX" : "OUT");
+        g.setColour(s->isMouseOverOrDragging() ? Colours::textDim : Colours::textFaint);
         g.drawText(cap, s->getBounds().translated(0, 34).withHeight(12), juce::Justification::centred);
     }
-    // core labels (faint; brighter on hover/drag)
+    // chain strip (the reorder / delete affordance; below the artwork, never over it)
     const auto mouse = getMouseXYRelative().toFloat();
-    for (const auto& l : labels_) {
-        const bool hot = l.r.contains(mouse) || (dragging_ && l.id == dragId_);
-        g.setColour(l.colour.withAlpha(hot ? 0.95f : 0.45f));
-        g.setFont(LookAndFeel::font(11.0f, hot));
-        g.drawText(l.name, l.r, juce::Justification::centred);
-    }
-    // chain lane
-    if (!pills_.empty()) {
-        g.setColour(Colours::background.withAlpha(0.55f));
-        g.fillRoundedRectangle(lane_.expanded(6.0f, 4.0f), 8.0f);
-    }
-    const auto font = LookAndFeel::font(12.0f, true);
-    for (const auto& p : pills_) {
-        const bool src = dragging_ && p.id == dragId_;
-        const bool hot = p.r.contains(mouse);
-        g.setColour(Colours::panelRaised.withAlpha(src ? 0.4f : 0.9f));
-        g.fillRoundedRectangle(p.r, 12.0f);
-        g.setColour((hot ? p.colour : p.colour.withAlpha(0.5f)).withMultipliedAlpha(src ? 0.5f : 1.0f));
-        g.drawRoundedRectangle(p.r.reduced(0.5f), 12.0f, 1.0f);
-        g.fillEllipse(juce::Rectangle<float>(7.0f, 7.0f).withCentre({p.r.getX() + 12.0f, p.r.getCentreY()}));
-        g.setColour(Colours::text.withAlpha(src ? 0.4f : 0.9f));
+    const auto font = LookAndFeel::font(12.5f, true);
+    int hidden = 0;
+    for (const auto& it : items_) {
+        if (it.r.isEmpty()) { ++hidden; continue; }
+        const bool src = dragging_ && it.id == dragId_;
+        const bool hot = !dragging_ && it.r.contains(mouse);
+        const auto c = readable(it.colour, 0.75f);
+        g.setColour(Colours::textFaint.withAlpha(src ? 0.35f : 0.9f));
+        g.setFont(LookAndFeel::font(10.0f));
+        g.drawText(juce::String(it.index + 1), it.r.withWidth(14.0f), juce::Justification::centredLeft);
+        g.setColour(c.withAlpha(src ? 0.3f : (hot ? 1.0f : 0.78f)));
         g.setFont(font);
-        g.drawText(juce::String(p.index + 1) + "  " + p.name, p.r.withTrimmedLeft(20.0f), juce::Justification::centredLeft);
+        g.drawText(it.name, it.r.withTrimmedLeft(16.0f), juce::Justification::centredLeft);
+        if (hot) g.fillRect(it.r.getX() + 16.0f, it.r.getBottom() - 2.0f, it.r.getWidth() - 18.0f, 1.0f);
+    }
+    if (hidden > 0) {
+        g.setColour(Colours::textDim);
+        g.setFont(LookAndFeel::font(11.0f));
+        g.drawText("+" + juce::String(hidden), strip_.withTrimmedRight(14.0f).withTrimmedTop(12.0f).withHeight(22.0f), juce::Justification::centredRight);
     }
     if (dragging_) {
-        // insertion caret
-        if (insertion_ >= 0 && !deleteHover_ && !pills_.empty()) {
+        // insertion marker: a thin vertical line in the gap where the effect would land
+        if (insertion_ >= 0 && !deleteHover_) {
+            float cx = 14.0f;
             juce::Rectangle<float> ref;
-            float cx;
-            if (insertion_ < static_cast<int>(pills_.size())) { ref = pills_[static_cast<size_t>(insertion_)].r; cx = ref.getX() - 3.0f; }
-            else { ref = pills_.back().r; cx = ref.getRight() + 3.0f; }
+            for (const auto& it : items_) if (!it.r.isEmpty()) ref = it.r;
+            const auto& visibleItems = items_;
+            int k = 0;
+            for (const auto& it : visibleItems) {
+                if (it.r.isEmpty()) continue;
+                if (k == insertion_) { cx = it.r.getX() - 10.0f; break; }
+                cx = it.r.getRight() + 10.0f;
+                ++k;
+            }
             g.setColour(Colours::accent);
-            g.fillRoundedRectangle(cx - 1.5f, ref.getY() - 4.0f, 3.0f, ref.getHeight() + 8.0f, 1.5f);
-            g.setFont(LookAndFeel::font(11.0f, true));
-            g.drawText("Lands at position " + juce::String(insertion_ > dragFrom_ ? insertion_ : insertion_ + 1),
-                       lane_.withY(lane_.getY() - 24.0f).withHeight(18.0f), juce::Justification::centredLeft);
+            g.fillRect(cx - 0.5f, strip_.getY() + 10.0f, 1.5f, 26.0f);
         }
-        // delete target (consistent top-right corner)
-        g.setColour((deleteHover_ ? Colours::danger : Colours::panelRaised).withAlpha(deleteHover_ ? 0.9f : 0.85f));
-        g.fillRoundedRectangle(deleteZone_, 8.0f);
-        g.setColour(Colours::danger);
-        g.drawRoundedRectangle(deleteZone_.reduced(0.5f), 8.0f, 1.2f);
-        g.setColour(deleteHover_ ? Colours::background : Colours::danger);
-        g.setFont(LookAndFeel::font(13.0f, true));
-        g.drawText("DELETE", deleteZone_, juce::Justification::centred);
-        // dragged ghost
-        for (const auto& p : pills_)
-            if (p.id == dragId_) {
-                const auto ghost = p.r.withCentre(dragPos_);
-                g.setColour(Colours::panelRaised.withAlpha(0.95f));
-                g.fillRoundedRectangle(ghost, 12.0f);
-                g.setColour(p.colour);
-                g.drawRoundedRectangle(ghost, 12.0f, 1.2f);
-                g.setColour(Colours::text);
+        // DELETE: plain red text in the upper-left corner, brighter while hovered (no box, no button)
+        g.setFont(LookAndFeel::font(deleteHover_ ? 15.0f : 14.0f, true).withExtraKerningFactor(deleteHover_ ? 0.22f : 0.16f));
+        g.setColour(Colours::danger.withAlpha(deleteHover_ ? 1.0f : 0.62f));
+        g.drawText("DELETE", deleteZone_, juce::Justification::centredLeft);
+        // dragged item preview, next to the pointer
+        for (const auto& it : items_)
+            if (it.id == dragId_) {
+                g.setColour(readable(it.colour).withAlpha(0.95f));
                 g.setFont(font);
-                g.drawText(p.name, ghost.withTrimmedLeft(12.0f), juce::Justification::centredLeft);
+                g.drawText(it.name, juce::Rectangle<float>(dragPos_.x + 12.0f, dragPos_.y - 11.0f, 220.0f, 22.0f), juce::Justification::centredLeft);
             }
     }
-    // toast
+    // toast (status messages only; never an FX name over the field)
     const double age = juce::Time::getMillisecondCounterHiRes() - toastMs_;
     if (toast_.isNotEmpty() && age < 2600.0) {
         const float a = static_cast<float>(age < 2000.0 ? 1.0 : 1.0 - (age - 2000.0) / 600.0);
-        auto r = juce::Rectangle<float>(0.0f, 0.0f, 320.0f, 32.0f).withCentre({static_cast<float>(getWidth()) * 0.5f, 44.0f});
-        g.setColour(Colours::panelRaised.withAlpha(0.9f * a));
-        g.fillRoundedRectangle(r, 16.0f);
-        g.setColour(Colours::accent.withAlpha(a));
-        g.setFont(LookAndFeel::font(13.5f, true));
-        g.drawText(toast_, r, juce::Justification::centred);
+        g.setColour(Colours::textDim.withAlpha(a));
+        g.setFont(LookAndFeel::font(12.5f));
+        g.drawText(toast_, strip_.withTrimmedRight(16.0f).withTrimmedTop(12.0f).withHeight(22.0f), juce::Justification::centredRight);
     }
 }
 
 void FormationView::showToast(const juce::String& text) {
     toast_ = text;
     toastMs_ = juce::Time::getMillisecondCounterHiRes();
+    repaint();
 }
 
-int FormationView::hitPill(juce::Point<float> p) const {
-    for (size_t i = 0; i < pills_.size(); ++i) if (pills_[i].r.contains(p)) return static_cast<int>(i);
-    return -1;
-}
-
-int FormationView::hitLabel(juce::Point<float> p) const {
-    for (const auto& l : labels_) if (l.r.contains(p)) return l.index;
+int FormationView::hitItem(juce::Point<float> p) const {
+    for (size_t i = 0; i < items_.size(); ++i) if (!items_[i].r.isEmpty() && items_[i].r.expanded(4.0f, 6.0f).contains(p)) return static_cast<int>(i);
     return -1;
 }
 
 int FormationView::insertionFor(juce::Point<float> p) const {
-    if (pills_.empty()) return -1;
-    // nearest gap in the lane, measured along the reading order of the (possibly wrapped) rows
-    int best = 0;
+    // nearest gap among the visible items (0 = before the first, n = after the last)
+    int best = 0, k = 0;
     float bestD = 1e9f;
-    for (size_t i = 0; i <= pills_.size(); ++i) {
-        juce::Point<float> gap;
-        if (i < pills_.size()) gap = {pills_[i].r.getX() - 3.0f, pills_[i].r.getCentreY()};
-        else gap = {pills_.back().r.getRight() + 3.0f, pills_.back().r.getCentreY()};
-        const float d = std::abs(gap.x - p.x) + 3.0f * std::abs(gap.y - p.y);
-        if (d < bestD) { bestD = d; best = static_cast<int>(i); }
+    std::vector<float> gaps;
+    for (const auto& it : items_) if (!it.r.isEmpty()) gaps.push_back(it.r.getX() - 10.0f);
+    for (auto it = items_.rbegin(); it != items_.rend(); ++it) if (!it->r.isEmpty()) { gaps.push_back(it->r.getRight() + 10.0f); break; }
+    for (float gx : gaps) {
+        const float d = std::fabs(gx - p.x);
+        if (d < bestD) { bestD = d; best = k; }
+        ++k;
     }
     return best;
 }
 
-void FormationView::mouseMove(const juce::MouseEvent&) { repaint(); }
+void FormationView::mouseMove(const juce::MouseEvent&) { repaint(strip_.toNearestInt()); }
+void FormationView::mouseExit(const juce::MouseEvent&) { repaint(strip_.toNearestInt()); }
 
 void FormationView::mouseDown(const juce::MouseEvent& e) {
-    if (confirm_) return;
+    if (confirm_ || e.mods.isPopupMenu()) return;
     downPos_ = e.position;
-    dragFrom_ = hitPill(e.position);
-    if (dragFrom_ < 0) dragFrom_ = hitLabel(e.position);
-    dragId_ = dragFrom_ >= 0 ? pills_[static_cast<size_t>(dragFrom_)].id : 0;
+    const int i = hitItem(e.position);
+    pressed_ = i >= 0;
+    dragId_ = pressed_ ? items_[static_cast<size_t>(i)].id : 0;
     dragging_ = false;
-    grabKeyboardFocus();
 }
 
 void FormationView::mouseDrag(const juce::MouseEvent& e) {
-    if (dragFrom_ < 0 || confirm_) return;
-    if (!dragging_ && e.position.getDistanceFrom(downPos_) < 5.0f) return;
+    if (!pressed_ || confirm_) return;
+    if (!dragging_ && e.position.getDistanceFrom(downPos_) < 6.0f) return;  // a click is not a drag
     dragging_ = true;
     dragPos_ = e.position;
-    deleteHover_ = deleteZone_.expanded(6.0f).contains(e.position);
+    deleteHover_ = deleteZone_.expanded(10.0f).contains(e.position);
     insertion_ = insertionFor(e.position);
     repaint();
 }
 
-void FormationView::mouseUp(const juce::MouseEvent& e) {
-    if (!dragging_) { dragFrom_ = -1; return; }
-    const int from = dragFrom_;
-    const uint64_t id = dragId_;
-    dragging_ = false;
-    dragFrom_ = -1;
-    if (deleteZone_.expanded(6.0f).contains(e.position)) {
-        for (const auto& p : pills_) if (p.id == id) openConfirm(id, p.name);
-    } else if (insertion_ >= 0 && (lane_.expanded(40.0f, 60.0f).contains(e.position) || hitLabel(e.position) >= 0)) {
-        const int to = insertion_ > from ? insertion_ - 1 : insertion_;
-        if (to != from) proc_.uiMove(from, to);
-    }
+void FormationView::cancelDrag() {
+    pressed_ = dragging_ = deleteHover_ = false;
     insertion_ = -1;
-    deleteHover_ = false;
+    dragId_ = 0;
     repaint();
 }
 
-bool FormationView::keyPressed(const juce::KeyPress& k) {
-    if (k == juce::KeyPress::escapeKey && dragging_) {  // cancel a drag: nothing changes
-        dragging_ = false;
-        dragFrom_ = -1;
-        insertion_ = -1;
-        deleteHover_ = false;
-        repaint();
-        return true;
+void FormationView::mouseUp(const juce::MouseEvent& e) {
+    if (!dragging_) { cancelDrag(); return; }
+    const uint64_t id = dragId_;
+    const bool overDelete = deleteZone_.expanded(10.0f).contains(e.position);
+    const bool inStrip = strip_.expanded(0.0f, 30.0f).contains(e.position);
+    const int ins = insertion_;
+    cancelDrag();
+    // resolve by id now: the chain may have changed during the drag
+    int from = -1;
+    juce::String name;
+    juce::Colour colour;
+    for (const auto& it : items_) if (it.id == id) { from = it.index; name = it.name; colour = it.colour; }
+    if (from < 0) return;
+    if (overDelete) {
+        openConfirm(id, name);
+    } else if (inStrip && ins >= 0) {
+        // map the visible-gap index to a chain index
+        int k = 0, gapIndex = -1, lastVisible = -1;
+        for (const auto& it : items_) {
+            if (it.r.isEmpty()) continue;
+            if (k == ins) { gapIndex = it.index; break; }
+            lastVisible = it.index;
+            ++k;
+        }
+        if (gapIndex < 0) gapIndex = lastVisible + 1;  // after the last visible item
+        const int to = gapIndex > from ? gapIndex - 1 : gapIndex;
+        if (to != from) proc_.uiMove(from, to);
     }
+    // dropping anywhere else does nothing
+}
+
+bool FormationView::keyPressed(const juce::KeyPress& k) {
+    if (k == juce::KeyPress::escapeKey && dragging_) { cancelDrag(); return true; }  // nothing changes
     return false;
 }
 
 void FormationView::openConfirm(uint64_t id, const juce::String& name) {
-    confirm_ = std::make_unique<Confirm>(name, [this, id](bool doDelete) {
-        if (doDelete) proc_.uiRemove(id);
+    juce::Colour colour = Colours::text;
+    for (const auto& it : items_) if (it.id == id) colour = it.colour;
+    confirm_ = std::make_unique<Confirm>(name, colour, [this, id](bool doDelete) {
+        if (doDelete) proc_.uiRemove(id);  // by stable id: duplicates are never confused
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<FormationView>(this)] { if (safe) safe->closeConfirm(); });
     });
     addAndMakeVisible(*confirm_);
     confirm_->setBounds(getLocalBounds());
-    confirm_->grabKeyboardFocus();
 }
+
+juce::Component* FormationView::confirmDialog() const { return confirm_.get(); }
 
 void FormationView::closeConfirm() {
     confirm_.reset();
     repaint();
 }
 
-juce::String FormationView::describe(int chainIndex) {
+juce::String FormationView::describe(uint64_t id) {
     const juce::ScopedLock sl(proc_.sessionLock());
     const auto& c = proc_.session().chain();
-    if (chainIndex < 0 || chainIndex >= static_cast<int>(c.size())) return {};
-    const auto& ci = c[static_cast<size_t>(chainIndex)];
+    const int i = proc_.session().indexOf(id);
+    if (i < 0) return {};
+    const auto& ci = c[static_cast<size_t>(i)];
     const auto& d = ci.descriptor();
-    juce::String s = juce::String(d.name) + "  (position " + juce::String(chainIndex + 1) + " of " + juce::String(static_cast<int>(c.size())) + ", committed)\n";
+    juce::String s = juce::String(d.name) + "  (" + juce::String(i + 1) + " of " + juce::String(static_cast<int>(c.size())) + ", committed)\n";
     int shown = 0;
-    for (size_t i = 0; i < d.params.size() && shown < 7; ++i) {
-        if (d.params[i].advanced) continue;
-        s << d.params[i].name << ": " << d.params[i].format(ci.values()[i]) << "\n";
+    for (size_t k = 0; k < d.params.size() && shown < 7; ++k) {
+        if (d.params[k].advanced) continue;
+        s << d.params[k].name << ": " << d.params[k].format(ci.values()[k]) << "\n";
         ++shown;
     }
-    s << "Drag to reorder. Drag to DELETE to remove.";
+    s << "Drag along the strip to reorder, or onto DELETE to remove.";
     return s;
 }
 
 juce::String FormationView::getTooltip() {
     if (dragging_ || confirm_) return {};
-    const auto m = getMouseXYRelative().toFloat();
-    int idx = hitPill(m);
-    if (idx < 0) idx = hitLabel(m);
-    return idx >= 0 ? describe(idx) : juce::String();
+    const int i = hitItem(getMouseXYRelative().toFloat());
+    return i >= 0 ? describe(items_[static_cast<size_t>(i)].id) : juce::String();
 }
 
 }  // namespace ih1::plugin
