@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 namespace ih1::visual {
@@ -156,6 +157,11 @@ void Formation::spawn(Particle& p, const Core& c, uint64_t id, uint8_t kind, flo
         p.y = c.y + gauss() * spread * 0.7f;
         p.life = 5.0f + 6.0f * frand();
         p.gain = 0.55f + 0.45f * frand();
+    } else if (kind == 3) {  // hair: long, fast, near-straight bright strands crossing the body
+        p.x = c.x + gauss() * spread * 0.8f;
+        p.y = c.y + gauss() * spread * 0.6f;
+        p.life = 3.0f + 4.0f * frand();
+        p.gain = 1.0f;
     } else if (kind == 2) {
         const float a = frand() * 6.2831853f;
         p.x = c.x + std::cos(a) * spread;
@@ -286,6 +292,10 @@ void Formation::update(const FrameInput& in) {
             const float radial = (d - r0) * 3.0f;
             mx = -dy / d * 0.05f + dx / d * radial + 0.1f * vx * speed;
             my = dx / d * 0.05f + dy / d * radial + 0.1f * vy * speed;
+        } else if (p.kind == 3) {  // hair: follows the direction field almost straight, fast
+            const float sgn = (reinterpret_cast<uintptr_t>(&p) >> 4) & 1 ? 1.0f : -1.0f;
+            mx = sgn * dirx * speed * 3.2f + vx * speed * 0.12f;
+            my = sgn * diry * speed * 2.0f + vy * speed * 0.12f;
         } else if (p.kind == 1) {  // fibres: long, faint, nearly straight streaks across the field
             mx = dirx * speed * 2.2f + vx * speed * 0.25f - 0.012f;
             my = diry * speed * 1.2f + vy * speed * 0.25f;
@@ -318,7 +328,22 @@ void Formation::update(const FrameInput& in) {
             col.r = col.r + desat * (l - col.r);
             col.g = col.g + desat * (l - col.g);
             col.b = col.b + desat * (l - col.b);
-            b = env * c->presence * p.gain * (p.kind == 1 ? 0.012f : 0.020f) * (0.65f + 0.9f * c->bright + 0.25f * energy_) * soloDim;
+            float kindGain = p.kind == 1 ? 0.012f : 0.020f;
+            if (p.kind == 3) {  // hair strands: thin and pale, pushing toward lavender-white
+                kindGain = 0.026f;
+                col.r = 0.55f * col.r + 0.45f; col.g = 0.55f * col.g + 0.42f; col.b = 0.55f * col.b + 0.47f;
+            } else {
+                // faint iridescent edges (reference: trace cyan/teal and warm pink fringes on isolated strands)
+                const uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&p) >> 3) * 2654435761u;
+                const uint32_t sel = h >> 24;
+                if (sel < 9) col = hsvToRgb(196.0f, 0.35f, 0.9f);
+                else if (sel < 15) col = hsvToRgb(336.0f, 0.38f, 0.95f);
+            }
+            {
+                const float lum = 0.2126f * col.r + 0.7152f * col.g + 0.0722f * col.b;
+                col.r += desat * (lum - col.r); col.g += desat * (lum - col.g); col.b += desat * (lum - col.b);
+            }
+            b = env * c->presence * p.gain * kindGain * (0.65f + 0.9f * c->bright + 0.25f * energy_) * soloDim;
         }
         segs_.push_back({p.px, p.py, p.x, p.y, col.r * b, col.g * b, col.b * b});
     }
