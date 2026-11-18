@@ -1,6 +1,6 @@
 # FX Catalogue: Status Matrix
 
-Status: **done** = implemented and passing the registry-wide contracts plus behaviour tests. Listening review by the owner is still pending for all of them. **planned** = not yet implemented, never shown in the carousel.
+Status: **done** = implemented and passing the registry-wide contracts plus a behaviour test. **All 38 catalogue types are implemented.** Listening review by the owner is still pending for every one of them; compilation and tests are not a substitute for it.
 
 Every implemented effect passes these contracts (`tests/test_fx_generic.cpp`):
 - descriptor and tooltip completeness
@@ -31,25 +31,25 @@ CPU is per instance at 48 kHz with 256-sample blocks, from `ih1_bench` on the CI
 | 14 | Spectral Freeze (`spectral`) | A | done | STFT magnitude freeze with phase propagation, time blur, frequency smear, shimmer | freeze sustains | 2048 | 2.2% |
 | 15 | Stutter (`stutter`) | A | done | Host-grid capture and retrigger, seeded chance, pitch steps, reverse, decay | replays the captured slice | 0 | 0.1% |
 | 16 | Stereo Width (`width`) | A | done | M/S width, LR4 mono-maker, decorrelated spread added to the side only (KNW-1VXWHJAGBV, KNW-61XX879RSM) | 0% is mono; mono sum exact | 0 | 0.1% |
-| 17 | Flanger | B | planned | Short modulated delay with polarity feedback (KNW-Y84ZDH4MWH) | | | |
-| 18 | Phaser | B | planned | 2–12 SVF all-pass stages with feedback | | | |
-| 19 | Vibrato | B | planned | 100% wet modulated delay, depth in cents | | | |
-| 20 | Tremolo / Auto-Pan | B | planned | LFO/envelope gain, constant-power pan, shared clock | | | |
-| 21 | Shimmer | B | planned | Reverb tank plus pitch shifter in input/regeneration paths | | | |
-| 22 | Vocoder | B | planned | SVF filter-bank analysis/synthesis with internal carrier | | | |
-| 23 | Pitch Correction | B | planned | YIN + note hysteresis + cycle-repeat shifter (KNW-Q798GYV78J) | | | |
-| 24 | Compressor / Limiter | B | planned | Feed-forward soft-knee core; FET/opto behaviours; true-peak limiter (KNW-X0BEXVDR9Z) | | | |
-| 25 | Gate / Expander / Ducker | B | planned | Shared detector, hysteresis and hold (KNW-HJ3JZGNYZY) | | | |
-| 26 | De-Esser | B | planned | Band detector to split-band or wideband gain | | | |
-| 27 | Transient Shaper | B | planned | Fast/slow dB followers (KNW-NFJ86FFD2E) | | | |
-| 28 | Bitcrusher | B | planned | Quantiser plus sample-and-hold with jitter and dither | | | |
-| 29 | Ring Modulator | B | planned | Band-limited carrier oscillators | | | |
-| 30 | Tape / Console Colour | B | planned | Calibrated level, head bump, hysteresis/triode (KNW-DKQ16F12WF, KNW-MQRRKX0DSE) | | | |
-| 31 | Rotary Speaker | B | planned | Crossover, horn/drum Doppler delays, AM and inertia | | | |
-| 32 | Frequency Shifter | C | planned | Hilbert all-pass pair and quadrature oscillator | | | |
-| 33 | Doppler | C | planned | Trajectory-driven modulated delay | | | |
-| 34 | Looper | C | planned | Long-buffer record/overdub state machine (parameters only in state; decision C3) | | | |
-| 35 | Resonator / Modal | C | planned | Tuned comb/EKS bank (KNW-1JA0N4393Q) | | | |
-| 36 | Convolution / IR | C | planned | Uniform partitioned FFT; off-thread IR loading | | | |
-| 37 | Exciter | C | planned | High-pass band, ADAA shaper, level-matched blend | | | |
-| — | Amp / Cabinet | C | planned | Triode stages, tone stack, cabinet impulse response | | | |
+| 17 | Flanger | B | done | Short modulated delay with polarity feedback (KNW-Y84ZDH4MWH); no through-zero | notch depth 19 dB on noise | 0 | 0.6% |
+| 18 | Phaser | B | done | 2-12 first-order all-pass stages with resonance feedback | notch depth 18 dB on noise | 0 | 1.0% |
+| 19 | Vibrato | B | done | 100% wet swept delay with depth calibrated in cents | 50 ct set gives 50.0 ct measured | 0 | 0.3% |
+| 20 | Tremolo / Auto-Pan | B | done | LFO gain or constant-power pan, locked to the host grid | 25+ dB pulsing; panning power steady within 1 dB | 0 | 0.1% |
+| 21 | Shimmer | B | done | Own 8-line FDN plus dual-tap pitch shifters routed to the tank, the input or both; capped regeneration | octave-up tail 13 dB over the source tone | 0 | 1.8% |
+| 22 | Vocoder | B | done | 8-32 band SVF analysis/synthesis, polyBLEP saw/pulse/noise carrier, MIDI or fixed note, unvoiced noise | carrier harmonics present; silent when the modulator stops | 0 | 0.9% |
+| 23 | Pitch Correction | B | done | YIN, scale snapping with hysteresis, retune speed, period-synchronous cycle repeat/drop (KNW-Q798GYV78J) | 448 Hz corrected to 439.5 Hz | 0 | 2.5% |
+| 24 | Compressor / Limiter | B | done | Feed-forward soft knee in dB; Clean / FET (fast, program-dependent) / Opto (two-stage) / Limit (KNW-X0BEXVDR9Z) | static curve within 6% | 0 | 0.4% |
+| 25 | Gate / Expander / Pump | B | done | Hysteresis, hold, key filters; tempo-synced pump (KNW-HJ3JZGNYZY) | -35 dB below threshold, unity above | 0 | 0.1% |
+| 26 | De-Esser | B | done | Band detector, split-band or wideband, level-relative threshold, listen | -6 dB at 7 kHz, unity at 400 Hz | 0 | 0.2% |
+| 27 | Transient Shaper | B | done | Fast/slow dB followers, attack and sustain gains (KNW-NFJ86FFD2E) | attack +22 dB vs tail +5 dB | 0 | 0.2% |
+| 28 | Bitcrusher | B | done | Quantiser with TPDF dither option, sample-and-hold clock with jitter, anti-alias pre-filter | 3 bits gives at most 9 levels | 0 | 0.1% |
+| 29 | Ring Modulator | B | done | Sine/tri/polyBLEP-square carrier with drift LFO | sidebands 40 dB over carrier and input | 0 | 0.2% |
+| 30 | Tape / Console Colour | B | done | Calibrated ADAA saturation at 2x, head bump, HF loss, console asymmetry, auto gain | level held within 1.5 dB at +18 dB drive | 23 | 1.5% |
+| 31 | Rotary Speaker | B | done | LR4 crossover, horn/drum Doppler delays, AM, inertia, two mics | AM over 3 dB at Fast | 0 | 1.1% |
+| 32 | Frequency Shifter | C | done | Hilbert pair (90 deg +-0.7 deg, 50 Hz-20 kHz) and SSB mixing; climbing feedback | +100 Hz shift, opposite sideband -49 dB | 0 | 0.7% |
+| 33 | Doppler | C | done | Pass-by/circle trajectory to propagation delay, distance gain and pan | 1116 Hz approaching / 884 Hz receding at 40 m/s | 0 | 0.2% |
+| 34 | Looper | C | done | Buffer hold: capture on first sound / bar line / every 4 loops; overdub, speed, reverse; parameters only in state (C3) | replays the captured phrase (correlation over 0.95) | 0 | 0.1% |
+| 35 | Resonator / Modal | C | done | Tuned Karplus-Strong comb bank in chords (KNW-1JA0N4393Q) | lowest partial at the tuned 220 Hz | 0 | 0.5% |
+| 36 | Convolution / IR | C | done | Uniform partitioned overlap-save (P=256); 6 built-in generated IRs precomputed; crossfaded IR switching | decaying tail; click-free switching | 256 | 8.4% |
+| 37 | Exciter | C | done | High-pass band, ADAA shaper at 2x, generated harmonics added level-matched | +30 dB at the 2nd harmonic | 23 | 1.5% |
+| 38 | Amp / Cabinet (`amp`) | C | done | Two ADAA preamp stages at 2x, tone stack, power sag, 3 cabinet models | 3rd harmonic present; cabinet rolls off 9 kHz by more than 15 dB | 23 | 5.1% |

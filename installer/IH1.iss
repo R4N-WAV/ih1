@@ -47,9 +47,6 @@ Source: "{#SourceDir}\Standalone\IH1.exe"; DestDir: "{app}"; Components: standal
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
-[Dirs]
-Name: "{userdocs}\IH1\Presets"; Flags: uninsneveruninstall
-
 [Icons]
 Name: "{autoprograms}\IH1"; Filename: "{app}\IH1.exe"; Components: standalone
 Name: "{autoprograms}\IH1 README"; Filename: "{app}\README.md"

@@ -1,26 +1,48 @@
 # IH1 — Project Status
 
-**Phase:** 0 complete → Phase 1 decisions presented, awaiting answers.
 **Updated:** 2026-11-18
+**Phase:** 0–5 implemented; Phase 6 (QA/packaging) in progress. Not yet tested in a real DAW.
 
 ## Done
-- Repo audit: `R4N-WAV/ih1`, branch `claude/new-session-l50e2f`. Empty repository (no prior commits or files), so nothing existing to preserve.
-- Reference assets placed: `references/ih1_visual_reference.mp4`, `references/ih1_ui_sketch.png`. Source brief and master prompt archived in `docs/source/`.
-- Read the full research brief (all 12 sections) and the master prompt.
-- Video analysed end-to-end with measured palette, luminance, asymmetry and motion: `docs/VISUAL_REFERENCE_ANALYSIS.md`.
-- KADAL audited (snapshot `a053848`; 770 indexed records; about 55 queries): `docs/KADAL_RESEARCH_MAP.md`. Coverage: strong for 19 catalogue families, partial for 11, gap for 8, plus no visual research.
-- Phase 1 decisions written up with recommended defaults: `docs/OPEN_DECISIONS.md`.
+- **Phases 0–1:** audits, KADAL research map, visual analysis, decisions (all resolved; `docs/OPEN_DECISIONS.md`).
+- **Core (`core/`, JUCE-free C++20):**
+  - FX registry with stable IDs and per-type drafts
+  - immutable committed chain with stable unique IDs
+  - lock-free program mailbox and retire queue
+  - seamless COMMIT hand-over
+  - SOLO/MUTE router with latency-compensated dry and solo paths
+  - versioned JSON state: preset vs DAW session
+- **38 effects implemented** (the full catalogue): `docs/FX_CATALOGUE.md`.
+- **Plug-in (`plugin/`, JUCE 9.0.5):**
+  - VST3 and standalone builds
+  - carousel, staged settings with tooltips, S/M, COMMIT/RESET
+  - OpenGL formation
+  - chain lane with drag reorder, DELETE target and confirmation
+  - chain presets and DAW state
+- **Formation:** a render-independent simulation shared by the plug-in and the offline preview tool. It is measured against the reference video (`docs/img/formation_compare_v1.jpg`).
+- **Installer:** `installer/IH1.iss` (Inno Setup), built by CI as `IH1-Setup-<ver>.exe`.
 
-## Key findings
-- KADAL supports a **single-STFT, multi-voice Harmony engine** (Laroche–Dolson peak shifting + true-envelope formants) and gives clear Delay vs Tape Echo topologies, FDN + Dattorro reverbs, validated ADAA/SVF C++ patterns, and RT rules that match the commit handoff design.
-- The owner's Isai plugin sets the house architecture: a JUCE-free C++17 engine with a permanent parameter-ID table, wrapped in JUCE.
+## Verification (actual results)
+| Check | Where | Result |
+|---|---|---|
+| Unit, contract and behaviour tests (68 cases, ~2.2 M assertions) | Linux (this VM) | pass |
+| Threaded stress under ThreadSanitizer; core under ASan/UBSan | Linux | pass |
+| `ih1_hosttest`: VST3 loaded via JUCE hosting; 44.1–192 kHz, odd blocks, automation storm, bypass latency, state null test, hostile state, lifecycle | Linux | pass |
+| Standalone app under Xvfb with software OpenGL (screenshot `docs/img/ui_standalone_linux.jpg`) | Linux | runs |
+| MSVC 2022 x64 build, unit tests, `ih1_hosttest`, installer compile | GitHub Actions run #1 | pass |
+| pluginval strictness 5 | Windows CI | **not yet valid**: run #1 did not wait for the GUI-subsystem exe. Fixed in the workflow; awaiting the next run |
+| FL Studio 25 / Cubase 14 | — | **not tested** (no access from this environment) |
 
-## Next (safe work that doesn't depend on open decisions)
-1. CMake skeleton + framework-agnostic `ih1_core` library + unit-test harness on Linux.
-2. Core model: FX descriptor registry, stable type IDs, parameter schemas, per-type draft store, immutable committed instances, versioned state serialiser.
-3. Real-time-safe chain handoff (prepare off-thread → SPSC/atomic swap → deferred retirement), proven with a gain/filter test effect + commit/reorder/delete/solo/mute tests.
-4. Shared primitives with KADAL-derived tests: FractionalDelay, SVF, ADAA shapers, smoothers, denormal guard.
-5. Standalone formation-renderer prototype, compared against the reference video.
+## Known issues / open items
+- **No real-DAW testing.** Owner listening and DAW testing are pending (FL Studio 25, Cubase 14).
+- **Inno Setup licence.** Inno Setup 6.7 reports "Non-commercial use only". Before a commercial release, buy an Inno Setup commercial licence or switch the wizard to NSIS (zlib) or WiX.
+- **JUCE licence.** JUCE is on the Starter tier; move to Indie before revenue passes USD 20k.
+- **Visual gaps.** The formation v1 still lacks the reference's sharpest "electric" hair-lines and edge iridescence.
+- **CPU spikes in long spectral chains.** Spectral FX compute frames on the same block. Stagger hops per instance.
+- **No macOS build yet.**
 
-## Catalogue status matrix
-All 37 catalogue types: **planned** (none implemented). Batch A starts after decisions A1/C1.
+## Next steps
+1. Confirm pluginval results on Windows and Linux CI; fix anything it reports.
+2. Owner installs `IH1-Setup` from the Actions artifacts and tries IH1 in FL Studio 25 and Cubase 14. Feedback goes into a test log.
+3. Formation v2: sharper filament layer and edge dispersion; profile on Windows GPUs.
+4. Stagger STFT hops across instances; reduce Harmony CPU.

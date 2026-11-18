@@ -32,6 +32,7 @@ jobs:
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_Linux.zip
           unzip -o pluginval.zip
           xvfb-run -a ./pluginval --strictness-level 5 --validate build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+          echo "pluginval exit code: $?"
       - name: CPU benchmark (informational)
         run: ./build/ih1_bench 48000 256 2
       - uses: actions/upload-artifact@v4
@@ -58,8 +59,15 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval -Force
-          .\pluginval\pluginval.exe --strictness-level 5 --validate "build\plugin\IH1_artefacts\Release\VST3\IH1.vst3"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = (Get-ChildItem -Recurse -Filter pluginval.exe pluginval | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force pluginval-logs | Out-Null
+          # pluginval is a GUI-subsystem app: wait for it explicitly and propagate its exit code
+          $p = Start-Process -FilePath $exe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            '--strictness-level', '5', '--output-dir', "$PWD\pluginval-logs",
+            '--validate', "$PWD\build\plugin\IH1_artefacts\Release\VST3\IH1.vst3")
+          Get-ChildItem pluginval-logs -Filter *.txt | ForEach-Object { Get-Content $_.FullName }
+          Write-Host "pluginval exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
       - name: Stage files for the installer
         shell: pwsh
         run: |
@@ -75,6 +83,11 @@ jobs:
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(IH1 VERSION ([0-9.]+)').Matches[0].Groups[1].Value
           & $iscc "/DAppVersion=$ver" "/DSourceDir=$PWD\stage" installer\IH1.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: IH1-windows-pluginval-log
+          path: pluginval-logs
       - uses: actions/upload-artifact@v4
         with:
           name: IH1-windows-setup

@@ -8,15 +8,14 @@ A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll 
 
 Version 0.1.0 (development). Details are in `docs/PROJECT_STATUS.md`.
 
-- **16 effects** (Batch A) are implemented and tested:
-  - Delay, Tape Echo, Reverb (7 algorithms), Reverse (3 modes)
-  - Harmony (intervals / key & scale / MIDI), Pitch Shift, Formant Shift, Doubler
-  - Chorus, Filter/Wah, Granular Cloud, Spectral Freeze, Stutter
-  - EQ / Dynamic EQ, Saturation, Stereo Width
-
-  The full 37-type roadmap is in `docs/FX_CATALOGUE.md`.
+- **38 effects** — the full catalogue — are implemented and tested. Each one has a behaviour test as well as the shared contract suite. The list, algorithms and measurements are in `docs/FX_CATALOGUE.md`.
+  - **Time & space:** Delay, Tape Echo, Reverb (7 algorithms), Reverse (3 modes), Shimmer, Convolution, Doppler
+  - **Pitch & voice:** Harmony (intervals / key & scale / MIDI), Pitch Shift, Formant Shift, Doubler, Pitch Correction, Vocoder
+  - **Modulation:** Chorus, Flanger, Phaser, Vibrato, Tremolo/Pan, Filter/Wah, Ring Mod, Rotary, Frequency Shifter
+  - **Texture & spectral:** Granular Cloud, Spectral Freeze, Stutter, Looper, Resonator
+  - **Tone & dynamics:** EQ / Dynamic EQ, Saturation, Stereo Width, Compressor, Gate/Expander, De-Esser, Transient Shaper, Tape/Console, Bitcrusher, Exciter, Amp/Cabinet
 - **Workflow:** carousel, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation, chain presets, and DAW state recall.
-- **Tested on Linux:** 52 unit/behaviour test cases and a VST3 host-lifecycle suite.
+- **Tested on Linux:** 68 unit/behaviour test cases and a VST3 host-lifecycle suite.
 - **Windows builds:** CI builds, validates (pluginval) and packages a setup wizard.
 - **Not yet tested:** FL Studio 25 and Cubase 14. See *Known limitations*.
 
@@ -90,6 +89,8 @@ The engine (`core/`) is plain C++20 with no JUCE dependency; `plugin/` is a thin
 - **IH1:** the project's own licence has not been chosen yet; all rights are reserved by the owner.
 - **JUCE 9:** used under the **JUCE 9 EULA, Starter tier**, which is free up to USD 20k revenue or funding. Move to Indie (or the AGPLv3 alternative) before passing that threshold.
 - **VST3 SDK:** MIT.
+
+- **Inno Setup:** the setup wizard is built with Inno Setup 6.7, which reports "Non-commercial use only". Buy an Inno Setup licence, or switch to NSIS or WiX, before selling IH1.
 
 See `installer/THIRD_PARTY_NOTICES.txt`. VST is a registered trademark of Steinberg Media Technologies GmbH.
 
