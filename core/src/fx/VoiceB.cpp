@@ -200,6 +200,7 @@ enum { voBands, voCarrier, voNote, voUseMidi, voLow, voHigh, voAttack, voRelease
 class Vocoder final : public FxBase {
     static constexpr int kMaxBands = 32;
     static constexpr int kBandChoices[5] = {8, 12, 16, 24, 32};
+    static constexpr float kVocoderLevel = 1.6f;  // calibrated: output RMS ~ input RMS for speech-like input
     void onPrepare() override { mix_.prepare(sr_, maxBlock_, 0, MixLaw::Linear); }
     void reset() override {
         for (auto& f : ana_) f.reset();
@@ -223,7 +224,11 @@ class Vocoder final : public FxBase {
             syn_[b].setup(dsp::Svf::Bandpass, std::min(f * shift, 0.45f * srf()), q, 0, sr_);
             synR_[b].setup(dsp::Svf::Bandpass, std::min(f * shift, 0.45f * srf()), q, 0, sr_);
         }
-        gain_ = 2.2f * std::sqrt(q) / std::sqrt(static_cast<float>(bands_)) * 1.6f;
+        // The SVF band-pass peaks at Q. Analysis and synthesis both pass through one, so normalise by 1/Q^2
+        // (unity-peak bands). Summing N narrow bands of a broadband carrier, each driven by an envelope
+        // ~ sqrt(1/N) of a broadband modulator, then needs sqrt(N) to keep the output level independent of
+        // the band count. V1 scaled with ~bands^2 and hit the safety limiter at 16+ bands.
+        gain_ = kVocoderLevel * std::sqrt(static_cast<float>(bands_)) / (q * q);
         mix_.setMix(pct(voMix), snap);
     }
     void handleMidi(const MidiEvent& e) {
