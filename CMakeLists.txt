@@ -23,6 +23,16 @@ else()
     target_compile_options(ih1_core PRIVATE -Wall -Wextra -Wno-unused-parameter -ffp-contract=fast)
 endif()
 
+# core must not use the non-standard M_PI (MSVC lacks it): fail fast on every platform
+file(GLOB_RECURSE IH1_CORE_ALL CONFIGURE_DEPENDS core/*.cpp core/*.h)
+foreach(f ${IH1_CORE_ALL})
+    file(READ ${f} _c)
+    string(FIND "${_c}" "M_PI" _pos)
+    if(NOT _pos EQUAL -1)
+        message(FATAL_ERROR "${f} uses M_PI; use dsp::kPi or a local constexpr instead")
+    endif()
+endforeach()
+
 # ---------------------------------------------------------------------------- tests
 if(IH1_BUILD_TESTS)
     FetchContent_Declare(doctest

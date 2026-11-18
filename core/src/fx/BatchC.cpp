@@ -16,6 +16,8 @@
 namespace ih1::fx {
 namespace {
 
+constexpr double kPiD = 3.14159265358979323846;
+
 // =============================================================================================== Frequency Shifter
 // 90-degree phase-difference network: two cascades of 2nd-order all-pass sections (coefficients from
 // Olli Niemitalo's widely published IIR Hilbert design, ~0.05-0.95 Nyquist).
@@ -98,7 +100,7 @@ class Doppler final : public FxBase {
             line_.push(0.5f * (ch[0][i] + ch[1][i]));
             const double ph = std::fmod(t_ / period, 1.0);
             double x, y;
-            if (path == 2) { const double a = ph * 2.0 * M_PI; const double R = std::max(d0, v * period / (2.0 * M_PI)); x = R * std::cos(a); y = d0 + R * (1.0 + std::sin(a)) * 0.5; }
+            if (path == 2) { const double a = ph * 2.0 * kPiD; const double R = std::max(d0, v * period / (2.0 * kPiD)); x = R * std::cos(a); y = d0 + R * (1.0 + std::sin(a)) * 0.5; }
             else { x = (path == 0 ? 1.0 : -1.0) * v * (ph - 0.5) * period; y = d0; }
             const double r = std::sqrt(x * x + y * y);
             const double delay = std::min(maxDelay, r / c * sr_);
@@ -176,7 +178,7 @@ class Looper final : public FxBase {
                 const float f = static_cast<float>(p - i0);
                 // crossfade the loop seam
                 const double edgeDist = std::min(pos_, static_cast<double>(L) - pos_);
-                const float w = edgeDist < fade ? static_cast<float>(0.5 - 0.5 * std::cos(M_PI * edgeDist / fade)) : 1.0f;
+                const float w = edgeDist < fade ? static_cast<float>(0.5 - 0.5 * std::cos(kPiD * edgeDist / fade)) : 1.0f;
                 for (int c = 0; c < 2; ++c) {
                     const auto& b = buf_[c];
                     const float s = b[static_cast<size_t>(i0 % L)] + f * (b[static_cast<size_t>((i0 + 1) % L)] - b[static_cast<size_t>(i0 % L)]);

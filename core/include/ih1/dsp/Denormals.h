@@ -15,7 +15,7 @@ public:
     ScopedNoDenormals() {
 #if IH1_HAS_SSE
         prev_ = _mm_getcsr();
-        _mm_setcsr(prev_ | 0x8040u);  // FTZ | DAZ
+        _mm_setcsr(static_cast<unsigned int>(prev_) | 0x8040u);  // FTZ | DAZ
 #elif defined(__aarch64__)
         uint64_t fpcr;
         asm volatile("mrs %0, fpcr" : "=r"(fpcr));
@@ -26,7 +26,7 @@ public:
     }
     ~ScopedNoDenormals() {
 #if IH1_HAS_SSE
-        _mm_setcsr(static_cast<unsigned>(prev_));
+        _mm_setcsr(static_cast<unsigned int>(prev_ & 0xFFFFFFFFu));
 #elif defined(__aarch64__)
         asm volatile("msr fpcr, %0" : : "r"(prev_));
 #endif
