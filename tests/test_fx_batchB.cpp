@@ -258,3 +258,104 @@ TEST_CASE("Vocoder speaks at the carrier pitch only while the modulator is activ
     CHECK(bandDb(m, f0 * 4, N, 6) > bandDb(m, f0 * 4.5, N, 6) + 10.0);  // harmonic structure of the carrier
     CHECK(db(L, 40000, 48000) < db(L, 4000, 20000) - 40.0);             // silent when the modulator stops
 }
+
+// ------------------------------------------------------------------------------------------ Batch C
+TEST_CASE("Frequency shifter moves every component by Hz with the other sideband suppressed") {
+    Fx fx("freq_shift");
+    fx.set("shift", 100).set("fine", 0).set("mix", 100);
+    auto L = sine(1000, 48000), R = L;
+    fx.run(L, R);
+    const int N = 16384;
+    auto m = spectrum(L, 24000, N);
+    MESSAGE("1100 Hz " << bandDb(m, 1100, N) << " dB, 900 Hz " << bandDb(m, 900, N) << " dB, 1000 Hz " << bandDb(m, 1000, N));
+    CHECK(bandDb(m, 1100, N) - bandDb(m, 900, N) > 30.0);
+    CHECK(bandDb(m, 1100, N) - bandDb(m, 1000, N) > 30.0);
+}
+
+TEST_CASE("Doppler: higher pitch while approaching, lower while receding") {
+    Fx fx("doppler");
+    fx.set("path", 0).set("speed", 40).set("distance", 3).set("period", 2).set("mix", 100);
+    auto L = sine(1000, 96000), R = L;
+    fx.run(L, R);
+    auto freqIn = [&](size_t a, size_t b) {
+        double last = -1, sum = 0; int k = 0;
+        for (size_t i = a + 1; i < b; ++i) if (L[i - 1] < 0 && L[i] >= 0) { const double t = static_cast<double>(i) - L[i] / (L[i] - L[i - 1]); if (last > 0) { sum += t - last; ++k; } last = t; }
+        return k ? kSr / (sum / k) : 0.0;
+    };
+    // one pass = 2 s: first half approaching, second half receding
+    const double approach = freqIn(9000, 19000), recede = freqIn(77000, 87000);
+    MESSAGE("approaching " << approach << " Hz, receding " << recede << " Hz");
+    CHECK(approach > 1050.0);
+    CHECK(recede < 960.0);
+}
+
+TEST_CASE("Looper captures the first phrase and replays it") {
+    Fx fx("looper");
+    fx.set("length", 0).set("capture", 0).set("mix", 100);  // 1 beat at 120 bpm = 24000 samples
+    std::vector<float> L(96000, 0.0f);
+    dsp::Rng r(3);
+    for (size_t i = 1000; i < 25000; ++i) L[i] = 0.3f * r.bipolar();
+    auto in = L, R = L;
+    fx.run(L, R);
+    double c = 0, a = 0, b = 0;
+    for (size_t i = 2000; i < 20000; ++i) { c += L[25000 + i - 1000] * in[i]; a += L[25000 + i - 1000] * L[25000 + i - 1000]; b += in[i] * in[i]; }
+    CHECK(c / std::sqrt(a * b) > 0.95);
+}
+
+TEST_CASE("Resonator rings at its tuned notes; Convolution has a decaying tail; Amp drives and the cab rolls off") {
+    Fx rs("resonator");
+    rs.set("key", 9).set("octave", 2).set("chord", 0).set("decay", 3).set("mix", 100);  // A3 unison = 220 Hz
+    std::vector<float> L(96000, 0.0f), R;
+    dsp::Rng r(2);
+    for (size_t i = 0; i < 2400; ++i) L[i] = 0.5f * r.bipolar();
+    R = L;
+    rs.run(L, R);
+    const int N = 16384;
+    auto m = spectrum(L, 24000, N);
+    // lowest strong partial = the tuned note (a bright string's upper partials can be as loud as the fundamental)
+    double mx = 0;
+    for (size_t k = 20; k < 3000; ++k) mx = std::max(mx, m[k]);
+    size_t first = 0;
+    for (size_t k = 20; k < 3000 && !first; ++k) if (m[k] > 0.3 * mx && m[k] >= m[k - 1] && m[k] >= m[k + 1]) first = k;
+    CHECK(first * kSr / N == doctest::Approx(220.0).epsilon(0.015));
+
+    Fx cv("convolution");
+    cv.set("ir", 1).set("mix", 100);
+    std::vector<float> c(96000, 0.0f), c2;
+    c[0] = 1.0f;
+    c2 = c;
+    cv.run(c, c2);
+    CHECK(db(c, 2000, 8000) > db(c, 60000, 70000) + 20.0);
+    CHECK(db(c, 60000, 70000) > -120.0);
+
+    Fx amp("amp");
+    amp.set("gain", 36).set("cab", 0);
+    auto a = sine(200, 48000, 0.2f), a2 = a;
+    amp.run(a, a2);
+    auto ma = spectrum(a, 24000, N);
+    CHECK(bandDb(ma, 600, N) > bandDb(ma, 200, N) - 30.0);  // strong 3rd harmonic
+    Fx cab("amp");
+    cab.set("gain", 0).set("cab", 3);
+    auto h = sine(9000, 48000, 0.05f), h2 = h;
+    cab.run(h, h2);
+    auto l = sine(400, 48000, 0.05f), l2 = l;
+    Fx cab2("amp");
+    cab2.set("gain", 0).set("cab", 3);
+    cab2.run(l, l2);
+    CHECK(db(l, 24000, 48000) - db(h, 24000, 48000) > 15.0);
+}
+
+TEST_CASE("Convolution: switching the IR while running stays smooth and finite") {
+    Fx cv("convolution");
+    cv.set("mix", 100);
+    auto L = sine(300, 48000, 0.3f), R = L;
+    std::vector<float> a(L.begin(), L.begin() + 24000), b(a);
+    cv.run(a, b);
+    cv.v[static_cast<size_t>(cv.d->paramIndex("ir"))] = 4.0f;
+    cv.p->setParams(cv.v, false);
+    std::vector<float> c(L.begin() + 24000, L.end()), d2(c);
+    cv.run(c, d2);
+    float jump = 0;
+    for (size_t i = 1; i < c.size(); ++i) { REQUIRE(std::isfinite(c[i])); jump = std::max(jump, std::fabs(c[i] - c[i - 1])); }
+    CHECK(jump < 0.2f);
+}

@@ -42,6 +42,12 @@ FxDescriptor describeExciter();
 FxDescriptor describeShimmer();
 FxDescriptor describePitchCorrect();
 FxDescriptor describeVocoder();
+FxDescriptor describeFreqShifter();
+FxDescriptor describeDoppler();
+FxDescriptor describeLooper();
+FxDescriptor describeResonator();
+FxDescriptor describeConvolution();
+FxDescriptor describeAmp();
 FxDescriptor describeTestGain();  // hidden test effect used to prove the engine semantics
 
 }  // namespace ih1::fx

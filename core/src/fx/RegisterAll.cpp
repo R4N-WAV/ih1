@@ -11,6 +11,8 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeReverb());
     r.push_back(describeReverse());
     r.push_back(describeShimmer());
+    r.push_back(describeConvolution());
+    r.push_back(describeDoppler());
     // Pitch & Voice
     r.push_back(describeHarmony());
     r.push_back(describePitchShift());
@@ -27,10 +29,13 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeFilter());
     r.push_back(describeRingMod());
     r.push_back(describeRotary());
+    r.push_back(describeFreqShifter());
     // Texture & Spectral
     r.push_back(describeGranular());
     r.push_back(describeSpectral());
     r.push_back(describeStutter());
+    r.push_back(describeLooper());
+    r.push_back(describeResonator());
     // Tone & Dynamics
     r.push_back(describeEq());
     r.push_back(describeSaturation());
@@ -42,6 +47,7 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeTapeColour());
     r.push_back(describeBitcrusher());
     r.push_back(describeExciter());
+    r.push_back(describeAmp());
     // hidden engine-test effects
     r.push_back(describeTestGain());
     r.push_back(describeTestLatency());
