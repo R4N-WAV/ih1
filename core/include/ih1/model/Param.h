@@ -49,6 +49,7 @@ struct ParamSpec {
             }
             case ParamCurve::Pow:
                 return std::pow((v - minValue) / (maxValue - minValue), 1.0f / curveExponent);
+            case ParamCurve::Linear:
             default:
                 return (v - minValue) / (maxValue - minValue);
         }
@@ -67,6 +68,7 @@ struct ParamSpec {
             case ParamCurve::Pow:
                 v = minValue + std::pow(n, curveExponent) * (maxValue - minValue);
                 break;
+            case ParamCurve::Linear:
             default:
                 v = minValue + n * (maxValue - minValue);
         }

@@ -157,7 +157,7 @@ void Formation::spawn(Particle& p, const Core& c, uint64_t id, uint8_t kind, flo
         p.x = c.x + std::cos(a) * spread;
         p.y = c.y + std::sin(a) * spread;
         p.life = 1.5f + frand();
-        p.gain = 1.0f;
+        p.gain = 0.5f + frand();
     } else {
         p.x = c.x + gauss() * spread;
         p.y = c.y + gauss() * spread * 0.85f;
@@ -243,7 +243,7 @@ void Formation::update(const FrameInput& in) {
         }
     }
     if (stagedPresence_ > 0.02f) {
-        const int want = static_cast<int>(240 * stagedPresence_);
+        const int want = static_cast<int>(160 * stagedPresence_);
         int have = 0;
         for (const auto& p : parts_) have += (p.alive && p.kind == 2) ? 1 : 0;
         for (int i = have; i < want; ++i) { Particle* p = nextFree(); if (!p) break; spawn(*p, staged_, 0, 2, 0.045f); }
@@ -277,9 +277,11 @@ void Formation::update(const FrameInput& in) {
         const float dx = c->x - p.x, dy = c->y - p.y;
         const float d = std::sqrt(dx * dx + dy * dy) + 1e-4f;
         float mx, my;
-        if (p.kind == 2) {  // staged preview: small, contained shimmer
-            mx = 0.25f * vx * speed + dx * 1.2f;
-            my = 0.25f * vy * speed + dy * 1.2f;
+        if (p.kind == 2) {  // staged preview: a quiet orbiting halo (clearly not part of the committed mass)
+            const float r0 = 0.022f + 0.04f * (p.gain - 0.5f);  // each strand orbits at its own radius: a soft haze
+            const float radial = (d - r0) * 3.0f;
+            mx = -dy / d * 0.05f + dx / d * radial + 0.1f * vx * speed;
+            my = dx / d * 0.05f + dy / d * radial + 0.1f * vy * speed;
         } else if (p.kind == 1) {  // fibres: long, faint, nearly straight streaks across the field
             mx = dirx * speed * 2.2f + vx * speed * 0.25f - 0.012f;
             my = diry * speed * 1.2f + vy * speed * 0.25f;
@@ -304,7 +306,7 @@ void Formation::update(const FrameInput& in) {
         float b;
         if (p.kind == 2) {
             col = staged_.colour;
-            b = env * stagedPresence_ * (0.012f + 0.03f * stagedBright_);
+            b = env * stagedPresence_ * (0.0035f + 0.012f * stagedBright_);
         } else {
             col = c->colour;
             // chromatic accent: a few strands lean icy-cyan or warm-magenta (edge iridescence)
@@ -312,7 +314,7 @@ void Formation::update(const FrameInput& in) {
             col.r = col.r + desat * (l - col.r);
             col.g = col.g + desat * (l - col.g);
             col.b = col.b + desat * (l - col.b);
-            b = env * c->presence * p.gain * (p.kind == 1 ? 0.012f : 0.020f) * (0.45f + 0.9f * c->bright + 0.25f * energy_) * soloDim;
+            b = env * c->presence * p.gain * (p.kind == 1 ? 0.012f : 0.020f) * (0.65f + 0.9f * c->bright + 0.25f * energy_) * soloDim;
         }
         segs_.push_back({p.px, p.py, p.x, p.y, col.r * b, col.g * b, col.b * b});
     }
