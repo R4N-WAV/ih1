@@ -1,357 +1,434 @@
 #include "ih1/visual/Formation.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
-#include <string>
 
 namespace ih1::visual {
 
-// ------------------------------------------------------------------------------------- palette
-float hueForType(const std::string& id) {
-    // Families: time/space ~222-238, reverb ~246, pitch/voice ~258-272, modulation ~280-290,
-    // texture ~298-306, tone/dynamics ~314-322 (docs/VISUAL_REFERENCE_ANALYSIS.md section 3).
-    static const std::pair<const char*, float> table[] = {
-        {"delay", 222}, {"tape_echo", 230}, {"reverse", 237}, {"reverb", 246}, {"shimmer", 250},
-        {"harmony", 262}, {"pitch_shift", 268}, {"formant", 272}, {"doubler", 258},
-        {"chorus", 280}, {"filter", 287}, {"flanger", 284}, {"phaser", 290},
-        {"granular", 298}, {"spectral", 304}, {"stutter", 308},
-        {"eq", 314}, {"saturation", 320}, {"width", 316},
-        {"pitch_correct", 266}, {"vocoder", 275}, {"vibrato", 282}, {"tremolo", 292}, {"ring_mod", 295}, {"rotary", 289},
-        {"compressor", 312}, {"gate", 310}, {"deesser", 318}, {"transient", 322}, {"tape_colour", 324}, {"bitcrush", 319},
-        {"exciter", 317}, {"freq_shift", 296}, {"doppler", 233}, {"looper", 302}, {"resonator", 300},
-        {"convolution", 242}, {"amp", 325}};
-    for (const auto& kv : table) if (id == kv.first) return kv.second;
-    // unknown types: hash into the arc
-    uint32_t h = 2166136261u;
-    for (char c : id) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
-    return 218.0f + static_cast<float>(h % 104u);
-}
-
-Rgb hsvToRgb(float h, float s, float v) {
-    h = std::fmod(std::fmod(h, 360.0f) + 360.0f, 360.0f) / 60.0f;
-    const int i = static_cast<int>(h);
-    const float f = h - static_cast<float>(i);
-    const float p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-    switch (i) {
-        case 0: return {v, t, p};
-        case 1: return {q, v, p};
-        case 2: return {p, v, t};
-        case 3: return {p, q, v};
-        case 4: return {t, p, v};
-        default: return {v, p, q};
-    }
-}
-
+// ------------------------------------------------------------------------------------- tone map
 Rgb toneMap(Rgb a, float exposure) {
-    // per-channel soft saturation, then blend toward the luminance (white) as density rises
-    auto sat = [&](float x) { return 1.0f - std::exp(-x * exposure); };
-    Rgb c{sat(a.r), sat(a.g), sat(a.b)};
-    const float l = 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
-    const float w = std::clamp((l - 0.45f) * 1.6f, 0.0f, 1.0f);  // highlights desaturate to pale lavender-white
-    const Rgb white{0.93f, 0.86f, 0.98f};
-    c.r += w * (white.r * std::max(l, 0.0f) * 1.15f - c.r) * 0.6f;
-    c.g += w * (white.g * std::max(l, 0.0f) * 1.15f - c.g) * 0.6f;
-    c.b += w * (white.b * std::max(l, 0.0f) * 1.15f - c.b) * 0.6f;
-    // background floor ~ #0a080d
-    c.r = std::min(1.0f, c.r + 0.039f);
-    c.g = std::min(1.0f, c.g + 0.031f);
-    c.b = std::min(1.0f, c.b + 0.051f);
+    auto nz = [](float x) { return std::isfinite(x) ? std::max(0.0f, x) : 0.0f; };
+    a = {nz(a.r), nz(a.g), nz(a.b)};
+    const float m = std::max({a.r, a.g, a.b});
+    if (m <= 0.0f) return {0.0f, 0.0f, 0.0f};
+    // hue-preserving: compress the brightest channel, scale the others by the same factor
+    const float t = 1.0f - std::exp(-m * exposure);
+    const float k = t / m;
+    Rgb c{a.r * k, a.g * k, a.b * k};
+    // only very dense overlaps ease toward a pale lavender-white
+    const float u = std::clamp((t - 0.80f) / 0.20f, 0.0f, 1.0f);
+    const float w = u * u * (3.0f - 2.0f * u) * 0.55f;
+    const Rgb pearl{0.95f * t, 0.91f * t, 1.0f * t};
+    c.r += w * (pearl.r - c.r);
+    c.g += w * (pearl.g - c.g);
+    c.b += w * (pearl.b - c.b);
     return c;
 }
 
-// ------------------------------------------------------------------------------------- noise
+// ------------------------------------------------------------------------------------- helpers
 namespace {
-const uint8_t kPerm[256] = {
-    151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225, 140, 36, 103, 30, 69, 142, 8, 99, 37, 240, 21, 10, 23, 190, 6, 148,
-    247, 120, 234, 75, 0, 26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32, 57, 177, 33, 88, 237, 149, 56, 87, 174, 20, 125, 136, 171, 168, 68, 175,
-    74, 165, 71, 134, 139, 48, 27, 166, 77, 146, 158, 231, 83, 111, 229, 122, 60, 211, 133, 230, 220, 105, 92, 41, 55, 46, 245, 40, 244, 102, 143, 54,
-    65, 25, 63, 161, 1, 216, 80, 73, 209, 76, 132, 187, 208, 89, 18, 169, 200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 198, 173, 186, 3, 64,
-    52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 255, 82, 85, 212, 207, 206, 59, 227, 47, 16, 58, 17, 182, 189, 28, 42, 223, 183, 170, 213,
-    119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 172, 9, 129, 22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 104,
-    218, 246, 97, 228, 251, 34, 242, 193, 238, 210, 144, 12, 191, 179, 162, 241, 81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 157,
-    184, 84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 93, 222, 114, 67, 29, 24, 72, 243, 141, 128, 195, 78, 66, 215, 61, 156, 180};
-inline int P(int i) { return kPerm[i & 255]; }
-inline float fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-inline float grad(int h, float x, float y, float z) {
-    const int k = h & 15;
-    const float u = k < 8 ? x : y, v = k < 4 ? y : (k == 12 || k == 14 ? x : z);
-    return ((k & 1) ? -u : u) + ((k & 2) ? -v : v);
-}
-inline float lerp(float t, float a, float b) { return a + t * (b - a); }
-}  // namespace
+constexpr float kPi = 3.14159265358979f;
+constexpr float kCamDist = 4.0f;  // camera distance (world units)
+constexpr float kScale = 0.34f;   // field-height units per world unit at the focal distance
+constexpr int kMaxStrandsPerInst = 160;
+constexpr float kTransferDur = 0.65f;
+constexpr float kGain = 3.3f;  // overall strand intensity (tuned against the reference with exposure 1.6)
 
-float noise3(float x, float y, float z) {
-    const int X = static_cast<int>(std::floor(x)), Y = static_cast<int>(std::floor(y)), Z = static_cast<int>(std::floor(z));
-    x -= std::floor(x); y -= std::floor(y); z -= std::floor(z);
-    const float u = fade(x), v = fade(y), w = fade(z);
-    const int A = P(X) + Y, AA = P(A) + Z, AB = P(A + 1) + Z, B = P(X + 1) + Y, BA = P(B) + Z, BB = P(B + 1) + Z;
-    return lerp(w, lerp(v, lerp(u, grad(P(AA), x, y, z), grad(P(BA), x - 1, y, z)), lerp(u, grad(P(AB), x, y - 1, z), grad(P(BB), x - 1, y - 1, z))),
-                lerp(v, lerp(u, grad(P(AA + 1), x, y, z - 1), grad(P(BA + 1), x - 1, y, z - 1)), lerp(u, grad(P(AB + 1), x, y - 1, z - 1), grad(P(BB + 1), x - 1, y - 1, z - 1))));
+uint64_t mix64(uint64_t z) {
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+struct Rng {
+    uint64_t s;
+    explicit Rng(uint64_t seed) : s(seed) {}
+    float next() { s += 0x9E3779B97F4A7C15ull; return static_cast<float>(mix64(s) >> 40) * (1.0f / 16777216.0f); }
+    float gauss() {
+        const float u = std::max(1e-6f, next()), v = next();
+        return std::sqrt(-2.0f * std::log(u)) * std::cos(2.0f * kPi * v);
+    }
+};
+
+// Divergence-free flow: v(p, t) = sum_k a_k cos(w_k . p + phi_k(t)) (w_k x e_k). Each term is the curl of
+// a_k sin(w_k . p + phi_k) e_k, so the sum is exactly divergence-free. Wavelengths 0.7..2.6 world units, phase
+// drift 0.05..0.12 rad/s: smooth, low-frequency and slow.
+struct FlowTerm { float wx, wy, wz, cx, cy, cz, phase, omega; };
+constexpr int kTerms = 9;
+const std::array<FlowTerm, kTerms>& flowTerms() {
+    static const std::array<FlowTerm, kTerms> terms = [] {
+        std::array<FlowTerm, kTerms> t{};
+        Rng r(0x1A1ull ^ 0xA5A5F00Dull);
+        for (int k = 0; k < kTerms; ++k) {
+            float dx = r.gauss(), dy = r.gauss(), dz = r.gauss();
+            float l = std::sqrt(dx * dx + dy * dy + dz * dz) + 1e-6f;
+            const float freq = 2.0f * kPi / (1.3f + 2.2f * r.next());
+            const float wx = dx / l * freq, wy = dy / l * freq, wz = dz / l * freq;
+            float ex = r.gauss(), ey = r.gauss(), ez = r.gauss();
+            // c = w x e, normalised so each term has unit amplitude
+            float cx = wy * ez - wz * ey, cy = wz * ex - wx * ez, cz = wx * ey - wy * ex;
+            l = std::sqrt(cx * cx + cy * cy + cz * cz) + 1e-6f;
+            t[static_cast<size_t>(k)] = {wx, wy, wz, cx / l, cy / l, cz / l, r.next() * 2.0f * kPi, (0.05f + 0.07f * r.next()) * (r.next() < 0.5f ? -1.0f : 1.0f)};
+        }
+        return t;
+    }();
+    return terms;
 }
 
-namespace {
-// curl of a 2-D stream function built from two octaves of noise (divergence-free flow)
-inline void curl(float x, float y, float t, float& vx, float& vy) {
-    const float e = 0.01f;
-    auto psi = [t](float a, float b) { return noise3(a * 1.7f, b * 1.7f, t) + 0.45f * noise3(a * 4.1f + 7.3f, b * 4.1f - 3.1f, t * 1.6f); };
-    vx = (psi(x, y + e) - psi(x, y - e)) / (2 * e);
-    vy = -(psi(x + e, y) - psi(x - e, y)) / (2 * e);
+float smooth01(float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); }
+float easeInOut(float x) {
+    x = std::clamp(x, 0.0f, 1.0f);
+    return x < 0.5f ? 4.0f * x * x * x : 1.0f - std::pow(-2.0f * x + 2.0f, 3.0f) * 0.5f;
 }
+float safeLevel(float x) { return std::isfinite(x) ? std::clamp(std::sqrt(std::max(0.0f, x)) * 1.6f, 0.0f, 1.2f) : 0.0f; }
 }  // namespace
 
 // ------------------------------------------------------------------------------------- formation
-Formation::Formation(int maxParticles) : parts_(static_cast<size_t>(std::max(1000, maxParticles))) {
-    segs_.reserve(parts_.size());
+Formation::Formation(Quality q) : quality_(q) {
+    segs_.reserve(120000);
+    pts_.reserve(128);
 }
 
-uint32_t Formation::rnd() {
-    rng_ ^= rng_ << 13;
-    rng_ ^= rng_ >> 17;
-    rng_ ^= rng_ << 5;
-    return rng_;
-}
-float Formation::gauss() {
-    const float u = std::max(1e-6f, frand()), v = frand();
-    return std::sqrt(-2.0f * std::log(u)) * std::cos(6.2831853f * v);
+float Formation::decay(float dt) const { return std::pow(0.5f, std::clamp(dt, 0.0f, 0.2f) * 60.0f); }
+
+bool Formation::transferActive() const {
+    for (const auto& kv : insts_) if (kv.second.transfer) return true;
+    return false;
 }
 
-float Formation::decay(float dt) const { return std::pow(0.935f, dt * 60.0f); }
+Formation::V3 Formation::field(const V3& p, float t) const {
+    V3 v;
+    for (const auto& f : flowTerms()) {
+        const float c = std::cos(f.wx * p.x + f.wy * p.y + f.wz * p.z + f.phase + f.omega * t);
+        v.x += c * f.cx;
+        v.y += c * f.cy;
+        v.z += c * f.cz;
+    }
+    const float k = 1.0f / 2.1f;
+    return {v.x * k, v.y * k, v.z * k};
+}
+
+void Formation::project(const V3& p, float& x, float& y, float& depth) const {
+    const float cy = std::cos(yaw_), sy = std::sin(yaw_);
+    const float x1 = cy * p.x + sy * p.z, z1 = -sy * p.x + cy * p.z;
+    const float cp = std::cos(pitch_), sp = std::sin(pitch_);
+    const float y2 = cp * p.y - sp * z1, z2 = sp * p.y + cp * z1;
+    depth = std::max(0.6f, kCamDist - z2);
+    const float k = kCamDist / depth;
+    // composition: the core sits right of centre with room on the left for the arm (landscape field)
+    const float cx = std::clamp(aspect_ * 0.64f, aspect_ * 0.5f, std::max(aspect_ * 0.5f, aspect_ - 0.36f));
+    x = cx + x1 * k * kScale;
+    y = 0.5f - y2 * k * kScale;
+}
+
+void Formation::buildStrands(Inst& inst, int count) {
+    inst.strands.clear();
+    inst.strands.reserve(static_cast<size_t>(count));
+    for (int k = 0; k < count; ++k) {
+        Rng r(mix64((static_cast<uint64_t>(inst.seed) << 20) ^ static_cast<uint64_t>(k) ^ 0x5EEDull));
+        Strand s;
+        const float kindR = r.next();
+        s.kind = kindR < 0.50f ? 0 : (kindR < 0.70f ? 1 : (kindR < 0.80f ? 2 : 3));  // hair, wisp, spark, veil
+        s.offset = {r.gauss(), r.gauss(), r.gauss()};
+        s.drift = {r.next() * 2.0f * kPi, r.next() * 2.0f * kPi, r.next() * 2.0f * kPi};
+        const float g = r.next();
+        s.gain = 0.22f + 2.2f * g * g * g;  // mostly faint, a few bright
+        s.turb = s.kind == 0 ? 0.45f + 0.3f * r.next() : (s.kind == 1 ? 1.1f + 0.5f * r.next() : (s.kind == 2 ? 0.7f : 0.75f + 0.3f * r.next()));
+        s.phase = r.next() * 2.0f * kPi;
+        s.steps = static_cast<uint8_t>(s.kind == 0 ? 10 + static_cast<int>(22 * r.next() * r.next()) + static_cast<int>(8 * r.next())
+                                       : (s.kind == 1 ? 8 + static_cast<int>(8 * r.next()) : (s.kind == 2 ? 4 + static_cast<int>(4 * r.next()) : 10 + static_cast<int>(10 * r.next()))));
+        s.dirBias = (r.next() - 0.5f) * 0.75f;  // fan angle within the sheet (radians): a plume, not a burst
+        inst.strands.push_back(s);
+    }
+}
 
 void Formation::layout(const FrameInput& in) {
     const int n = static_cast<int>(in.chain.size());
-    // the luminous mass sits right of centre (reference energy centroid ~0.82 W in portrait; landscape ~0.6)
-    const float cx = aspect_ * 0.60f, cy = 0.50f;
-    const float R = std::min(0.42f, 0.05f + 0.085f * std::sqrt(static_cast<float>(n)));
-    for (auto& kv : cores_) kv.second.inChain = false;
+    extentTarget_ = 0.42f + 0.58f * std::min(1.0f, static_cast<float>(std::max(0, n - 1)) / 6.0f);
+    for (auto& kv : insts_) kv.second.inChain = false;
     for (int i = 0; i < n; ++i) {
         const auto& ii = in.chain[static_cast<size_t>(i)];
-        auto it = cores_.find(ii.id);
-        const bool fresh = it == cores_.end();
-        Core& c = cores_[ii.id];
+        auto it = insts_.find(ii.id);
+        const bool fresh = it == insts_.end();
+        Inst& c = insts_[ii.id];
         c.inChain = true;
         c.index = i;
-        c.hue = ii.hue;
-        c.seed = ii.seed;
-        c.colour = hsvToRgb(ii.hue, 0.48f, 1.0f);
-        // positions along a slanted, slowly winding spine; first in chain toward the outer left/lower end,
-        // last toward the dense centre (signal flows into the mass)
-        const float u = n <= 1 ? 1.0f : static_cast<float>(i) / static_cast<float>(n - 1);
-        const float ang = 3.6f - 2.7f * u + 0.35f * std::sin(static_cast<float>(ii.seed % 1000) * 0.0123f);
-        const float rad = R * (0.25f + 0.75f * (1.0f - u * 0.8f));
-        const float jx = (static_cast<float>((ii.seed >> 4) % 1000) / 1000.0f - 0.5f) * 0.05f;
-        const float jy = (static_cast<float>((ii.seed >> 14) % 1000) / 1000.0f - 0.5f) * 0.05f;
-        c.tx = cx + std::cos(ang) * rad * 1.35f + jx;
-        c.ty = cy + std::sin(ang) * rad * 0.8f + jy;
-        if (fresh) { c.x = cx + (c.tx - cx) * 0.3f; c.y = cy + (c.ty - cy) * 0.3f; c.presence = 0.0f; }
+        auto ch = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.5f; };
+        c.colour = {ch(ii.colour.r), ch(ii.colour.g), ch(ii.colour.b)};
+        if (fresh || c.seed != ii.seed || c.strands.empty()) {
+            c.id = ii.id;
+            c.seed = ii.seed ? ii.seed : 1u;
+            buildStrands(c, kMaxStrandsPerInst);
+        }
+        // slot on the skeleton: first FX at the arm's tip, through the core, last FX up/down the plume
+        V3 pos, tan;
+        float plume;
+        Rng jr(mix64(c.seed ^ 0xC0FFEEull));
+        if (n == 1) {
+            pos = {0, 0, 0};
+            tan = {0.25f, 1.0f, -0.1f};
+            plume = 0.55f;
+        } else {
+            const float t = static_cast<float>(i) / static_cast<float>(n - 1);
+            if (t <= 0.5f) {
+                const float s = (0.5f - t) / 0.5f * 0.95f;
+                pos = {-1.40f * s, -0.05f * s - 0.06f * s * s, 0.50f * s};
+                tan = {-1.40f, -0.05f - 0.12f * s, 0.50f};
+                plume = std::clamp(0.5f - s * 3.0f, 0.0f, 0.5f);
+            } else {
+                const float m = (t - 0.5f) / 0.5f * 0.85f;
+                const float sgn = (i % 2) ? 1.0f : -1.0f;
+                const float s = sgn * m;
+                pos = {0.06f * s + 0.05f * s * s, 0.95f * s, -0.15f * s};
+                tan = {0.06f, 0.95f, -0.15f};
+                plume = std::clamp(0.5f + m * 2.0f, 0.5f, 1.0f);
+            }
+        }
+        const float e = extentTarget_;
+        c.target = {pos.x * e + (jr.next() - 0.5f) * 0.12f, pos.y * e + (jr.next() - 0.5f) * 0.10f, pos.z * e + (jr.next() - 0.5f) * 0.12f};
+        const float tl = std::sqrt(tan.x * tan.x + tan.y * tan.y + tan.z * tan.z) + 1e-6f;
+        c.tangentTarget = {tan.x / tl, tan.y / tl, tan.z / tl};
+        c.plumeTarget = plume;
+        if (fresh) {
+            c.anchor = c.target;
+            c.tangent = c.tangentTarget;
+            c.plume = plume;
+            c.presence = first_ ? 1.0f : 0.0f;
+            c.grow = first_ ? 1.0f : 0.0f;
+        }
+    }
+    for (const auto& tr : in.transfers) {
+        auto it = insts_.find(tr.id);
+        if (it == insts_.end() || !it->second.inChain) continue;
+        Inst& c = it->second;
+        c.transfer = true;
+        c.tTransfer = 0.0f;
+        c.originY = std::isfinite(tr.originY) ? std::clamp(tr.originY, 0.02f, 0.98f) : 0.35f;
+        c.hold = kTransferDur * 0.9f;
+        c.grow = 0.0f;
+        c.presence = 1.0f;
     }
 }
 
-void Formation::spawn(Particle& p, const Core& c, uint64_t id, uint8_t kind, float spread) {
-    p.alive = true;
-    p.owner = id;
-    p.kind = kind;
-    p.age = 0.0f;
-    if (kind == 1) {  // tendril: spawned on the core's outskirts, long-lived
-        p.x = c.x + gauss() * spread * 1.6f;
-        p.y = c.y + gauss() * spread * 0.7f;
-        p.life = 5.0f + 6.0f * frand();
-        p.gain = 0.55f + 0.45f * frand();
-    } else if (kind == 3) {  // hair: long, fast, near-straight bright strands crossing the body
-        p.x = c.x + gauss() * spread * 0.8f;
-        p.y = c.y + gauss() * spread * 0.6f;
-        p.life = 3.0f + 4.0f * frand();
-        p.gain = 1.0f;
-    } else if (kind == 2) {
-        const float a = frand() * 6.2831853f;
-        p.x = c.x + std::cos(a) * spread;
-        p.y = c.y + std::sin(a) * spread;
-        p.life = 1.5f + frand();
-        p.gain = 0.5f + frand();
-    } else {
-        p.x = c.x + gauss() * spread;
-        p.y = c.y + gauss() * spread * 0.85f;
-        p.life = 2.0f + 3.5f * frand();
-        p.gain = 0.6f + 0.8f * frand() * frand();
+void Formation::emitStrand(const Inst& inst, const Strand& s, float lengthFrac, float bright) {
+    if (lengthFrac <= 0.001f) return;
+    // local frame: T along the skeleton, N the sheet normal, B across within the sheet
+    const V3 T = inst.tangent;
+    const float pl = inst.plume;
+    V3 N{0.0f * (1 - pl) + 0.18f * pl, 1.0f * (1 - pl) + 0.0f * pl, 0.0f * (1 - pl) + 1.0f * pl};
+    {
+        // orthogonalise against T
+        const float d = N.x * T.x + N.y * T.y + N.z * T.z;
+        N = {N.x - d * T.x, N.y - d * T.y, N.z - d * T.z};
+        const float l = std::sqrt(N.x * N.x + N.y * N.y + N.z * N.z) + 1e-6f;
+        N = {N.x / l, N.y / l, N.z / l};
     }
-    p.px = p.x;
-    p.py = p.y;
+    const V3 B{N.y * T.z - N.z * T.y, N.z * T.x - N.x * T.z, N.x * T.y - N.y * T.x};
+    const float e = std::sqrt(extent_);
+    const float t = time_;
+    // seed point: gaussian in the local frame, thin across the sheet, breathing slowly
+    const float br = 0.025f;
+    const V3 o{s.offset.x * (0.24f + 0.06f * pl) * e, s.offset.y * (0.13f + 0.17f * pl) * e, s.offset.z * (0.06f + 0.05f * pl)};
+    V3 p0{inst.anchor.x + T.x * o.x + B.x * o.y + N.x * o.z + br * std::sin(0.11f * t + s.drift.x),
+          inst.anchor.y + T.y * o.x + B.y * o.y + N.y * o.z + br * std::sin(0.083f * t + s.drift.y),
+          inst.anchor.z + T.z * o.x + B.z * o.y + N.z * o.z + br * std::sin(0.067f * t + s.drift.z)};
+    if (s.kind == 2) {
+        // sparks from every instance gather where the sheets cross: overlapping colours make the pale,
+        // luminous core of the reference (the brightest energy stays focused there)
+        const float k = 0.62f;
+        p0 = {(inst.anchor.x + (p0.x - inst.anchor.x) * 0.35f) * (1.0f - k), (inst.anchor.y + (p0.y - inst.anchor.y) * 0.35f) * (1.0f - k),
+              (inst.anchor.z + (p0.z - inst.anchor.z) * 0.35f) * (1.0f - k)};
+    }
+    const float ca = std::cos(s.dirBias), sa = std::sin(s.dirBias);
+    const V3 guide{T.x * ca + B.x * sa, T.y * ca + B.y * sa, T.z * ca + B.z * sa};
+    const float tension = 1.0f + 0.12f * energy_;  // audio tightens strands slightly, never spins them
+    const float turb = s.turb * (0.8f + 0.55f * pl) / tension;  // the plume is smokier than the arm
+    const float h = (s.kind == 0 ? 0.034f : (s.kind == 1 ? 0.028f : 0.02f)) * (0.55f + 0.45f * e) * lengthFrac;
+    int steps = s.steps;
+    if (quality_ == Quality::Low) steps = std::max(3, steps * 3 / 5);
+    else if (quality_ == Quality::High) steps = steps * 5 / 4;
+    const float fieldT = t * 1.0f;
+
+    // trace both ways from the seed
+    pts_.clear();
+    pts_.resize(static_cast<size_t>(2 * steps + 1));
+    pts_[static_cast<size_t>(steps)] = p0;
+    for (int dir = -1; dir <= 1; dir += 2) {
+        V3 p = p0;
+        for (int k = 1; k <= steps; ++k) {
+            // midpoint (RK2) step on the guided field: smooth curves, no kinks
+            V3 f = field(p, fieldT);
+            {
+                const V3 gd0{guide.x * dir, guide.y * dir, guide.z * dir};
+                const float ft = turb * static_cast<float>(dir);  // a streamline: backwards = -(guide + field)
+                V3 v0{gd0.x + f.x * ft, gd0.y + f.y * ft, gd0.z + f.z * ft};
+                const float l0 = std::sqrt(v0.x * v0.x + v0.y * v0.y + v0.z * v0.z) + 1e-6f;
+                f = field({p.x + v0.x / l0 * h * 0.5f, p.y + v0.y / l0 * h * 0.5f, p.z + v0.z / l0 * h * 0.5f}, fieldT);
+            }
+            // keep the sheet thin: pull back toward the anchor along the sheet normal
+            const float dn = (p.x - inst.anchor.x) * N.x + (p.y - inst.anchor.y) * N.y + (p.z - inst.anchor.z) * N.z;
+            const V3 gd{guide.x * dir, guide.y * dir, guide.z * dir};
+            const float ft = turb * static_cast<float>(dir);
+            V3 v{gd.x + f.x * ft - N.x * dn * 2.2f, gd.y + f.y * ft - N.y * dn * 2.2f, gd.z + f.z * ft - N.z * dn * 2.2f};
+            // always keep moving forward along the guide: where the field opposes it the step would cancel
+            // and the strand's tail could flip from one frame to the next. This clamp is continuous.
+            const float fwd = v.x * gd.x + v.y * gd.y + v.z * gd.z;
+            if (fwd < 0.4f) { v.x += (0.4f - fwd) * gd.x; v.y += (0.4f - fwd) * gd.y; v.z += (0.4f - fwd) * gd.z; }
+            const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z) + 1e-6f;
+            p = {p.x + v.x / l * h, p.y + v.y / l * h, p.z + v.z / l * h};
+            pts_[static_cast<size_t>(steps + dir * k)] = p;
+        }
+    }
+
+    // colour: instance identity; sparks lean pale; depth fog dims and cools the far side
+    Rgb col = inst.colour;
+    if (s.kind == 2) col = {col.r * 0.45f + 0.52f, col.g * 0.45f + 0.49f, col.b * 0.45f + 0.55f};
+    const float kindGain = (s.kind == 0 ? 0.034f : (s.kind == 1 ? 0.022f : (s.kind == 2 ? 0.11f : 0.009f))) * kGain;
+    const float base = kindGain * s.gain * inst.presence * (0.72f + 0.65f * bright);
+    const int np = 2 * steps + 1;
+    // veils: the same traced curve emitted as a few near-parallel copies across the sheet (a translucent
+    // smoky band); every other kind is a single filament
+    const int copies = s.kind == 3 ? 6 : 1;
+    for (int cpy = 0; cpy < copies; ++cpy) {
+        const float sh = copies > 1 ? (static_cast<float>(cpy) - 2.5f) * 0.016f * e : 0.0f;
+        const V3 d{B.x * sh, B.y * sh, B.z * sh};
+        float px0 = 0, py0 = 0, d0 = 0;
+        project({pts_[0].x + d.x, pts_[0].y + d.y, pts_[0].z + d.z}, px0, py0, d0);
+        for (int j = 1; j < np; ++j) {
+            const V3& q = pts_[static_cast<size_t>(j)];
+            float px1, py1, d1;
+            project({q.x + d.x, q.y + d.y, q.z + d.z}, px1, py1, d1);
+            const float sm = (static_cast<float>(j) - 0.5f) / static_cast<float>(np - 1) * 2.0f - 1.0f;  // -1..1 along the strand
+            const float taper = std::pow(std::max(0.0f, 1.0f - sm * sm), 1.3f);
+            const float bead = 0.78f + 0.22f * std::sin(6.5f * sm + s.phase + 0.21f * t);
+            const float depth = 0.5f * (d0 + d1);
+            const float fog = std::clamp(1.3f - 0.42f * (depth - kCamDist), 0.4f, 1.7f);
+            const float a = base * taper * bead * fog;
+            // always emitted (stable segment order frame to frame); the renderer clips to the field
+            const float cool = std::clamp((depth - kCamDist) * 0.25f, 0.0f, 0.35f);  // far: toward indigo
+            segs_.push_back({px0, py0, px1, py1, a * (col.r * (1 - cool) + 0.30f * cool), a * (col.g * (1 - cool) + 0.32f * cool), a * (col.b * (1 - cool) + 0.85f * cool)});
+            px0 = px1; py0 = py1; d0 = d1;
+        }
+    }
+}
+
+void Formation::emitTransfer(const Inst& inst) {
+    // Packet: the FX's colour gathers at the left edge of the field, travels along a gentle arc into its new
+    // region, then disperses as a short burst while the region's strands grow out of it.
+    float ex, ey, ed;
+    project(inst.anchor, ex, ey, ed);
+    const float sx = 0.012f, sy = inst.originY;
+    const float cx = 0.5f * (sx + ex), cy = std::min(sy, ey) - 0.10f;
+    auto bez = [&](float u, float& x, float& y) {
+        const float a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+        x = a * sx + b * cx + c * ex;
+        y = a * sy + b * cy + c * ey;
+    };
+    const float tt = inst.tTransfer;
+    const Rgb col = inst.colour;
+    const Rgb hot{col.r * 0.55f + 0.45f, col.g * 0.55f + 0.42f, col.b * 0.55f + 0.48f};
+    if (tt < kTransferDur + 0.05f) {
+        const float env = smooth01(tt / 0.08f) * (1.0f - smooth01((tt - kTransferDur + 0.12f) / 0.17f));
+        const int tail = 18, lanes = 7;
+        for (int lane = 0; lane < lanes; ++lane) {
+            const float ang = static_cast<float>(lane) / lanes * 2.0f * kPi + tt * 5.0f;
+            float lx = 0, ly = 0;
+            for (int j = 0; j <= tail; ++j) {
+                const float u = easeInOut((tt - static_cast<float>(j) * 0.016f) / kTransferDur);
+                float x, y;
+                bez(u, x, y);
+                // compressed bundle: a few parallel strands twisting around the path, tightening in flight
+                const float rad = 0.004f + 0.012f * (1.0f - u) * (1.0f - u);
+                x += std::cos(ang + static_cast<float>(j) * 0.35f) * rad;
+                y += std::sin(ang + static_cast<float>(j) * 0.35f) * rad;
+                if (j > 0) {
+                    const float w = std::pow(1.0f - static_cast<float>(j) / tail, 2.0f) * env * (lane == 0 ? 0.34f : 0.13f);
+                    segs_.push_back({lx, ly, x, y, hot.r * w, hot.g * w, hot.b * w});
+                }
+                lx = x; ly = y;
+            }
+        }
+    }
+    // dispersal burst at arrival
+    const float u = (tt - kTransferDur * 0.92f) / 0.45f;
+    if (u > 0.0f && u < 1.0f) {
+        const int rays = 22;
+        for (int k = 0; k < rays; ++k) {
+            Rng r(mix64(inst.seed ^ static_cast<uint64_t>(k * 7919)));
+            const float a = r.next() * 2.0f * kPi;
+            const float len = 0.03f + 0.06f * r.next();
+            const float r0 = len * smooth01(u) * 0.6f, r1 = len * smooth01(u);
+            const float w = (1.0f - u) * (1.0f - u) * 0.10f * (0.5f + r.next());
+            segs_.push_back({ex + std::cos(a) * r0, ey + std::sin(a) * r0 * 0.8f, ex + std::cos(a) * r1, ey + std::sin(a) * r1 * 0.8f, col.r * w, col.g * w, col.b * w});
+        }
+    }
 }
 
 void Formation::update(const FrameInput& in) {
-    const float dt = std::clamp(in.dt, 0.001f, 0.1f);
+    const float dt = std::isfinite(in.dt) ? std::clamp(in.dt, 0.001f, 0.1f) : 1.0f / 60.0f;
     time_ += dt;
-    aspect_ = std::max(0.5f, in.aspect);
-    // smoothed audio features (attack/release, never flicker)
-    auto follow = [dt](float& s, float x, float att, float rel) { s += (1.0f - std::exp(-dt / (x > s ? att : rel))) * (x - s); };
-    const float lvl = std::isfinite(in.outLevel) ? std::clamp(std::sqrt(std::max(0.0f, in.outLevel)) * 1.6f, 0.0f, 1.2f) : 0.0f;
-    follow(energy_, lvl, 0.08f, 0.6f);
-    auto safe = [](float x) { return std::isfinite(x) ? std::max(0.0f, x) : 0.0f; };
-    follow(low_, std::clamp(std::sqrt(safe(in.low)) * 1.8f, 0.0f, 1.2f), 0.1f, 0.8f);
-    follow(high_, std::clamp(std::sqrt(safe(in.high)) * 3.0f, 0.0f, 1.2f), 0.05f, 0.5f);
-    follow(solo_, std::isfinite(in.solo) ? std::clamp(in.solo, 0.0f, 1.0f) : 0.0f, 0.15f, 0.15f);
+    aspect_ = std::isfinite(in.aspect) ? std::clamp(in.aspect, 0.3f, 6.0f) : 1.6f;
     layout(in);
-    chainSize_ = static_cast<int>(in.chain.size());
+    first_ = false;
 
-    // cores glide (reorder never resets the field), fade in/out, follow their own audio level
-    for (auto& kv : cores_) {
-        Core& c = kv.second;
-        const float k = 1.0f - std::exp(-dt / 0.9f);
-        c.x += k * (c.tx - c.x);
-        c.y += k * (c.ty - c.y);
-        follow(c.presence, c.inChain ? 1.0f : 0.0f, 1.2f, 1.0f);
+    auto follow = [dt](float& s, float x, float att, float rel) { s += (1.0f - std::exp(-dt / (x > s ? att : rel))) * (x - s); };
+    float maxLevel = 0.0f;
+    for (const auto& ii : in.chain) maxLevel = std::max(maxLevel, safeLevel(ii.level));
+    follow(energy_, maxLevel, 0.25f, 1.2f);
+    extent_ += (1.0f - std::exp(-dt / 1.4f)) * (extentTarget_ - extent_);
+
+    // camera: very slow parallax (< 4 degrees), stable framing
+    yaw_ = 0.38f + 0.06f * std::sin(time_ * 2.0f * kPi / 75.0f);
+    pitch_ = 0.15f + 0.025f * std::sin(time_ * 2.0f * kPi / 92.0f + 1.3f);
+
+    const int n = static_cast<int>(in.chain.size());
+    const int budget = quality_ == Quality::Low ? 700 : (quality_ == Quality::High ? 2600 : 1500);
+    perInstTarget_ = n > 0 ? std::clamp(budget / n, 28, kMaxStrandsPerInst) : 0;
+
+    const float kGlide = 1.0f - std::exp(-dt / 1.1f);  // reorder: anchors glide, nothing resets
+    for (auto& kv : insts_) {
+        Inst& c = kv.second;
+        c.anchor.x += kGlide * (c.target.x - c.anchor.x);
+        c.anchor.y += kGlide * (c.target.y - c.anchor.y);
+        c.anchor.z += kGlide * (c.target.z - c.anchor.z);
+        c.tangent.x += kGlide * (c.tangentTarget.x - c.tangent.x);
+        c.tangent.y += kGlide * (c.tangentTarget.y - c.tangent.y);
+        c.tangent.z += kGlide * (c.tangentTarget.z - c.tangent.z);
+        const float tl = std::sqrt(c.tangent.x * c.tangent.x + c.tangent.y * c.tangent.y + c.tangent.z * c.tangent.z) + 1e-6f;
+        c.tangent = {c.tangent.x / tl, c.tangent.y / tl, c.tangent.z / tl};
+        c.plume += kGlide * (c.plumeTarget - c.plume);
+        follow(c.presence, c.inChain ? 1.0f : 0.0f, 0.8f, 0.5f);
+        if (c.hold > 0.0f) c.hold -= dt;
+        else if (c.inChain) c.grow = std::min(1.0f, c.grow + dt / 1.4f);
+        if (c.transfer) {
+            c.tTransfer += dt;
+            if (c.tTransfer > kTransferDur + 0.5f) c.transfer = false;
+        }
         float lv = 0.0f;
-        for (const auto& ii : in.chain) if (ii.id == kv.first && std::isfinite(ii.level)) lv = std::clamp(std::sqrt(std::max(0.0f, ii.level)) * 1.6f, 0.0f, 1.2f);
-        follow(c.bright, lv, 0.08f, 0.7f);
+        for (const auto& ii : in.chain) if (ii.id == kv.first) lv = safeLevel(ii.level);
+        follow(c.bright, lv, 0.12f, 0.9f);
     }
-    for (auto it = cores_.begin(); it != cores_.end();) {
-        if (!it->second.inChain && it->second.presence < 0.01f) {
-            const uint64_t id = it->first;
-            for (auto& p : parts_) if (p.alive && p.owner == id) p.alive = false;
-            it = cores_.erase(it);
-        } else ++it;
-    }
-    // staged preview: neutral, restrained, away from the committed mass (lower-left of the field)
-    follow(stagedPresence_, in.hasStaged ? 1.0f : 0.0f, 0.4f, 0.4f);
-    follow(stagedBright_, std::clamp(std::sqrt(std::max(0.0f, in.stagedLevel)) * 1.6f, 0.0f, 1.0f), 0.08f, 0.5f);
-    staged_.x = aspect_ * 0.16f;
-    staged_.y = 0.80f;
-    staged_.colour = {0.80f, 0.80f, 0.84f};
-
-    // spawn budget: formation size and complexity grow with the chain
-    const int n = chainSize_;
-    const int target = n == 0 ? 0 : std::min(static_cast<int>(parts_.size()) - 600, 2200 + 1900 * n);
-    const float spread = 0.035f + 0.02f * std::pow(static_cast<float>(std::max(1, n)), 0.45f);
-    int alive = 0;
-    for (const auto& p : parts_) alive += p.alive ? 1 : 0;
-    int freeSlot = 0;
-    auto nextFree = [&]() -> Particle* {
-        while (freeSlot < static_cast<int>(parts_.size()) && parts_[static_cast<size_t>(freeSlot)].alive) ++freeSlot;
-        return freeSlot < static_cast<int>(parts_.size()) ? &parts_[static_cast<size_t>(freeSlot)] : nullptr;
-    };
-    if (n > 0 && alive < target) {
-        const float perCore = static_cast<float>(target - alive) * std::min(1.0f, dt * 2.5f) / static_cast<float>(n);
-        for (auto& kv : cores_) {
-            Core& c = kv.second;
-            if (!c.inChain) continue;
-            c.spawnAcc += perCore * (0.6f + 0.4f * c.presence);
-            while (c.spawnAcc >= 1.0f) {
-                c.spawnAcc -= 1.0f;
-                Particle* p = nextFree();
-                if (!p) break;
-                const float r = frand();
-                if (r < 0.18f) {  // luminous centre: strands born near the formation centroid (dense overlap)
-                    Core centre = c;
-                    centre.x = aspect_ * 0.60f + (c.x - aspect_ * 0.60f) * 0.25f;
-                    centre.y = 0.50f + (c.y - 0.50f) * 0.25f;
-                    spawn(*p, centre, kv.first, 0, spread * 0.7f);
-                    p->gain *= 1.6f;
-                } else {
-                    spawn(*p, c, kv.first, r < 0.40f ? 1 : 0, spread);
-                }
-            }
-        }
-    }
-    if (stagedPresence_ > 0.02f) {
-        const int want = static_cast<int>(160 * stagedPresence_);
-        int have = 0;
-        for (const auto& p : parts_) have += (p.alive && p.kind == 2) ? 1 : 0;
-        for (int i = have; i < want; ++i) { Particle* p = nextFree(); if (!p) break; spawn(*p, staged_, 0, 2, 0.045f); }
+    for (auto it = insts_.begin(); it != insts_.end();) {
+        if (!it->second.inChain && it->second.presence < 0.01f) it = insts_.erase(it);
+        else ++it;
     }
 
-    // advect
+    // emit
     segs_.clear();
-    live_ = 0;
-    const float flowT = time_ * (0.035f + 0.03f * high_);
-    const float speed = 0.055f * (0.7f + 0.5f * energy_ + 0.3f * low_);
-    const float desat = solo_;  // SOLO: committed formation toward monochrome and darker
-    const float soloDim = 1.0f - 0.88f * solo_;
-    for (auto& p : parts_) {
-        if (!p.alive) continue;
-        p.age += dt;
-        if (p.age >= p.life) { p.alive = false; continue; }
-        const Core* c = nullptr;
-        if (p.kind == 2) c = &staged_;
-        else {
-            auto it = cores_.find(p.owner);
-            if (it == cores_.end()) { p.alive = false; continue; }
-            c = &it->second;
+    strands_ = 0;
+    for (auto& kv : insts_) {
+        Inst& c = kv.second;
+        const float lengthFrac = smooth01(c.grow);
+        // the vertical plume carries the mass; the receding arm stays finer
+        const int count = c.inChain ? static_cast<int>(static_cast<float>(perInstTarget_) * (0.6f + 0.5f * c.plume)) : static_cast<int>(c.strands.size());
+        const int lim = std::min(count, static_cast<int>(c.strands.size()));
+        for (int k = 0; k < lim; ++k) {
+            const Strand& st = c.strands[static_cast<size_t>(k)];
+            emitStrand(c, st, lengthFrac, c.bright);
+            ++strands_;
         }
-        p.px = p.x;
-        p.py = p.y;
-        // flow = slowly turning direction field (long fibrous strands) + small curl perturbation
-        const float ang = 0.35f + 2.6f * noise3(p.x * 0.55f, p.y * 0.55f, flowT * 0.5f + 11.0f);
-        float dirx = std::cos(ang), diry = std::sin(ang) * 0.75f;
-        float vx, vy;
-        curl(p.x * 1.1f, p.y * 1.1f, flowT + (p.kind == 1 ? 3.7f : 0.0f), vx, vy);
-        const float dx = c->x - p.x, dy = c->y - p.y;
-        const float d = std::sqrt(dx * dx + dy * dy) + 1e-4f;
-        float mx, my;
-        if (p.kind == 2) {  // staged preview: a quiet orbiting halo (clearly not part of the committed mass)
-            const float r0 = 0.022f + 0.04f * (p.gain - 0.5f);  // each strand orbits at its own radius: a soft haze
-            const float radial = (d - r0) * 3.0f;
-            mx = -dy / d * 0.05f + dx / d * radial + 0.1f * vx * speed;
-            my = dx / d * 0.05f + dy / d * radial + 0.1f * vy * speed;
-        } else if (p.kind == 3) {  // hair: follows the direction field almost straight, fast
-            const float sgn = (reinterpret_cast<uintptr_t>(&p) >> 4) & 1 ? 1.0f : -1.0f;
-            mx = sgn * dirx * speed * 3.2f + vx * speed * 0.12f;
-            my = sgn * diry * speed * 2.0f + vy * speed * 0.12f;
-        } else if (p.kind == 1) {  // fibres: long, faint, nearly straight streaks across the field
-            mx = dirx * speed * 2.2f + vx * speed * 0.25f - 0.012f;
-            my = diry * speed * 1.2f + vy * speed * 0.25f;
-        } else {  // body strands: emanate from the core along the field, folded by the curl
-            const float reach = 0.10f + 0.035f * std::sqrt(static_cast<float>(std::max(1, chainSize_)));
-            const float back = d > reach ? (d - reach) * 1.4f : 0.0f;  // contain the body softly
-            const float sgn = (p.gain > 1.0f) ? -1.0f : 1.0f;            // strands leave in both directions
-            mx = sgn * dirx * speed * 1.1f + vx * speed * 0.55f + dx * back;
-            my = sgn * diry * speed * 1.1f + vy * speed * 0.55f + dy * back;
-            // weak pull of every strand toward the formation centre merges the cores into one mass
-            mx += (aspect_ * 0.6f - p.x) * 0.03f;
-            my += (0.5f - p.y) * 0.03f;
-        }
-        p.x += mx * dt * 2.0f;
-        p.y += my * dt * 2.0f;
-        if (!std::isfinite(p.x) || !std::isfinite(p.y) || p.x < -0.2f || p.x > aspect_ + 0.2f || p.y < -0.2f || p.y > 1.2f) { p.alive = false; continue; }
-        ++live_;
-        // brightness: fade in/out over life, audio-reactive per instance, kind gain
-        const float t = p.age / p.life;
-        const float env = std::min(1.0f, t * 6.0f) * std::min(1.0f, (1.0f - t) * 3.0f);
-        Rgb col;
-        float b;
-        if (p.kind == 2) {
-            col = staged_.colour;
-            b = env * stagedPresence_ * (0.0035f + 0.012f * stagedBright_);
-        } else {
-            col = c->colour;
-            // chromatic accent: a few strands lean icy-cyan or warm-magenta (edge iridescence)
-            const float l = 0.2126f * col.r + 0.7152f * col.g + 0.0722f * col.b;
-            col.r = col.r + desat * (l - col.r);
-            col.g = col.g + desat * (l - col.g);
-            col.b = col.b + desat * (l - col.b);
-            float kindGain = p.kind == 1 ? 0.012f : 0.020f;
-            if (p.kind == 3) {  // hair strands: thin and pale, pushing toward lavender-white
-                kindGain = 0.026f;
-                col.r = 0.55f * col.r + 0.45f; col.g = 0.55f * col.g + 0.42f; col.b = 0.55f * col.b + 0.47f;
-            } else {
-                // faint iridescent edges (reference: trace cyan/teal and warm pink fringes on isolated strands)
-                const uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&p) >> 3) * 2654435761u;
-                const uint32_t sel = h >> 24;
-                if (sel < 9) col = hsvToRgb(196.0f, 0.35f, 0.9f);
-                else if (sel < 15) col = hsvToRgb(336.0f, 0.38f, 0.95f);
-            }
-            {
-                const float lum = 0.2126f * col.r + 0.7152f * col.g + 0.0722f * col.b;
-                col.r += desat * (lum - col.r); col.g += desat * (lum - col.g); col.b += desat * (lum - col.b);
-            }
-            b = env * c->presence * p.gain * kindGain * (0.65f + 0.9f * c->bright + 0.25f * energy_) * soloDim;
-        }
-        segs_.push_back({p.px, p.py, p.x, p.y, col.r * b, col.g * b, col.b * b});
-    }
-    // core info for the UI
-    coreInfo_.clear();
-    for (const auto& kv : cores_) {
-        if (!kv.second.inChain) continue;
-        coreInfo_.push_back({kv.first, kv.second.x, kv.second.y, kv.second.colour, kv.second.bright});
+        if (c.transfer) emitTransfer(c);
     }
 }
 

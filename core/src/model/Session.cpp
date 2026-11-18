@@ -200,7 +200,14 @@ void Session::setDraftParam(int paramIndex, float plainValue) {
 void Session::resetDraft() {
     if (selected_ < 0) return;
     drafts_[static_cast<size_t>(selected_)] = fxRegistry()[static_cast<size_t>(selected_)].defaults();
+    // RESET also clears everything the staged processor has accumulated (Looper recording, delay and
+    // reverb memory, envelopes): a freshly prepared processor replaces it through the normal program
+    // hand-over (built here on the message thread, crossfaded in on the audio thread, the old one retired
+    // and freed here later). Committed instances are separate processors and are never touched.
+    staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
+    rebuild(false);
     engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
+    collectGarbage();
     ++revision_;
 }
 

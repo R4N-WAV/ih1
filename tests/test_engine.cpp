@@ -215,6 +215,51 @@ TEST_CASE("RESET resets only the staged draft") {
     CHECK(db(h.run(0.3) / kSineRms) == doctest::Approx(-6.0).epsilon(0.02));
 }
 
+TEST_CASE("RESET clears the staged Looper's recording but never a committed Looper") {
+    Harness h;
+    const int looper = T("looper");
+    const auto& d = fxRegistry()[static_cast<size_t>(looper)];
+    const int pLen = d.paramIndex("length"), pMix = d.paramIndex("mix");
+    REQUIRE(pLen >= 0);
+    REQUIRE(pMix >= 0);
+    auto stageLooper = [&] {
+        h.session.select(looper);
+        h.session.setDraftParam(pLen, 0.0f);    // 1 beat (0.5 s at 120 bpm)
+        h.session.setDraftParam(pMix, 100.0f);  // loop only
+    };
+    // 1. a staged loop records and plays back into silence
+    stageLooper();
+    h.freq = 220.0f;
+    h.run(0.7);                  // records the first 0.5 s of sound, then plays
+    h.freq = 0.0f;               // silence in: only the loop sounds
+    CHECK(h.run(0.4) > 0.05f);
+    // 2. RESET: loop gone, back to waiting (silence stays silence), no click
+    h.resetJump();
+    h.session.resetDraft();
+    h.run(0.1);                  // staged crossfade
+    CHECK(h.run(0.4) < 1e-4f);
+    CHECK(h.maxJump < kClickLimit);
+    CHECK(h.session.draft(looper)[static_cast<size_t>(pMix)] == doctest::Approx(d.params[static_cast<size_t>(pMix)].defaultValue));
+
+    // 3. a committed Looper's recording survives a staged Looper RESET
+    Harness g;
+    g.session.select(looper);
+    g.session.setDraftParam(pLen, 0.0f);
+    g.session.setDraftParam(pMix, 100.0f);
+    g.freq = 220.0f;
+    g.run(0.7);
+    REQUIRE(g.session.commit());
+    g.session.select(looper);    // stage a second Looper (draft kept: 1 beat, 100 %)
+    g.session.setMute(true);     // hear the committed chain only
+    g.freq = 0.0f;
+    const float before = g.run(0.4);
+    CHECK(before > 0.05f);
+    g.session.resetDraft();
+    g.run(0.1);
+    CHECK(g.run(0.4) == doctest::Approx(before).epsilon(0.15));
+    REQUIRE(g.session.chain().size() == 1);
+}
+
 TEST_CASE("draft settings survive carousel navigation") {
     Harness h;
     h.session.select(T("test_gain"));
