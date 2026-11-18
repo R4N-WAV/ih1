@@ -68,6 +68,7 @@ public:
 
 private:
     void timerCallback() override;
+    void pullHostParams(bool enforceExclusive);
     void afterModelChange();  // latency, tail, macro sync, revision (lock held)
     void syncMacrosFromDraft();
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();

@@ -1,0 +1,25 @@
+IH1 third-party notices
+=======================
+
+IH1 is built with the following third-party software.
+
+JUCE 9 (https://juce.com)
+  Used under the JUCE 9 End User Licence Agreement (https://juce.com/legal/juce-9-licence/).
+  JUCE modules are dual-licensed under AGPLv3 and the commercial JUCE licence.
+  Copyright (c) Raw Material Software Limited.
+
+Steinberg VST 3 SDK (distributed with JUCE)
+  MIT licence. VST is a registered trademark of Steinberg Media Technologies GmbH.
+  Copyright (c) Steinberg Media Technologies GmbH.
+
+Algorithms
+  IH1's DSP is original code written from published research (see docs/KADAL_RESEARCH_MAP.md
+  in the source repository: Laroche & Dolson phase-vocoder pitch shifting, Roebel & Rodet true
+  envelope, YIN pitch tracking, Jot feedback delay networks, Dattorro plate reverberator,
+  antiderivative antialiasing, Simper trapezoidal SVF). No third-party DSP source code is included.
+
+Test-only components (not installed)
+  doctest (MIT) - unit-test framework used to build the test suite.
+
+The text below is shown by the installer as the licence page. By continuing you acknowledge
+these notices.

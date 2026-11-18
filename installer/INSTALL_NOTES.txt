@@ -1,0 +1,17 @@
+IH1 - creative multi-FX VST3 (Windows x64)
+
+What gets installed
+  * IH1.vst3 -> C:\Program Files\Common Files\VST3\IH1.vst3 (the standard VST3 folder every host scans)
+  * Optional: the IH1 standalone app (handy for trying IH1 without a DAW)
+  * A preset folder: Documents\IH1\Presets (user presets store the committed chain)
+
+After installing
+  * FL Studio: Options > Manage plugins > Find more plugins (or "Find installed plugins"),
+    then add IH1 as an effect on a mixer insert. To use Harmony's MIDI mode, route a MIDI
+    channel/instrument output to IH1 (FL Studio: the plug-in's "MIDI input port" setting).
+  * Cubase: IH1 appears under Effects. If not, Studio > VST Plug-in Manager > rescan.
+    For Harmony's MIDI mode, route a MIDI track's output to IH1.
+
+Requirements
+  * Windows 10 or 11, 64-bit host
+  * A graphics driver with OpenGL 3.2 or newer (any GPU from the last decade)

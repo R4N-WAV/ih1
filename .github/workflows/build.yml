@@ -1,0 +1,85 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PLUGINVAL_VERSION: v1.0.4
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev xvfb
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests (core, DSP, FX, formation)
+        run: ./build/ih1_tests
+      - name: Host-lifecycle tests (VST3)
+        run: ./build/plugin/ih1_hosttest_artefacts/Release/ih1_hosttest build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+      - name: pluginval (strictness 5)
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_Linux.zip
+          unzip -o pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 5 --validate build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+      - name: CPU benchmark (informational)
+        run: ./build/ih1_bench 48000 256 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IH1-linux-vst3
+          path: build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (Visual Studio 2022, x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build Release
+        run: cmake --build build --config Release --parallel
+      - name: Unit tests
+        run: build\Release\ih1_tests.exe
+        shell: cmd
+      - name: Host-lifecycle tests (VST3)
+        run: build\plugin\ih1_hosttest_artefacts\Release\ih1_hosttest.exe build\plugin\IH1_artefacts\Release\VST3\IH1.vst3
+        shell: cmd
+      - name: pluginval (strictness 5)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval -Force
+          .\pluginval\pluginval.exe --strictness-level 5 --validate "build\plugin\IH1_artefacts\Release\VST3\IH1.vst3"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage files for the installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage\VST3, stage\Standalone | Out-Null
+          Copy-Item -Recurse -Force build\plugin\IH1_artefacts\Release\VST3\IH1.vst3 stage\VST3\
+          Copy-Item -Force build\plugin\IH1_artefacts\Release\Standalone\IH1.exe stage\Standalone\
+          Copy-Item -Force README.md, installer\THIRD_PARTY_NOTICES.txt, installer\INSTALL_NOTES.txt stage\
+      - name: Build setup wizard (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(IH1 VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$ver" "/DSourceDir=$PWD\stage" installer\IH1.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IH1-windows-setup
+          path: dist/*.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IH1-windows-vst3
+          path: build/plugin/IH1_artefacts/Release/VST3/IH1.vst3

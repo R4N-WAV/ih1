@@ -147,10 +147,6 @@ void Processor::syncMacrosFromDraft() {
 void Processor::uiSelect(int typeIndex) {
     const juce::ScopedLock sl(lock_);
     session_->select(typeIndex);
-    if (typeIndex < 0) {
-        apvts_.getParameter("solo")->setValueNotifyingHost(0.0f);
-        apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
-    }
     syncMacrosFromDraft();
     afterModelChange();
 }
@@ -251,24 +247,24 @@ void Processor::uiSetMute(bool on) {
     revision_.fetch_add(1);
 }
 
-void Processor::timerCallback() {
-    const juce::ScopedLock sl(lock_);
-    session_->service();
-    // host automation of SOLO / MUTE -> session. Exclusive: the one that switched on last wins.
+void Processor::pullHostParams(bool enforceExclusive) {
+    // SOLO / MUTE: exclusive; the one switched on last wins. With nothing staged the engine ignores both.
     const bool solo = pSolo_->load() > 0.5f, mute = pMute_->load() > 0.5f;
     if (solo != lastSolo_ || mute != lastMute_) {
         bool s = solo, m = mute;
         if (s && m) { if (!lastSolo_) m = false; else s = false; }
-        if (session_->selected() < 0) s = m = false;  // nothing staged: nothing to solo or mute
-        if (s != solo) apvts_.getParameter("solo")->setValueNotifyingHost(s ? 1.0f : 0.0f);
-        if (m != mute) apvts_.getParameter("mute")->setValueNotifyingHost(m ? 1.0f : 0.0f);
+        if (enforceExclusive) {
+            if (s != solo) apvts_.getParameter("solo")->setValueNotifyingHost(s ? 1.0f : 0.0f);
+            if (m != mute) apvts_.getParameter("mute")->setValueNotifyingHost(m ? 1.0f : 0.0f);
+        }
         session_->setSolo(s);
         session_->setMute(m);
-        lastSolo_ = s;
-        lastMute_ = m;
+        lastSolo_ = solo;
+        lastMute_ = mute;
+        if (enforceExclusive) { lastSolo_ = s; lastMute_ = m; }
         revision_.fetch_add(1);
     }
-    // host automation of the staged macros -> staged draft (control rate, smoothed inside the FX)
+    // staged macros -> staged draft (host automation; control rate, smoothed inside the FX)
     const int sel = session_->selected();
     if (sel >= 0) {
         const auto& d = fxRegistry()[static_cast<size_t>(sel)];
@@ -281,6 +277,12 @@ void Processor::timerCallback() {
             }
         }
     }
+}
+
+void Processor::timerCallback() {
+    const juce::ScopedLock sl(lock_);
+    session_->service();
+    pullHostParams(true);
     afterModelChange();
 }
 
@@ -288,12 +290,14 @@ void Processor::timerCallback() {
 
 void Processor::getStateInformation(juce::MemoryBlock& dest) {
     const juce::ScopedLock sl(lock_);
+    pullHostParams(false);  // a save straight after automation must include it
     json::Value root;
     std::string err;
     json::parse(session_->toJson(true), root, &err);
     json::Value plug = json::Value::object();
-    for (const char* id : {"bypass", "in_gain", "out_gain", "mix"})
-        plug.set(id, json::Value(static_cast<double>(apvts_.getRawParameterValue(id)->load())));
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(prm))
+            plug.set(rp->getParameterID().toStdString(), json::Value(static_cast<double>(rp->getValue())));  // normalised
     root.set("plugin", std::move(plug));
     const std::string text = root.dump(0);
     juce::MemoryOutputStream out(dest, false);
@@ -309,21 +313,21 @@ void Processor::setStateInformation(const void* data, int size) {
     const juce::ScopedLock sl(lock_);
     std::string err;
     if (!session_->fromJson(text, true, &err)) return;
+    syncMacrosFromDraft();
     json::Value root;
     if (json::parse(text, root, &err)) {
+        // host parameters come back exactly as saved (normalised values)
         const auto& plug = root.get("plugin");
-        for (const char* id : {"bypass", "in_gain", "out_gain", "mix"}) {
-            const auto& v = plug.get(id);
-            if (!v.isNumber()) continue;
-            auto* p = apvts_.getParameter(id);
-            p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(v.asNumber())));
+        for (auto* prm : getParameters()) {
+            auto* rp = dynamic_cast<juce::RangedAudioParameter*>(prm);
+            if (!rp) continue;
+            const auto& v = plug.get(rp->getParameterID().toStdString());
+            if (v.isNumber()) rp->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, static_cast<float>(v.asNumber())));
         }
     }
-    apvts_.getParameter("solo")->setValueNotifyingHost(session_->solo() ? 1.0f : 0.0f);
-    apvts_.getParameter("mute")->setValueNotifyingHost(session_->mute() ? 1.0f : 0.0f);
-    lastSolo_ = session_->solo();
-    lastMute_ = session_->mute();
-    syncMacrosFromDraft();
+    for (int k = 0; k < kNumMacros; ++k) lastMacro_[static_cast<size_t>(k)] = macros_[static_cast<size_t>(k)]->getValue();
+    lastSolo_ = pSolo_->load() > 0.5f;
+    lastMute_ = pMute_->load() > 0.5f;
     afterModelChange();
 }
 
