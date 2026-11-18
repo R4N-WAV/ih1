@@ -39,11 +39,15 @@ Editor::Editor(Processor& p)
     addAndMakeVisible(reset_);
     addAndMakeVisible(presets_);
 
+    if (juce::SystemStats::getEnvironmentVariable("IH1_NO_OPENGL", {}).isNotEmpty()) {
+        formation_.setSoftwareFallback(true);
+    } else {
     gl_.setRenderer(&renderer_);
     gl_.setPreferredVersion(juce::OpenGLContext::Version{3, 2});
     gl_.setComponentPaintingEnabled(true);
     gl_.setContinuousRepainting(true);
     gl_.attachTo(*this);
+    }
 
     setResizable(true, true);
     setResizeLimits(980, 620, 2560, 1600);
@@ -53,7 +57,7 @@ Editor::Editor(Processor& p)
 
 Editor::~Editor() {
     stopTimer();
-    gl_.detach();
+    if (gl_.isAttached()) gl_.detach();
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     setLookAndFeel(nullptr);
 }
@@ -90,6 +94,12 @@ void Editor::resized() {
 }
 
 void Editor::timerCallback() {
+    if (renderer_.glFailed() && gl_.isAttached()) {
+        // OpenGL 3.2 unavailable (old driver, VM, remote desktop): fall back to software painting
+        gl_.detach();
+        formation_.setSoftwareFallback(true);
+        repaint();
+    }
     if (proc_.revision() != seenRevision_) {
         seenRevision_ = proc_.revision();
         int sel, chain;

@@ -63,6 +63,21 @@ std::unique_ptr<juce::OpenGLShaderProgram> makeProgram(juce::OpenGLContext& ctx,
 }
 }  // namespace
 
+// =============================================================================================== telemetry
+static void fillFromTelemetry(Processor& proc, visual::FrameInput& in) {
+    auto& tel = proc.telemetry();
+    const int n = std::min(tel.chainSize.load(), kMaxChain);
+    for (auto& ii : in.chain)
+        for (int s = 0; s < n; ++s)
+            if (tel.slotIds[static_cast<size_t>(s)].load() == ii.id) ii.level = tel.slotRms[static_cast<size_t>(s)].load();
+    in.stagedLevel = tel.stagedRms.load();
+    in.solo = tel.soloAmount.load();
+    in.outLevel = tel.outRms.load();
+    in.low = tel.outLow.load();
+    in.mid = tel.outMid.load();
+    in.high = tel.outHigh.load();
+}
+
 // =============================================================================================== renderer
 FormationRenderer::FormationRenderer(Processor& p, juce::OpenGLContext& ctx) : proc_(p), ctx_(ctx) {}
 FormationRenderer::~FormationRenderer() = default;
@@ -85,6 +100,13 @@ std::vector<visual::CoreInfo> FormationRenderer::cores() {
 }
 
 void FormationRenderer::newOpenGLContextCreated() {
+    // Machines without a real driver (VMs, remote desktop, CI) only offer GL 1.1: never call GL3 there.
+    const auto v = ctx_.getVersion();
+    if (v.major < 3 || (v.major == 3 && v.minor < 2) || glGenVertexArrays == nullptr || glCreateShader == nullptr ||
+        glGenFramebuffers == nullptr || glBindAttribLocation == nullptr) {
+        failed_ = true;
+        return;
+    }
     lineProg_ = makeProgram(ctx_, kLineVS, kLineFS);
     decayProg_ = makeProgram(ctx_, kQuadVS, kDecayFS);
     copyProg_ = makeProgram(ctx_, kQuadVS, kCopyFS);
@@ -135,8 +157,8 @@ void FormationRenderer::drawQuad() {
 }
 
 void FormationRenderer::renderOpenGL() {
-    juce::OpenGLHelpers::clear(Colours::background);
     if (failed_) return;
+    juce::OpenGLHelpers::clear(Colours::background);
     GLint screenFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &screenFbo);
 
@@ -157,17 +179,7 @@ void FormationRenderer::renderOpenGL() {
     const int y = juce::roundToInt((edH - area.getBottom()) * scale);
 
     // ---- simulation input from telemetry ----
-    auto& tel = proc_.telemetry();
-    const int n = std::min(tel.chainSize.load(), kMaxChain);
-    for (auto& ii : in.chain)
-        for (int s = 0; s < n; ++s)
-            if (tel.slotIds[static_cast<size_t>(s)].load() == ii.id) ii.level = tel.slotRms[static_cast<size_t>(s)].load();
-    in.stagedLevel = tel.stagedRms.load();
-    in.solo = tel.soloAmount.load();
-    in.outLevel = tel.outRms.load();
-    in.low = tel.outLow.load();
-    in.mid = tel.outMid.load();
-    in.high = tel.outHigh.load();
+    fillFromTelemetry(proc_, in);
     const double now = juce::Time::getMillisecondCounterHiRes();
     in.dt = static_cast<float>(juce::jlimit(0.001, 0.1, (now - lastMs_) * 0.001));
     lastMs_ = now;
@@ -252,6 +264,7 @@ void FormationRenderer::renderOpenGL() {
 }
 
 void FormationRenderer::openGLContextClosing() {
+    if (failed_ && !vao_) { lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset(); return; }
     freeTarget(accum_);
     freeTarget(bloomA_);
     freeTarget(bloomB_);
@@ -339,6 +352,47 @@ FormationView::FormationView(Processor& p, FormationRenderer& r) : proc_(p), ren
 
 FormationView::~FormationView() { stopTimer(); }
 
+void FormationView::setSoftwareFallback(bool on) {
+    software_ = on;
+    setOpaque(on);
+    if (on && !cpuForm_) cpuForm_ = std::make_unique<visual::Formation>(12000);
+    repaint();
+}
+
+void FormationView::renderSoftware() {
+    const int w = std::max(1, getWidth() / 2), h = std::max(1, getHeight() / 2);
+    if (acc_.size() != static_cast<size_t>(w * h * 3)) { acc_.assign(static_cast<size_t>(w * h * 3), 0.0f); image_ = juce::Image(juce::Image::RGB, w, h, true); }
+    visual::FrameInput in;
+    in.chain = chain_;
+    in.hasStaged = hasStaged_;
+    fillFromTelemetry(proc_, in);
+    in.dt = 1.0f / 30.0f;
+    in.aspect = static_cast<float>(w) / static_cast<float>(h);
+    cpuForm_->update(in);
+    const float d = cpuForm_->decay(in.dt);
+    for (auto& v : acc_) v *= d;
+    const float scale = static_cast<float>(h), gain = 0.55f * 600.0f / static_cast<float>(h);  // no bloom, half res: tame to match the GL look
+    for (const auto& sg : cpuForm_->segments()) {
+        const float x0 = sg.x0 * scale, y0 = sg.y0 * scale, x1 = sg.x1 * scale, y1 = sg.y1 * scale;
+        const int steps = std::max(1, static_cast<int>(std::max(std::fabs(x1 - x0), std::fabs(y1 - y0))));
+        for (int k = 0; k <= steps; ++k) {
+            const float t = static_cast<float>(k) / static_cast<float>(steps);
+            const int x = static_cast<int>(x0 + (x1 - x0) * t), y = static_cast<int>(y0 + (y1 - y0) * t);
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            float* px = &acc_[static_cast<size_t>((y * w + x) * 3)];
+            px[0] += sg.r * gain; px[1] += sg.g * gain; px[2] += sg.b * gain;
+        }
+    }
+    juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const float* px = &acc_[static_cast<size_t>((y * w + x) * 3)];
+            const auto c = visual::toneMap({px[0], px[1], px[2]}, 20.0f);
+            bd.setPixelColour(x, y, juce::Colour::fromFloatRGBA(std::min(1.0f, c.r), std::min(1.0f, c.g), std::min(1.0f, c.b), 1.0f));
+        }
+    softCores_ = cpuForm_->cores();
+}
+
 void FormationView::syncChain() {
     std::vector<visual::InstanceInput> chain;
     pills_.clear();
@@ -355,6 +409,7 @@ void FormationView::syncChain() {
             pills_.push_back({c[i].id(), static_cast<int>(i), juce::String(d.name), juce::Colour::fromFloatRGBA(rgb.r, rgb.g, rgb.b, 1.0f), {}});
         }
     }
+    chain_ = chain;
     renderer_.setChain(std::move(chain), hasStaged_);
     layoutLane();
 }
@@ -393,9 +448,10 @@ void FormationView::timerCallback() {
         seenRevision_ = proc_.revision();
         syncChain();
     }
+    if (software_ && cpuForm_ && getWidth() > 0) renderSoftware();
     // labels follow the cores the renderer reports
     labels_.clear();
-    const auto cores = renderer_.cores();
+    const auto cores = software_ ? softCores_ : renderer_.cores();
     const float hgt = static_cast<float>(getHeight());
     for (const auto& c : cores) {
         for (const auto& p : pills_) {
@@ -416,7 +472,11 @@ void FormationView::resized() {
 }
 
 void FormationView::paint(juce::Graphics& g) {
-    // no background: the GL formation shows through
+    // GL path: no background, the GL formation shows through. Software fallback: draw the CPU image.
+    if (software_) {
+        g.fillAll(Colours::background);
+        if (image_.isValid()) g.drawImage(image_, getLocalBounds().toFloat());
+    }
     const bool empty = pills_.empty();
     if (empty && !hasStaged_) {
         g.setColour(Colours::textFaint);

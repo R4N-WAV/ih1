@@ -67,6 +67,7 @@ public:
     juce::String getTooltip() override;
     void showToast(const juce::String& text);
     bool dialogOpen() const { return confirm_ != nullptr; }
+    void setSoftwareFallback(bool on);  // used when OpenGL 3.2 is unavailable
 
 private:
     struct Pill { uint64_t id; int index; juce::String name; juce::Colour colour; juce::Rectangle<float> r; };
@@ -104,6 +105,14 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> inAtt_, mixAtt_, outAtt_;
     bool hasStaged_ = false;
     juce::String stagedName_;
+    // software fallback (no OpenGL 3.2)
+    void renderSoftware();
+    bool software_ = false;
+    std::unique_ptr<visual::Formation> cpuForm_;
+    std::vector<float> acc_;
+    juce::Image image_;
+    std::vector<visual::InstanceInput> chain_;
+    std::vector<visual::CoreInfo> softCores_;
 };
 
 }  // namespace ih1::plugin
