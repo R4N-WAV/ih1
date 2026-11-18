@@ -16,7 +16,7 @@ Version 0.1.0 (development). Details are in `docs/PROJECT_STATUS.md`.
   - **Tone & dynamics:** EQ / Dynamic EQ, Saturation, Stereo Width, Compressor, Gate/Expander, De-Esser, Transient Shaper, Tape/Console, Bitcrusher, Exciter, Amp/Cabinet
 - **Workflow:** carousel, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation, chain presets, and DAW state recall.
 - **Tested on Linux:** 68 unit/behaviour test cases and a VST3 host-lifecycle suite.
-- **Windows builds:** CI builds, validates (pluginval) and packages a setup wizard.
+- **Windows builds:** CI builds, tests and packages a setup wizard. pluginval at strictness 5 passes on Windows and Linux.
 - **Not yet tested:** FL Studio 25 and Cubase 14. See *Known limitations*.
 
 ## Install (Windows)
