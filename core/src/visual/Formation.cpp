@@ -15,7 +15,10 @@ float hueForType(const std::string& id) {
         {"harmony", 262}, {"pitch_shift", 268}, {"formant", 272}, {"doubler", 258},
         {"chorus", 280}, {"filter", 287}, {"flanger", 284}, {"phaser", 290},
         {"granular", 298}, {"spectral", 304}, {"stutter", 308},
-        {"eq", 314}, {"saturation", 320}, {"width", 316}};
+        {"eq", 314}, {"saturation", 320}, {"width", 316},
+        {"pitch_correct", 266}, {"vocoder", 275}, {"vibrato", 282}, {"tremolo", 292}, {"ring_mod", 295}, {"rotary", 289},
+        {"compressor", 312}, {"gate", 310}, {"deesser", 318}, {"transient", 322}, {"tape_colour", 324}, {"bitcrush", 319},
+        {"exciter", 317}};
     for (const auto& kv : table) if (id == kv.first) return kv.second;
     // unknown types: hash into the arc
     uint32_t h = 2166136261u;

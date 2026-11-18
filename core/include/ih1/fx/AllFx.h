@@ -26,6 +26,22 @@ FxDescriptor describeStutter();
 FxDescriptor describeEq();
 FxDescriptor describeSaturation();
 FxDescriptor describeWidth();
+FxDescriptor describeFlanger();
+FxDescriptor describePhaser();
+FxDescriptor describeVibrato();
+FxDescriptor describeTremolo();
+FxDescriptor describeRingMod();
+FxDescriptor describeRotary();
+FxDescriptor describeCompressor();
+FxDescriptor describeGate();
+FxDescriptor describeDeEsser();
+FxDescriptor describeTransient();
+FxDescriptor describeBitcrusher();
+FxDescriptor describeTapeColour();
+FxDescriptor describeExciter();
+FxDescriptor describeShimmer();
+FxDescriptor describePitchCorrect();
+FxDescriptor describeVocoder();
 FxDescriptor describeTestGain();  // hidden test effect used to prove the engine semantics
 
 }  // namespace ih1::fx

@@ -3,6 +3,7 @@
 // (doubling, MicroPitch) and for shimmer feedback paths.
 #pragma once
 
+#include "ih1/dsp/Basics.h"
 #include "ih1/dsp/DelayLine.h"
 
 namespace ih1::dsp {

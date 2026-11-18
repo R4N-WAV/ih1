@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ih1/dsp/Basics.h"
+#include "ih1/dsp/Denormals.h"
 #include "ih1/fx/FxProcessor.h"
 
 namespace ih1::fx {
