@@ -32,9 +32,9 @@ namespace {
 constexpr float kPi = 3.14159265358979f;
 constexpr float kCamDist = 4.0f;  // camera distance (world units)
 constexpr float kScale = 0.34f;   // field-height units per world unit at the focal distance
-constexpr int kMaxStrandsPerInst = 160;
+constexpr int kMaxStrandsPerInst = 210;
 constexpr float kTransferDur = 0.65f;
-constexpr float kGain = 3.3f;  // overall strand intensity (tuned against the reference with exposure 1.6)
+constexpr float kGain = 4.3f;  // overall strand intensity (tuned against the reference with exposure 1.6)
 
 uint64_t mix64(uint64_t z) {
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -383,7 +383,7 @@ void Formation::update(const FrameInput& in) {
     pitch_ = 0.15f + 0.025f * std::sin(time_ * 2.0f * kPi / 92.0f + 1.3f);
 
     const int n = static_cast<int>(in.chain.size());
-    const int budget = quality_ == Quality::Low ? 700 : (quality_ == Quality::High ? 2600 : 1500);
+    const int budget = quality_ == Quality::Low ? 800 : (quality_ == Quality::High ? 3000 : 2000);
     perInstTarget_ = n > 0 ? std::clamp(budget / n, 28, kMaxStrandsPerInst) : 0;
 
     const float kGlide = 1.0f - std::exp(-dt / 1.1f);  // reorder: anchors glide, nothing resets

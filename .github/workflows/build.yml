@@ -25,8 +25,10 @@ jobs:
         run: cmake --build build --parallel
       - name: Unit tests (core, DSP, FX, formation)
         run: ./build/ih1_tests
-      - name: Host-lifecycle tests (VST3)
-        run: ./build/plugin/ih1_hosttest_artefacts/Release/ih1_hosttest build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+      - name: Host-lifecycle tests (VST3, incl. editor resize stress)
+        run: xvfb-run -a -s "-screen 0 1920x1200x24" ./build/plugin/ih1_hosttest_artefacts/Release/ih1_hosttest build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+      - name: Editor interaction tests
+        run: xvfb-run -a -s "-screen 0 1920x1200x24" ./build/plugin/ih1_uitest_artefacts/Release/ih1_uitest
       - name: pluginval (strictness 5)
         run: |
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_Linux.zip
@@ -53,6 +55,9 @@ jobs:
         shell: cmd
       - name: Host-lifecycle tests (VST3)
         run: build\plugin\ih1_hosttest_artefacts\Release\ih1_hosttest.exe build\plugin\IH1_artefacts\Release\VST3\IH1.vst3
+        shell: cmd
+      - name: Editor interaction tests
+        run: build\plugin\ih1_uitest_artefacts\Release\ih1_uitest.exe
         shell: cmd
       - name: pluginval (strictness 5)
         shell: pwsh

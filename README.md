@@ -2,11 +2,18 @@
 
 A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll to an effect, shape it while it plays after everything you've already committed, then **COMMIT** it into an immutable serial chain. Each committed effect can be reordered or deleted but never edited, and the chain grows into an audio-reactive, filament-like formation.
 
-![IH1 standalone on Linux (software OpenGL)](docs/img/ui_standalone_linux.jpg)
+![IH1 with the Supercluster preset (Linux, Mesa OpenGL)](docs/img/ui_v1_1_formation.jpg)
 
 ## Status
 
-Version 0.1.0 (development). Details are in `docs/PROJECT_STATUS.md`.
+Version 0.1.0 (development), with the V1 feedback repair pass applied. Details are in `docs/PROJECT_STATUS.md`.
+
+The V1 feedback pass is documented in:
+- `docs/V1_FEEDBACK_TRIAGE.md`
+- `docs/V1_FEEDBACK_IMPLEMENTATION.md`
+- `docs/QA_AND_REGRESSION_RESULTS.md`
+- `docs/KNOWN_ISSUES.md`
+- `docs/FACTORY_PRESETS.md`
 
 - **38 effects** — the full catalogue — are implemented and tested. Each one has a behaviour test as well as the shared contract suite. The list, algorithms and measurements are in `docs/FX_CATALOGUE.md`.
   - **Time & space:** Delay, Tape Echo, Reverb (7 algorithms), Reverse (3 modes), Shimmer, Convolution, Doppler
@@ -14,8 +21,11 @@ Version 0.1.0 (development). Details are in `docs/PROJECT_STATUS.md`.
   - **Modulation:** Chorus, Flanger, Phaser, Vibrato, Tremolo/Pan, Filter/Wah, Ring Mod, Rotary, Frequency Shifter
   - **Texture & spectral:** Granular Cloud, Spectral Freeze, Stutter, Looper, Resonator
   - **Tone & dynamics:** EQ / Dynamic EQ, Saturation, Stereo Width, Compressor, Gate/Expander, De-Esser, Transient Shaper, Tape/Console, Bitcrusher, Exciter, Amp/Cabinet
-- **Workflow:** carousel, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation, chain presets, and DAW state recall.
-- **Tested on Linux:** 68 unit/behaviour test cases and a VST3 host-lifecycle suite.
+- **Workflow:** carousel, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation, 28 categorised factory presets plus user presets, and DAW state recall.
+- **Tested on Linux:**
+  - 78 unit and behaviour test cases;
+  - a VST3 host-lifecycle suite, including 320 host-driven editor resizes under audio;
+  - `ih1_uitest`, 44 editor interaction checks driven through the native peer.
 - **Windows builds:** CI builds, tests and packages a setup wizard. pluginval at strictness 5 passes on Windows and Linux.
 - **Not yet tested:** FL Studio 25 and Cubase 14. See *Known limitations*.
 
@@ -54,7 +64,9 @@ The build produces:
 - `build/Release/ih1_tests(.exe)`, the unit and behaviour tests
 - `build/plugin/ih1_hosttest_artefacts/Release/ih1_hosttest`, which loads the built VST3 and runs host-lifecycle checks
 - `ih1_bench`, the CPU benchmark
-- `formation_preview`, an offline render of the visual
+- `formation_preview`, an offline render of the visual, e.g. `formation_preview out delay,reverb,harmony`
+- `ih1_uitest`, the editor interaction test (needs a display: `xvfb-run` on Linux)
+- `fx_dump`, which prints the FX parameter schema
 
 To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.1.0 /DSourceDir=<stage> installer\IH1.iss`.
 
@@ -62,18 +74,34 @@ Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching
 
 ## Using IH1
 
-- **Carousel:** scroll the effect list with the mouse wheel, the ▲▼ arrows or the arrow keys, or type a name. Each effect type remembers its own draft settings.
-- **Staged effect:** the selected effect plays *after* the committed chain.
-  - **MUTE (M)** silences only the staged effect.
-  - **SOLO (S)** plays only the staged effect, while the committed chain and its formation fade toward grey.
-  - SOLO and MUTE are mutually exclusive.
-- **COMMIT** appends a frozen copy to the chain and clears the selection. The draft keeps its values, so committing again makes a deliberate duplicate. **RESET** only resets the staged draft.
-- **Formation field:**
-  - Drag a pill in the chain lane, or a label in the field, to reorder.
-  - Drop it on **DELETE** (top-right while dragging) and confirm to remove it. Escape, Cancel, or dropping anywhere else never deletes.
-  - Hover for read-only details.
-- **Presets** save and load the committed chain only (`Documents\IH1\Presets\*.ih1chain`). DAW projects also restore the staged draft, the selection and SOLO/MUTE.
+- **Carousel:**
+  - It shows `None` until you choose an effect.
+  - Choose by scrolling the wheel over the names, with the ▲▼ arrows or the arrow keys, or by typing a name.
+  - **Right-click** the carousel for the full list, grouped by family.
+  - Every name is shown in the effect's colour, which it keeps in the formation.
+  - Each effect type remembers its own draft settings.
+- **Staged effect:** the selected effect plays *after* the committed chain. Its settings appear only while something is staged.
+  - **S** (SOLO FX) plays only the staged effect.
+  - **M** (MUTE FX) silences only the staged effect.
+  - The staged effect never appears in the formation.
+- **COMMIT** sends a frozen copy into the chain. A short transfer animation carries it into the formation, and the carousel returns to `None`.
+- **RESET** restores the staged effect's defaults and clears what it holds, such as a Looper's recording or delay and reverb tails.
+- **Settings:**
+  - Graphs show the real response or state.
+  - Double-click a knob to reset it, or double-click a value to type one.
+  - **More** shows advanced controls.
+- **Chain strip** (under the formation):
+  - Drag a name along the strip to reorder.
+  - While dragging, a red **DELETE** appears at the upper-left of the field. Drop on it and confirm to remove that one instance. Escape, Cancel, or dropping anywhere else never deletes.
+  - Hover a name for read-only details.
+- **Presets:**
+  - The box in the header shows the current preset. Click the name to browse by category or search; ‹ › step through every preset and wrap.
+  - Presets hold the committed chain.
+  - User presets are saved to `Documents/IH1/Presets/*.ih1chain` (Save As, Save with confirmation, Rename, Delete).
+  - Factory presets are read-only. The browser also has *Clear chain*.
+  - DAW projects additionally restore the staged draft, the selection, SOLO/MUTE and the editor size.
 - **Host automation:** a fixed set of parameters — Bypass, SOLO, MUTE, Input / Output Gain, Global Mix, and Staged Control 1–8, which map to the staged effect's first eight controls. Committed effects are never automatable.
+- **Without a GPU:** set `IH1_NO_OPENGL=1` to use the software formation. IH1 also switches to it automatically if OpenGL 3.2 is unavailable or a render target fails.
 
 ## Architecture and research
 
@@ -96,9 +124,11 @@ See `installer/THIRD_PARTY_NOTICES.txt`. VST is a registered trademark of Steinb
 
 ## Known limitations
 
-- **No DAW testing yet.** Nothing has been run in FL Studio 25 or Cubase 14; only automated host checks have run.
-- **Spectral effects add latency.** Harmony, Pitch Shift, Formant Shift and Spectral Freeze add 2048 samples (about 43 ms at 48 kHz), reported to the host.
-- **Harmony is CPU-heavy in long chains.** One instance uses about 4% of a core, so 32 of them exceed one core. The chain is capped at 32 effects.
-- **Staged Control 1–8 automation is applied at about 30 Hz** and smoothed inside each effect.
-- **The visual is a v1.** It matches the reference's palette, brightness distribution and fibrous motion, but not yet its sharpest "electric" hair-lines and edge iridescence. See `docs/img/formation_compare_v1.jpg`.
-- **macOS is not built yet.** The code is portable, but the CI and installer are Windows-only.
+See `docs/KNOWN_ISSUES.md` for the complete list. In short:
+
+- **FL Studio is untested.** Neither the resize-crash fix nor the dropdown fix has been verified in FL Studio, and there is no DAW testing at all yet.
+- **Display scaling is untested** at 125–200 %.
+- **The visual is close to the reference, not identical.**
+- **Spectral effects add latency.** Harmony, Pitch Shift, Formant Shift and Spectral Freeze add 2048 samples, which is reported to the host.
+- **The chain is capped at 32 effects.**
+- **macOS is not built yet.**
