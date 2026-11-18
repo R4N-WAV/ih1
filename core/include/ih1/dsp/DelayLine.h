@@ -2,6 +2,7 @@
 // cubic (Hermite) / 3rd-order Lagrange for modulated reads, linear for cheap LFO-rate reads.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
