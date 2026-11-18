@@ -1,40 +1,17 @@
-# Open Decisions (Phase 1 approval gate)
+# Decisions
 
-Each item states a recommended default. Items marked **blocking** change architecture and need an answer before Phase 2 code locks in; the rest can proceed on the default and stay reversible.
+All Phase 1 decisions were resolved by the product owner on 2026-11-18. Items marked *(default)* were accepted as recommended.
 
-Already settled (not re-asked): broad catalogue (37 target types, batched A→B→C); serial chain semantics for COMMIT/SOLO/MUTE/RESET; committed instances immutable (reorder/delete only); user presets save the committed chain; video governs the visuals.
-
-## A. Framework & platform
-
-**A1. Framework / licence — blocking.**
-- **Your Isai pattern** (KADAL `DOS-17T0VBY0CF`): a plain C++17 DSP engine without JUCE, tested standalone, wrapped by JUCE (APVTS state, editor, VST3 export). It already passed pluginval strictness 5.
-- **JUCE 9 licence** (KADAL `SRC-Q5ZA32G2B3`): Starter is free up to USD 20k revenue/funding; Indie (USD 40/month or 800 perpetual) up to 300k; Pro above that; or AGPLv3 if open source. Closed-source therefore does *not* automatically mean paying.
-- **Alternative:** Steinberg VST3 SDK 3.8 directly (MIT) + VSTGUI/custom OpenGL. No licence questions, but much more UI and host plumbing work.
-- *Recommendation:* reuse the Isai pattern: a JUCE-free `ih1_core` engine (all DSP, chain, state model, tests) plus a thin JUCE 9 wrapper and editor (OpenGL for the formation). Because the core is JUCE-free, the wrapper can be swapped for a raw VST3 SDK one later.
-- *Question:* OK to use JUCE 9, and under which licence (Starter/Indie/Pro, or AGPL open source)?
-
-**A2. Platforms.** *Recommendation:* Windows x64 VST3 first, keeping the code portable (CMake, no Win32-only APIs in the core) so macOS VST3/AU can be added later without a rewrite. Linux CI builds the DSP core and tests.
-
-## B. Workflow semantics
-
-**B1. DAW project state vs user presets — blocking (state schema).** *Recommendation:* user presets = committed chain only. DAW project state = committed chain **plus** the per-type draft store, selected carousel item, and SOLO/MUTE state, so reopening a project loses nothing.
-
-**B2. Draft after COMMIT.** *Recommendation:* keep the committed type's draft values (so committing again makes an intentional duplicate). RESET is still there to go back to defaults. The carousel highlight still clears, as specified.
-
-**B3. Chain topology — blocking.** *Recommendation:* a linear serial chain; "tree/supercluster" describes the visual only. Parallel branches would need a graph engine and a different drag/drop model.
-
-**B4. Clicking a committed instance.** *Recommendation:* hover shows a read-only tooltip (FX name, position, key values); click does nothing except start a drag.
-
-## C. FX specifics
-
-**C1. Harmony input — blocking (adds a MIDI event bus).** *Recommendation:* both. MIDI-note mode (four voices, deterministic voice stealing, default "newest note wins") **plus** key/scale/interval mode, which works without any MIDI routing. FL Studio needs MIDI routed to an effect manually; Cubase does it natively.
-
-**C2. Reverse scope.** *Recommendation:* the Reverse FX ships three real modes: **Reverse Delay** (timed reversed echoes with feedback), **Reverse Buffer** (continuous windowed reversed playback of fixed-length chunks) and **Reverse Grains** (overlapping reversed grains). Reverse reverb lives in Reverb as an algorithm.
-
-**C3. Looper audio in state.** *Recommendation:* save parameters only; captured audio is runtime-only.
-
-**C4. Carousel navigation at 37 items.** *Recommendation:* keep the carousel exactly as sketched, and add family dividers in the list plus an optional type-to-jump (start typing a name). No separate browser.
-
-## D. Host automation
-
-**D1. Automatable parameters — blocking (stable parameter IDs).** *Recommendation:* expose a fixed set: SOLO, MUTE, input gain, output gain, global mix, and **8 generic "staged macro" slots** that map to the current staged FX's top controls. Committed instances are never exposed. Alternative: no host automation at all apart from gain/mix.
+| # | Decision | Resolution |
+|---|---|---|
+| A1 | Framework / licence | Owner delegated. **JUCE 9.0.5** (pinned commit `d60b7a78`) wraps a **JUCE-free C++20 engine `ih1_core`** (the owner's Isai pattern, KADAL `DOS-17T0VBY0CF`). Used under the **JUCE 9 EULA Starter tier** (free up to USD 20k revenue/funding, no splash screen in JUCE 9). **Move to Indie before exceeding that threshold**, or relicense as AGPLv3. The engine never includes JUCE headers, so the wrapper can be replaced by a raw VST3 SDK (MIT) wrapper later. |
+| A2 | Platforms | **Windows x64 VST3 first**, plus a **setup wizard (installer)**. Code stays portable; Linux builds/tests in CI; macOS later. |
+| B1 | DAW state vs presets | User presets = committed chain only. DAW project state = committed chain **+ per-type drafts + carousel selection + SOLO/MUTE**. |
+| B2 | Draft after COMMIT | *(default)* The committed type keeps its draft values; the carousel selection clears. |
+| B3 | Topology | Linear serial chain. "Tree/supercluster" is visual only. |
+| B4 | Click on committed instance | *(default)* Hover = read-only tooltip; click/drag = reorder only. |
+| C1 | Harmony input | **Both**: MIDI-note mode (VST3 event input) and key/scale/interval mode. |
+| C2 | Reverse | *(default)* Reverse Delay, Reverse Buffer, Reverse Grains. Reverse reverb is a Reverb mode. |
+| C3 | Looper audio | *(default)* Parameters only; captured audio is runtime-only. |
+| C4 | Carousel at 37 items | *(default)* Sketch carousel + family dividers + type-to-jump. |
+| D1 | Host automation | **Fixed set**: Bypass, SOLO, MUTE, Input Gain, Output Gain, Global Mix, Staged Control 1–8 (mapped to the staged FX's first 8 controls). Committed instances are never exposed. |

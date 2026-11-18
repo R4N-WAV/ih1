@@ -1,0 +1,372 @@
+#include "ih1/engine/Engine.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+#include "ih1/dsp/Denormals.h"
+
+namespace ih1 {
+
+namespace {
+constexpr float kOutputFadeMs = 5.0f;
+constexpr float kStagedFadeMs = 10.0f;
+constexpr float kSoloMs = 250.0f;
+constexpr float kMuteMs = 30.0f;
+constexpr float kBypassMs = 20.0f;
+constexpr float kGainMs = 20.0f;
+constexpr float kSafetyLimit = 4.0f;  // +12 dBFS hard safety ceiling
+constexpr int kCompMask = Engine::kCompSize - 1;
+
+inline float dbToGain(float db) { return std::pow(10.0f, std::clamp(db, -60.0f, 24.0f) / 20.0f); }
+
+// Linear ramp of `cur` toward `target` with fixed per-sample step; writes per-sample values.
+inline void ramp(float& cur, float target, float step, float* out, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (cur < target) cur = std::min(target, cur + step);
+        else if (cur > target) cur = std::max(target, cur - step);
+        out[i] = cur;
+    }
+}
+}  // namespace
+
+bool sanitize(float* x, int n, float limit) {
+    bool bad = false;
+    for (int i = 0; i < n; ++i) {
+        float v = x[i];
+        if (!std::isfinite(v)) { v = 0.0f; bad = true; }
+        x[i] = std::clamp(v, -limit, limit);
+    }
+    return bad;
+}
+
+Engine::Engine() {
+    active_ = new Program();  // empty program; ownership passes to the message thread on retire
+}
+
+Engine::~Engine() {
+    // Programs only reference processors (owned by Session), so deleting them here is safe.
+    delete active_;
+    delete incoming_;
+    delete mailbox_.load();
+    Program* r = nullptr;
+    while (retired_.pop(r)) delete r;
+    for (int i = 0; i < overflowCount_; ++i) delete overflow_[static_cast<size_t>(i)];
+}
+
+void Engine::prepare(double sampleRate, int maxBlock) {
+    sampleRate_ = sampleRate > 0 ? sampleRate : 48000.0;
+    maxBlock_ = std::max(1, maxBlock);
+    const size_t b = static_cast<size_t>(maxBlock_) * 2;
+    chainBuf_.assign(b, 0.0f);
+    stagedBuf_.assign(b, 0.0f);
+    sinBuf_.assign(b, 0.0f);
+    dryHist_.assign(static_cast<size_t>(kCompSize) * 2, 0.0f);
+    sinHist_.assign(static_cast<size_t>(kCompSize) * 2, 0.0f);
+    rampSolo_.assign(maxBlock_, 0.0f);
+    rampWet_.assign(maxBlock_, 0.0f);
+    rampBypass_.assign(maxBlock_, 0.0f);
+    rampTrans_.assign(maxBlock_, 0.0f);
+    rampMix_.assign(maxBlock_, 0.0f);
+    rampIn_.assign(maxBlock_, 0.0f);
+    rampOut_.assign(maxBlock_, 0.0f);
+    dryPos_ = sinPos_ = 0;
+    soloAmt_ = solo_.load() ? 1.0f : 0.0f;
+    muteAmt_ = mute_.load() ? 1.0f : 0.0f;
+    bypassAmt_ = bypass_.load() ? 1.0f : 0.0f;
+    transGain_ = 1.0f;
+    stagedFade_ = 1.0f;
+    inGain_ = dbToGain(inGainDb_.load());
+    outGain_ = dbToGain(outGainDb_.load());
+    mixAmt_ = std::clamp(mix_.load(), 0.0f, 1.0f);
+    trans_ = Transition::None;
+    bandLowState_[0] = bandLowState_[1] = bandHighState_[0] = bandHighState_[1] = 0.0f;
+}
+
+bool Engine::post(Program* p) {
+    Program* expected = nullptr;
+    return mailbox_.compare_exchange_strong(expected, p, std::memory_order_acq_rel);
+}
+
+void Engine::installDirect(Program* p, std::vector<Program*>& released) {
+    if (Program* m = mailbox_.exchange(nullptr)) released.push_back(m);
+    if (incoming_) { released.push_back(incoming_); incoming_ = nullptr; }
+    Program* r = nullptr;
+    while (retired_.pop(r)) released.push_back(r);
+    for (int i = 0; i < overflowCount_; ++i) released.push_back(overflow_[static_cast<size_t>(i)]);
+    overflowCount_ = 0;
+    if (active_) released.push_back(active_);
+    active_ = p;
+    for (int i = 0; i < p->chainSize; ++i) p->chain[static_cast<size_t>(i)]->setParams(p->chainValues[static_cast<size_t>(i)], true);
+    trans_ = Transition::None;
+    transGain_ = 1.0f;
+    stagedFade_ = 1.0f;
+    appliedVersion_ = stagedParamVersion_.load() - 1u;
+    activeLatency_.store(p->chainLatency + p->stagedLatency);
+}
+
+void Engine::publishStagedParams(int typeIndex, const ParamValues& v) {
+    for (int i = 0; i < kMaxParams; ++i) stagedParams_[static_cast<size_t>(i)].store(v[static_cast<size_t>(i)], std::memory_order_relaxed);
+    stagedParamType_.store(typeIndex, std::memory_order_relaxed);
+    stagedParamVersion_.fetch_add(1, std::memory_order_release);
+}
+
+void Engine::applyStagedParamsIfChanged() {
+    const uint32_t v = stagedParamVersion_.load(std::memory_order_acquire);
+    if (v == appliedVersion_ || !active_->staged) return;
+    if (stagedParamType_.load(std::memory_order_relaxed) != active_->stagedType) return;  // not for us (yet)
+    ParamValues vals;
+    for (int i = 0; i < kMaxParams; ++i) vals[static_cast<size_t>(i)] = stagedParams_[static_cast<size_t>(i)].load(std::memory_order_relaxed);
+    active_->staged->setParams(vals, false);
+    appliedVersion_ = v;
+}
+
+void Engine::installNow(Program* p) {
+    for (int i = 0; i < p->chainSize; ++i) p->chain[static_cast<size_t>(i)]->setParams(p->chainValues[static_cast<size_t>(i)], false);
+    // retire the old one
+    Program* old = active_;
+    active_ = p;
+    if (old) {
+        // flush overflow first to preserve order
+        int k = 0;
+        while (k < overflowCount_ && retired_.push(overflow_[static_cast<size_t>(k)])) ++k;
+        if (k > 0) {
+            for (int i = k; i < overflowCount_; ++i) overflow_[static_cast<size_t>(i - k)] = overflow_[static_cast<size_t>(i)];
+            overflowCount_ -= k;
+        }
+        if (overflowCount_ > 0 || !retired_.push(old)) {
+            if (overflowCount_ < static_cast<int>(overflow_.size())) overflow_[static_cast<size_t>(overflowCount_++)] = old;
+            // else: leak rather than free on the audio thread (cannot happen with a serviced queue)
+        }
+    }
+    appliedVersion_ = stagedParamVersion_.load() - 1u;  // force re-apply of staged params
+    activeLatency_.store(p->chainLatency + p->stagedLatency);
+}
+
+void Engine::beginTransitionIfPending() {
+    if (trans_ != Transition::None || incoming_) return;
+    Program* p = mailbox_.exchange(nullptr, std::memory_order_acq_rel);
+    if (!p) return;
+    const Program* a = active_;
+    bool sameChain = p->chainSize == a->chainSize;
+    for (int i = 0; sameChain && i < a->chainSize; ++i) sameChain = p->chain[static_cast<size_t>(i)] == a->chain[static_cast<size_t>(i)];
+
+    // COMMIT hand-over: identical prefix + old staged appended, nothing staged after. Seamless when the
+    // staged FX was fully audible (no SOLO, no MUTE, no fade in progress).
+    bool handover = p->commitHandover && a->staged != nullptr && p->staged == nullptr &&
+                    p->chainSize == a->chainSize + 1 && p->chain[static_cast<size_t>(a->chainSize)] == a->staged &&
+                    soloAmt_ == 0.0f && muteAmt_ == 0.0f && stagedFade_ == 1.0f && transGain_ == 1.0f;
+    for (int i = 0; handover && i < a->chainSize; ++i) handover = p->chain[static_cast<size_t>(i)] == a->chain[static_cast<size_t>(i)];
+
+    if (handover) {
+        installNow(p);
+        return;
+    }
+    incoming_ = p;
+    trans_ = (sameChain && p->stagedLatency == a->stagedLatency) ? Transition::StagedFadeOut : Transition::OutputFadeOut;
+}
+
+void Engine::process(float* left, float* right, int numSamples, const ProcessContext& ctx) {
+    dsp::ScopedNoDenormals noDenormals;
+    if (maxBlock_ <= 0) return;
+    int offset = 0;
+    while (offset < numSamples) {
+        beginTransitionIfPending();
+        int n = std::min(numSamples - offset, maxBlock_);
+        // stop the segment exactly where a fade-out reaches zero so the swap happens on a sample boundary
+        if (trans_ == Transition::OutputFadeOut) {
+            const float step = 1.0f / (kOutputFadeMs * 0.001f * static_cast<float>(sampleRate_));
+            n = std::min(n, std::max(1, static_cast<int>(std::ceil(transGain_ / step))));
+        } else if (trans_ == Transition::StagedFadeOut) {
+            const float step = 1.0f / (kStagedFadeMs * 0.001f * static_cast<float>(sampleRate_));
+            n = std::min(n, std::max(1, static_cast<int>(std::ceil(stagedFade_ / step))));
+        }
+        ProcessContext sub = ctx;
+        // MIDI events belonging to this segment
+        int first = 0;
+        while (first < ctx.numMidi && ctx.midi[first].sampleOffset < offset) ++first;
+        int last = first;
+        while (last < ctx.numMidi && ctx.midi[last].sampleOffset < offset + n) ++last;
+        sub.midi = ctx.midi ? ctx.midi + first : nullptr;
+        sub.numMidi = last - first;
+        // NOTE: event offsets inside sub are still relative to the full block; FX subtract `blockOffset`.
+        sub.blockOffset = offset;
+        if (ctx.ppqValid) sub.ppqPosition = ctx.ppqPosition + offset / sampleRate_ * ctx.bpm / 60.0;
+        processChunk(left + offset, right + offset, n, sub);
+        offset += n;
+
+        if (trans_ == Transition::OutputFadeOut && transGain_ <= 0.0f) {
+            installNow(incoming_);
+            incoming_ = nullptr;
+            trans_ = Transition::OutputFadeIn;
+        } else if (trans_ == Transition::StagedFadeOut && stagedFade_ <= 0.0f) {
+            installNow(incoming_);
+            incoming_ = nullptr;
+            trans_ = Transition::StagedFadeIn;
+        } else if (trans_ == Transition::OutputFadeIn && transGain_ >= 1.0f) {
+            trans_ = Transition::None;
+        } else if (trans_ == Transition::StagedFadeIn && stagedFade_ >= 1.0f) {
+            trans_ = Transition::None;
+        }
+    }
+}
+
+void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) {
+    applyStagedParamsIfChanged();
+    const float sr = static_cast<float>(sampleRate_);
+    auto stepFor = [sr](float ms) { return 1.0f / (ms * 0.001f * sr); };
+
+    const Program& p = *active_;
+
+    // --- ramps --------------------------------------------------------------------------
+    ramp(inGain_, dbToGain(inGainDb_.load(std::memory_order_relaxed)), stepFor(kGainMs) * 2.0f, rampIn_.data(), n);
+    ramp(outGain_, dbToGain(outGainDb_.load(std::memory_order_relaxed)), stepFor(kGainMs) * 2.0f, rampOut_.data(), n);
+    ramp(mixAmt_, std::clamp(mix_.load(std::memory_order_relaxed), 0.0f, 1.0f), stepFor(kGainMs), rampMix_.data(), n);
+    ramp(bypassAmt_, bypass_.load(std::memory_order_relaxed) ? 1.0f : 0.0f, stepFor(kBypassMs), rampBypass_.data(), n);
+    const bool hasStaged = p.staged != nullptr;
+    const bool soloOn = solo_.load(std::memory_order_relaxed) && hasStaged;
+    const bool muteOn = mute_.load(std::memory_order_relaxed) && !soloOn;
+    ramp(soloAmt_, soloOn ? 1.0f : 0.0f, stepFor(kSoloMs), rampSolo_.data(), n);
+    {
+        float tgt = (trans_ == Transition::OutputFadeOut) ? 0.0f : 1.0f;
+        ramp(transGain_, tgt, stepFor(kOutputFadeMs), rampTrans_.data(), n);
+    }
+    // wet weight of the staged stage = (1 - mute) * stagedFade
+    {
+        const float muteStep = stepFor(kMuteMs), fadeStep = stepFor(kStagedFadeMs);
+        const float muteTgt = muteOn ? 1.0f : 0.0f;
+        const float fadeTgt = (trans_ == Transition::StagedFadeOut) ? 0.0f : 1.0f;
+        for (int i = 0; i < n; ++i) {
+            if (muteAmt_ < muteTgt) muteAmt_ = std::min(muteTgt, muteAmt_ + muteStep);
+            else if (muteAmt_ > muteTgt) muteAmt_ = std::max(muteTgt, muteAmt_ - muteStep);
+            if (stagedFade_ < fadeTgt) stagedFade_ = std::min(fadeTgt, stagedFade_ + fadeStep);
+            else if (stagedFade_ > fadeTgt) stagedFade_ = std::max(fadeTgt, stagedFade_ - fadeStep);
+            rampWet_[static_cast<size_t>(i)] = (1.0f - muteAmt_) * stagedFade_;
+        }
+    }
+
+    // --- input gain, history ---------------------------------------------------------------
+    double inSq = 0.0;
+    float* cL = chainBuf_.data();
+    float* cR = chainBuf_.data() + maxBlock_;
+    float* dL = dryHist_.data();
+    float* dR = dryHist_.data() + kCompSize;
+    for (int i = 0; i < n; ++i) {
+        const float g = rampIn_[static_cast<size_t>(i)];
+        float l = L[i] * g, r = R[i] * g;
+        if (!std::isfinite(l)) l = 0.0f;
+        if (!std::isfinite(r)) r = 0.0f;
+        cL[i] = l;
+        cR[i] = r;
+        const int w = (dryPos_ + i) & kCompMask;
+        dL[w] = l;
+        dR[w] = r;
+        inSq += 0.5 * (static_cast<double>(l) * l + static_cast<double>(r) * r);
+    }
+    tele_.inRms.store(static_cast<float>(std::sqrt(inSq / std::max(1, n))), std::memory_order_relaxed);
+
+    // --- committed chain ------------------------------------------------------------------
+    float* cbuf[2] = {cL, cR};
+    for (int s = 0; s < p.chainSize; ++s) {
+        FxProcessor* fx = p.chain[static_cast<size_t>(s)];
+        fx->process(cbuf, n, ctx);
+        const bool bad = sanitize(cL, n, 32.0f) | sanitize(cR, n, 32.0f);
+        if (bad) fx->reset();
+        double sq = 0.0;
+        for (int i = 0; i < n; ++i) sq += 0.5 * (static_cast<double>(cL[i]) * cL[i] + static_cast<double>(cR[i]) * cR[i]);
+        tele_.slotRms[static_cast<size_t>(s)].store(static_cast<float>(std::sqrt(sq / n)), std::memory_order_relaxed);
+        tele_.slotIds[static_cast<size_t>(s)].store(p.ids[static_cast<size_t>(s)], std::memory_order_relaxed);
+    }
+    tele_.chainSize.store(p.chainSize, std::memory_order_relaxed);
+
+    // --- SOLO mix: staged input = (1-a) * chain + a * dry (delayed by chain latency) ------
+    const int Lc = std::clamp(p.chainLatency, 0, kCompSize - maxBlock_ - 1);
+    const int Ls = std::clamp(p.stagedLatency, 0, kCompSize - maxBlock_ - 1);
+    float* sL = sinBuf_.data();
+    float* sR = sinBuf_.data() + maxBlock_;
+    float* hL = sinHist_.data();
+    float* hR = sinHist_.data() + kCompSize;
+    for (int i = 0; i < n; ++i) {
+        const float a = rampSolo_[static_cast<size_t>(i)];
+        const int rd = (dryPos_ + i - Lc) & kCompMask;
+        sL[i] = (1.0f - a) * cL[i] + a * dL[rd];
+        sR[i] = (1.0f - a) * cR[i] + a * dR[rd];
+        const int w = (sinPos_ + i) & kCompMask;
+        hL[w] = sL[i];
+        hR[w] = sR[i];
+    }
+
+    // --- staged FX --------------------------------------------------------------------------
+    float* tL = stagedBuf_.data();
+    float* tR = stagedBuf_.data() + maxBlock_;
+    std::memcpy(tL, sL, sizeof(float) * static_cast<size_t>(n));
+    std::memcpy(tR, sR, sizeof(float) * static_cast<size_t>(n));
+    if (hasStaged) {
+        float* tbuf[2] = {tL, tR};
+        p.staged->process(tbuf, n, ctx);
+        const bool bad = sanitize(tL, n, 32.0f) | sanitize(tR, n, 32.0f);
+        if (bad) p.staged->reset();
+        double sq = 0.0;
+        for (int i = 0; i < n; ++i) sq += 0.5 * (static_cast<double>(tL[i]) * tL[i] + static_cast<double>(tR[i]) * tR[i]);
+        tele_.stagedRms.store(static_cast<float>(std::sqrt(sq / n)), std::memory_order_relaxed);
+    } else {
+        tele_.stagedRms.store(0.0f, std::memory_order_relaxed);
+    }
+
+    // --- output assembly -------------------------------------------------------------------
+    const int T = Lc + Ls;
+    double outSq = 0.0, lowSq = 0.0, midSq = 0.0, highSq = 0.0;
+    float peak = 0.0f;
+    const float aLow = 1.0f - std::exp(-2.0f * 3.14159265f * 250.0f / sr);
+    const float aHigh = 1.0f - std::exp(-2.0f * 3.14159265f * 4000.0f / sr);
+    for (int i = 0; i < n; ++i) {
+        const size_t si = static_cast<size_t>(i);
+        const float w = hasStaged ? rampWet_[si] : 0.0f;
+        const int rs = (sinPos_ + i - Ls) & kCompMask;
+        const int rt = (dryPos_ + i - T) & kCompMask;
+        float oL = w * tL[i] + (1.0f - w) * hL[rs];
+        float oR = w * tR[i] + (1.0f - w) * hR[rs];
+        const float mix = rampMix_[si];
+        oL = mix * oL + (1.0f - mix) * dL[rt];
+        oR = mix * oR + (1.0f - mix) * dR[rt];
+        const float b = rampBypass_[si];
+        const float tg = rampTrans_[si];
+        oL = (1.0f - b) * tg * oL + b * dL[rt];
+        oR = (1.0f - b) * tg * oR + b * dR[rt];
+        const float og = rampOut_[si];
+        oL *= og;
+        oR *= og;
+        if (!std::isfinite(oL)) oL = 0.0f;
+        if (!std::isfinite(oR)) oR = 0.0f;
+        oL = std::clamp(oL, -kSafetyLimit, kSafetyLimit);
+        oR = std::clamp(oR, -kSafetyLimit, kSafetyLimit);
+        L[i] = oL;
+        R[i] = oR;
+        outSq += 0.5 * (static_cast<double>(oL) * oL + static_cast<double>(oR) * oR);
+        peak = std::max(peak, std::max(std::fabs(oL), std::fabs(oR)));
+        const float m = 0.5f * (oL + oR);
+        bandLowState_[0] += aLow * (m - bandLowState_[0]);
+        bandHighState_[0] += aHigh * (m - bandHighState_[0]);
+        const float lo = bandLowState_[0];
+        const float hi = m - bandHighState_[0];
+        const float mid = m - lo - hi;
+        lowSq += lo * lo;
+        midSq += mid * mid;
+        highSq += hi * hi;
+    }
+    bandLowState_[0] = dsp::flushTiny(bandLowState_[0]);
+    bandHighState_[0] = dsp::flushTiny(bandHighState_[0]);
+    const double inv = 1.0 / std::max(1, n);
+    tele_.outRms.store(static_cast<float>(std::sqrt(outSq * inv)), std::memory_order_relaxed);
+    tele_.outPeak.store(peak, std::memory_order_relaxed);
+    tele_.outLow.store(static_cast<float>(std::sqrt(lowSq * inv)), std::memory_order_relaxed);
+    tele_.outMid.store(static_cast<float>(std::sqrt(midSq * inv)), std::memory_order_relaxed);
+    tele_.outHigh.store(static_cast<float>(std::sqrt(highSq * inv)), std::memory_order_relaxed);
+    tele_.soloAmount.store(soloAmt_, std::memory_order_relaxed);
+    tele_.muteAmount.store(muteAmt_, std::memory_order_relaxed);
+
+    dryPos_ = (dryPos_ + n) & kCompMask;
+    sinPos_ = (sinPos_ + n) & kCompMask;
+}
+
+}  // namespace ih1
