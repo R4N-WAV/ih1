@@ -94,7 +94,13 @@ int main() {
     auto& car = ed->carousel();
 
     // ---- 4.9 / 4.11 startup state ----
-    check(ed->getWidth() >= 1400 && ed->getHeight() >= 850, "opens large: " + String(ed->getWidth()) + " x " + String(ed->getHeight()));
+    {
+        Rectangle<int> user;
+        if (const auto* disp = Desktop::getInstance().getDisplays().getPrimaryDisplay()) user = disp->userBounds.toNearestInt();
+        const auto want = Editor::defaultSize(user);
+        check(std::abs(ed->getWidth() - want.x) <= 2 && std::abs(ed->getHeight() - want.y) <= 2,
+              "opens at the default size for this display: " + String(ed->getWidth()) + " x " + String(ed->getHeight()) + " (expected " + String(want.x) + " x " + String(want.y) + ")");
+    }
     check(selected(*proc) == -1 && car.selected() == -1, "fresh instance: nothing staged (carousel reads None)");
     check(!ed->settings().isVisible(), "no settings panel while nothing is staged");
 

@@ -288,7 +288,14 @@ int main(int argc, char** argv) {
         check(ed != nullptr, "editor opens in a host window");
         if (ed) {
             const auto w0 = ed->getWidth(), h0 = ed->getHeight();
-            check(w0 >= 1400 && h0 >= 850, "first-run editor size is large (" + String(w0) + " x " + String(h0) + ")");
+            // expected first-run size: 1500 x 900, shrunk to 92 % of the display's usable area, never below
+            // the 1120 x 700 minimum (mirrors Editor::defaultSize; CI runners have small virtual displays)
+            Rectangle<float> user;
+            if (const auto* disp = Desktop::getInstance().getDisplays().getPrimaryDisplay()) user = disp->userBounds;
+            const int ew = jlimit(1120, 3840, user.isEmpty() ? 1500 : std::min(1500, static_cast<int>(user.getWidth() * 0.92)));
+            const int eh = jlimit(700, 2400, user.isEmpty() ? 900 : std::min(900, static_cast<int>(user.getHeight() * 0.92)));
+            check(std::abs(w0 - ew) <= 2 && std::abs(h0 - eh) <= 2,
+                  "first-run editor size " + String(w0) + " x " + String(h0) + " matches the default for this display (" + String(ew) + " x " + String(eh) + ")");
         }
         std::mt19937 rr(77);
         int resizes = 0, reopens = 0;
