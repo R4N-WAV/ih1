@@ -6,6 +6,8 @@
 //   or a number N for the first N of a built-in mixed list, or "none". Duplicates get duplicate shades.
 //   Add "+commit" to the chain spec to commit the last instance at t = 1 s (transfer animation).
 // Writes PPM frames to outDir every `every` seconds. Env: IH1_EXPOSURE, IH1_QUALITY (0/1/2), IH1_STATS.
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
