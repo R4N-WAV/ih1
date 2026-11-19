@@ -98,7 +98,10 @@ int main() {
         Rectangle<int> user;
         if (const auto* disp = Desktop::getInstance().getDisplays().getPrimaryDisplay()) user = disp->userBounds.toNearestInt();
         const auto want = Editor::defaultSize(user);
-        check(std::abs(ed->getWidth() - want.x) <= 2 && std::abs(ed->getHeight() - want.y) <= 2,
+        // as a top-level test window the OS may trim it to the screen when the screen is smaller than the
+        // editor's minimum (CI runners: 1024 x 768); inside a host the editor is a child window and is not trimmed
+        const bool trimmedByOs = want.y > user.getHeight() * 0.92 && ed->getHeight() < want.y && ed->getHeight() >= user.getHeight() / 2;
+        check(std::abs(ed->getWidth() - want.x) <= 2 && (std::abs(ed->getHeight() - want.y) <= 2 || trimmedByOs),
               "opens at the default size for this display: " + String(ed->getWidth()) + " x " + String(ed->getHeight()) + " (expected " + String(want.x) + " x " + String(want.y) + ")");
     }
     check(selected(*proc) == -1 && car.selected() == -1, "fresh instance: nothing staged (carousel reads None)");
