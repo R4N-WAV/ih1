@@ -28,7 +28,7 @@ jobs:
       - name: Host-lifecycle tests (VST3, incl. editor resize stress)
         run: xvfb-run -a -s "-screen 0 1920x1200x24" ./build/plugin/ih1_hosttest_artefacts/Release/ih1_hosttest build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
       - name: Editor interaction tests
-        run: xvfb-run -a -s "-screen 0 1920x1200x24" ./build/plugin/ih1_uitest_artefacts/Release/ih1_uitest
+        run: IH1_REQUIRE_GL=1 xvfb-run -a -s "-screen 0 1920x1200x24" ./build/plugin/ih1_uitest_artefacts/Release/ih1_uitest
       - name: pluginval (strictness 8; V2.1 passed 8 and 10 on Linux)
         run: |
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_Linux.zip

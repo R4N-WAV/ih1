@@ -535,7 +535,14 @@ int main() {
         for (const char* extra : {"chorus", "delay", "harmony", "saturation", "reverb"}) { proc->uiSelect(fxTypeIndex(extra)); proc->uiCommit(); }
         proc->uiSelect(fxTypeIndex("grain_engine"));
         pump(3000);
-        check(!ed->usingSoftwareFormation(), "the OpenGL formation renders (shaders and targets OK, no software fallback)");
+        // Machines without OpenGL 3.2 (GPU-less Windows CI runners offer GL 1.1) correctly fall back to the
+        // software formation. Only where GL is known to exist (IH1_REQUIRE_GL=1, e.g. Linux CI with Mesa) is a
+        // fallback a failure: there it would mean a shader or render-target error.
+        if (SystemStats::getEnvironmentVariable("IH1_REQUIRE_GL", {}).isNotEmpty())
+            check(!ed->usingSoftwareFormation(), "the OpenGL formation renders (shaders and targets OK, no software fallback)");
+        else
+            check(true, ed->usingSoftwareFormation() ? "no OpenGL 3.2 here: the software formation took over (expected fallback)"
+                                                     : "the OpenGL formation renders (shaders and targets OK)");
         if (const int hold = SystemStats::getEnvironmentVariable("IH1_GL_HOLD_MS", "0").getIntValue(); hold > 0) {
             std::printf("GL_HOLD_START\n");
             std::fflush(stdout);
