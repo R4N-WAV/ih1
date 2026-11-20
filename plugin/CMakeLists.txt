@@ -45,7 +45,21 @@ target_sources(IH1 PRIVATE
     Source/FxGraph.cpp
     Source/PresetBrowser.cpp)
 
+# Build identity shown in the editor header (v<version> · <commit>), so a user can always tell which build
+# a host has loaded.
+set(IH1_GIT_HASH "dev")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=7 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE IH1_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT IH1_GIT_HASH)
+        set(IH1_GIT_HASH "dev")
+    endif()
+endif()
+
 target_compile_definitions(IH1 PUBLIC
+    IH1_VERSION_STRING="${PROJECT_VERSION}"
+    IH1_GIT_HASH="${IH1_GIT_HASH}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
@@ -80,7 +94,7 @@ if(IH1_BUILD_UITEST)
         ${CMAKE_SOURCE_DIR}/tools/uitest/UiTest.cpp
         Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/Ih1LookAndFeel.cpp Source/Carousel.cpp
         Source/SettingsPanel.cpp Source/FormationView.cpp Source/Widgets.cpp Source/FxGraph.cpp Source/PresetBrowser.cpp)
-    target_compile_definitions(ih1_uitest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="IH1" IH1_UITEST=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_compile_definitions(ih1_uitest PRIVATE IH1_VERSION_STRING="${PROJECT_VERSION}" IH1_GIT_HASH="${IH1_GIT_HASH}" JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="IH1" IH1_UITEST=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(ih1_uitest PRIVATE ih1_core juce::juce_audio_utils juce::juce_opengl
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

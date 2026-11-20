@@ -31,6 +31,11 @@ PrivilegesRequired=admin
 UninstallDisplayName=IH1 {#AppVersion}
 UninstallDisplayIcon={app}\IH1.exe
 SetupLogging=yes
+; A host that has IH1 loaded locks IH1.vst3: ask to close it (or force it) instead of silently leaving the
+; old files in place until a reboot.
+CloseApplications=force
+RestartApplications=no
+VersionInfoVersion={#AppVersion}
 
 [Types]
 Name: "full"; Description: "VST3 plug-in and standalone app"
@@ -40,6 +45,10 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 [Components]
 Name: "vst3"; Description: "IH1 VST3 plug-in (installed to Common Files\VST3)"; Types: full vst3 custom; Flags: fixed
 Name: "standalone"; Description: "IH1 standalone app (for trying IH1 without a DAW)"; Types: full
+
+[InstallDelete]
+; remove the previous bundle completely, so no stale file of an older build can survive an update
+Type: filesandordirs; Name: "{commoncf64}\VST3\IH1.vst3"
 
 [Files]
 Source: "{#SourceDir}\VST3\IH1.vst3\*"; DestDir: "{commoncf64}\VST3\IH1.vst3"; Components: vst3; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -56,3 +65,24 @@ Filename: "{app}\IH1.exe"; Description: "Launch the IH1 standalone app"; Compone
 
 [Messages]
 FinishedLabel=IH1 has been installed.%n%nThe VST3 plug-in is in C:\Program Files\Common Files\VST3\IH1.vst3. In FL Studio use Options > Manage plugins > Find more plugins; in Cubase open Studio > VST Plug-in Manager and rescan if IH1 does not appear.
+
+[Code]
+// An older IH1.vst3 in the per-user VST3 folder (or the 32-bit one) can be loaded by a host instead of this
+// one. Warn so the user can remove it.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Others: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    Others := '';
+    if DirExists(ExpandConstant('{localappdata}\Programs\Common\VST3\IH1.vst3')) then
+      Others := Others + #13#10 + ExpandConstant('{localappdata}\Programs\Common\VST3\IH1.vst3');
+    if DirExists(ExpandConstant('{commoncf32}\VST3\IH1.vst3')) and (ExpandConstant('{commoncf32}') <> ExpandConstant('{commoncf64}')) then
+      Others := Others + #13#10 + ExpandConstant('{commoncf32}\VST3\IH1.vst3');
+    if Others <> '' then
+      MsgBox('IH1 {#AppVersion} is installed in C:\Program Files\Common Files\VST3.' + #13#10#13#10 +
+             'Another, older copy of IH1 was found, which a host may load instead:' + Others + #13#10#13#10 +
+             'Delete it, then rescan plug-ins in your DAW.', mbInformation, MB_OK);
+  end;
+end;

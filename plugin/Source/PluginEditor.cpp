@@ -85,6 +85,13 @@ void Editor::paint(juce::Graphics& g) {
     g.setColour(Colours::text);
     g.setFont(LookAndFeel::font(19.0f, true).withExtraKerningFactor(0.18f));
     g.drawText("IH1", header_.withWidth(64), juce::Justification::centredLeft);
+    // build identity, quiet: tells at a glance which build the host has loaded
+#if defined(IH1_VERSION_STRING) && defined(IH1_GIT_HASH)
+    g.setColour(Colours::textFaint);
+    g.setFont(LookAndFeel::font(9.5f));
+    g.drawText(juce::String("v") + IH1_VERSION_STRING + " " + IH1_GIT_HASH,
+               header_.withWidth(84).withTrimmedTop(header_.getHeight() - 6).translated(0, 8), juce::Justification::centredLeft);
+#endif
 }
 
 void Editor::resized() {
