@@ -8,14 +8,15 @@ were **not available**. The FL Studio acceptance list is `docs/FL_STUDIO_TEST_CH
 
 | Suite | Baseline (before V2.1) | V2.1 final | Notes |
 |---|---|---|---|
-| `ih1_tests` | 78 / 78 | **@UNIT@** | 23 new cases (below) |
-| `ih1_hosttest` (real VST3 through JUCE's VST3 host) | 48 / 48 | **@HOST@** | New: latency modes through the VST3 state path. Host-reported == impulse-measured in every mode; the zero-capable chain's processed impulse arrives at +1. |
-| `ih1_uitest` (real editor, native-peer events, OpenGL attached) | pass (44) | **@UI@** | New: nested menu, 120-click preset-arrow stress, Clear FX Chain paths, latency menu, Sync-disabled controls, Advanced visible, MUTE greying, GL formation active |
+| `ih1_tests` | 78 / 78 | **101 / 101 (8,222,707 assertions)** | 23 new cases (below) |
+| `ih1_hosttest` (real VST3 through JUCE's VST3 host) | 48 / 48 | **56 / 56** | New: latency modes through the VST3 state path. Host-reported == impulse-measured in every mode; the zero-capable chain's processed impulse arrives at +1. |
+| `ih1_uitest` (real editor, native-peer events, OpenGL attached) | pass (44) | **73 / 73** | New: nested menu, 120-click preset-arrow stress, Clear FX Chain paths, latency menu, Sync-disabled controls, Advanced visible, MUTE greying, GL formation active |
 | pluginval v1.0.4 | not run locally | **SUCCESS at strictness 8 and 10** | Linux, Xvfb (`--validate IH1.vst3`) |
-| ASan + UBSan (`ih1_tests`, leak detection on) | — | **@ASAN@** | No memory error, no UB, no leak |
+| ASan + UBSan (`ih1_tests`, leak detection on) | — | **101 / 101; 0 ASan / UBSan / LeakSanitizer reports** | No memory error, no UB, no leak |
 | TSan (threaded stress with clear / latency switches, clear-chain, session-latency) | — | **3 / 3, 0 warnings** | |
-| TSan soak (`ih1_soak` 180 s, audio + message threads) | — | **@TSANSOAK@** | |
-| 30-minute soak (`ih1_soak 1800 12`) | — | **@SOAK@** | |
+| TSan soak (`ih1_soak` 180 s, audio + message threads) | — | **0 ThreadSanitizer warnings in 181 s (59,012 blocks, 3,025 operations). Its RSS heuristic is not meaningful under TSan (shadow memory).** | |
+| 30-minute soak (`ih1_soak 1800 12`) | — | **PASS: 1,800 s wall time, 7,573,196 blocks = 80,876 s (22.5 h) of audio at 44.9x real time; 129,550 random operations; 0 non-finite samples; RSS 7.0 MB at start, 28.4 MB at end, 190 MB peak with heavy chains (released afterwards; no growth). Built from `64a7f82` + the soak tool, before the last DSP commit. The 240 s ASan + LeakSanitizer soak below used the final code.** | |
+| ASan + LeakSanitizer soak (final code, 240 s + 60 s without quarantine) | — | **0 leaks, 0 errors**, 0 non-finite | With quarantine on, RSS grows by design (ASan holds freed memory); with `quarantine_size_mb=0` the soak's RSS check passes |
 | CPU per block (thread CPU time, 80,000 × 256-sample blocks, random ops, chains up to 12 heavy FX) | — | median 0.12 ms, p99 1.3 ms, p99.9 2.0 ms, max 4.7 ms (budget 5.33 ms) | No operation causes a pathological spike. Wall-clock outliers in the soak come from CPU contention with parallel builds (see Notes). |
 
 ### New unit cases (`tests/test_v21.cpp` and additions)

@@ -105,12 +105,12 @@ The Zero note in the UI states this cost and points to Low (5 samples) for Fold.
 
   | Chain | Full Quality | Low | Zero |
   |---|---|---|---|
-  | Saturation + Convolution + Harmony | 2327 | 512 | 512 (reported honestly) |
-  | EQ + Saturation + Compressor + Tape / Console | 46 | 0 | 0 |
+  | Saturation + Convolution + Harmony | 2327 | 517 | 512 (reported honestly) |
+  | EQ + Saturation + Compressor + Tape / Console | 46 | 10 | 0 |
 
   In every case the host-reported value equals the impulse offset. The zero-capable chain's processed impulse arrives at +1.
 
-  The host run predates the switch of Low from 1x to the IIR oversampler. The unit tests cover the IIR variant; the host suite was rerun after it (section 9).
+  After Low switched to the IIR oversampler, the host suite was rerun with the final build. Low then reports 517 (512 + 5) for the first chain and 10 (5 + 5) for the second, and each value again equals the measured impulse offset.
 
 ## 4. Formation (Phases 1, 3, 9)
 
@@ -290,13 +290,15 @@ All runs were on Linux in this container: 4 cores, Mesa llvmpipe OpenGL under Xv
 
 | Check | Result |
 |---|---|
-| Unit, contract, behaviour and audit tests (`ih1_tests`) | **101 / 101 pass** |
-| ASan + UBSan build of `ih1_tests` (leak detection on) | see `docs/QA_AND_REGRESSION_RESULTS.md` (V2.1 section) |
-| TSan | see `docs/QA_AND_REGRESSION_RESULTS.md` (V2.1 section) |
-| `ih1_uitest`: real editor, events through the native peer | **72 / 72**, plus the GL formation stays active (no fallback) |
+| Unit, contract, behaviour and audit tests (`ih1_tests`) | **101 / 101 pass** (8.2 M assertions) |
+| ASan + UBSan build of `ih1_tests` (leak detection on), final code | **101 / 101, 0 reports** |
+| ASan + LeakSanitizer soak, final code (240 s) | **0 leaks, 0 errors, 0 non-finite** |
+| TSan: threaded stress (with clear / latency switches) + clear-chain + session-latency tests | **3 / 3, 0 warnings** |
+| TSan soak (180 s, audio + message threads) | **0 warnings** |
+| `ih1_uitest`: real editor, events through the native peer | **73 / 73**, including the check that the GL formation stays active (no fallback) |
 | `ih1_hosttest`: the built VST3 hosted through JUCE's VST3 host | **56 / 56**, incl. 6 latency-mode checks with impulse == reported and 320+ resize / reopen cycles |
-| pluginval v1.0.4 | **SUCCESS at strictness 8 and 10** (Linux, Xvfb) |
-| 30-minute soak (`ih1_soak`): audio thread at full speed, random commits / deletes / reorders / clears / latency switches / preset loads / RESET / SOLO / MUTE | see `docs/QA_AND_REGRESSION_RESULTS.md` |
+| pluginval v1.0.4, final VST3 | **SUCCESS at strictness 8 and 10** (Linux, Xvfb) |
+| 30-minute soak (`ih1_soak`): audio thread at full speed, random commits / deletes / reorders / clears / latency switches / preset loads / RESET / SOLO / MUTE | **PASS**: 7.57 M blocks (22.5 h of audio), 129,550 operations, 0 non-finite samples, no memory growth (7 → 28 MB) |
 | CPU per block (thread CPU time, 80 000 blocks of 256 samples, chains up to 12 heavy FX) | median 0.12 ms, p99.9 2.0 ms, max 4.7 ms (budget 5.33 ms) |
 | FL Studio | **Not tested** (no Windows or FL Studio here). Checklist: `docs/FL_STUDIO_TEST_CHECKLIST.md` |
 
