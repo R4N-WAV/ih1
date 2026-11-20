@@ -187,14 +187,14 @@ constexpr dsp::Shape kStyleShape[6] = {dsp::Shape::Asym, dsp::Shape::SoftCubic, 
 
 class Saturation final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_);
+        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         drive_.prepare(sr_, 30.0f);
         out_.prepare(sr_, 30.0f);
         bias_.prepare(sr_, 30.0f);
         work_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         inPow_.assign(static_cast<size_t>(maxBlock_), 0.0f);
-        for (auto& d : dc_) d.prepare(sr_ * 2.0, 8.0f);
+        for (auto& d : dc_) d.prepare(sr_ * os_[0].factor(), 8.0f);
     }
     int latencySamples() const override { return os_[0].latency(); }
     void reset() override {
@@ -238,8 +238,8 @@ class Saturation final : public FxBase {
                 work_[static_cast<size_t>(i)] = pre_[c].process(in);
             }
             float* hi = os_[c].up(work_.data(), n);
-            for (int k = 0; k < 2 * n; ++k) {
-                const float t = static_cast<float>(k) / static_cast<float>(2 * n);
+            for (int k = 0; k < os_[c].factor() * n; ++k) {
+                const float t = static_cast<float>(k) / static_cast<float>(os_[c].factor() * n);
                 const float drv = d0 + t * (d1 - d0), bias = b0 + t * (b1 - b0);
                 hi[k] = dc_[c].process(sh_[c].process(hi[k] * drv + bias));
             }

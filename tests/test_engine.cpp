@@ -400,7 +400,7 @@ TEST_CASE("threaded stress: random UI operations while audio runs") {
     });
     std::mt19937 rng(7);
     for (int it = 0; it < 4000; ++it) {
-        switch (rng() % 8) {
+        switch (rng() % 10) {
             case 0: h.session.select(rng() % 2 ? T("test_gain") : T("test_latency")); break;
             case 1: h.session.setDraftParam(0, static_cast<float>(rng() % 30) - 20.0f); break;
             case 2: h.session.commit(); break;
@@ -409,6 +409,8 @@ TEST_CASE("threaded stress: random UI operations while audio runs") {
             case 5: h.session.setSolo(rng() % 2); break;
             case 6: h.session.setMute(rng() % 2); break;
             case 7: h.session.select(-1); break;
+            case 8: if (rng() % 4 == 0) h.session.clearChain(); break;
+            case 9: if (rng() % 8 == 0) h.session.setLatencyMode(static_cast<LatencyMode>(rng() % 3)); break;
         }
         h.session.service();
         if (it % 50 == 0) std::this_thread::sleep_for(std::chrono::microseconds(200));

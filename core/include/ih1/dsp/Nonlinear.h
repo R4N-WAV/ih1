@@ -73,17 +73,21 @@ private:
 // Linear-phase half-band FIR 2x oversampler (Kaiser-windowed sinc). Latency (base rate) = (taps-1)/2.
 class Oversampler2x {
 public:
-    void prepare(int maxBlock, int taps = 47, float beta = 7.8f);
-    int latency() const { return (static_cast<int>(h_.size()) - 1) / 2; }
-    // up: n input samples -> 2n samples in `hi` (internal buffer returned)
+    // passthrough = true: the Zero-latency variant. No filters run, factor() == 1 and latency() == 0;
+    // up() copies, down() copies. Callers process factor() * n samples at factor() * sampleRate.
+    void prepare(int maxBlock, int taps = 47, float beta = 7.8f, bool passthrough = false);
+    int latency() const { return passthrough_ ? 0 : (static_cast<int>(h_.size()) - 1) / 2; }
+    int factor() const { return passthrough_ ? 1 : 2; }
+    // up: n input samples -> factor()*n samples in `hi` (internal buffer returned)
     float* up(const float* in, int n);
-    // down: 2n samples in `hi` -> n output samples
+    // down: factor()*n samples in `hi` -> n output samples
     void down(const float* hi, float* out, int n);
     void reset();
 
 private:
     std::vector<float> h_, upHist_, downHist_, hi_;
     int upPos_ = 0, downPos_ = 0;
+    bool passthrough_ = false;
 };
 
 }  // namespace ih1::dsp

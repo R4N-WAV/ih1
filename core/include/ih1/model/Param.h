@@ -29,7 +29,13 @@ struct ParamSpec {
     float curveExponent = 1.0f;          // ParamCurve::Pow only
     std::vector<std::string> choices;    // ParamKind::Choice only
     std::string tooltip;                 // plain-language: what it does to the sound
-    bool advanced = false;               // shown under "More" in the settings panel
+    bool advanced = false;               // grouped under the "Advanced" heading (always visible)
+    // Control dependency (data-driven): this parameter is only active while the parameter `enabledBy`
+    // has the value `enabledWhen` (e.g. a free time knob is active only while Sync is off). The value is
+    // kept (dormant) while inactive; the UI greys the control out and explains why in `disabledReason`.
+    std::string enabledBy;
+    float enabledWhen = 1.0f;
+    std::string disabledReason;
 
     float clamp(float v) const {
         if (!std::isfinite(v)) v = defaultValue;

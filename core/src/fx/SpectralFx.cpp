@@ -52,7 +52,8 @@ enum {
 class Harmony final : public FxBase {
     static constexpr int kV = 4;
     void onPrepare() override {
-        n_ = dsp::stftSizeFor(sr_);
+        // Low latency: a quarter-length window (512 points at 44.1/48 kHz, ~11 ms instead of ~43 ms)
+        n_ = dsp::stftSizeFor(sr_, latMode_ == LatencyMode::Quality ? 2048 : 512);
         hop_ = n_ / 4;
         stft_.prepare(n_, hop_);
         ana_.prepare(n_, hop_);
@@ -224,7 +225,8 @@ enum { pShiftA, pFineA, pShiftB, pLevelB, pPreserve, pCharacter, pDelay, pFeedba
 
 class PitchShift final : public FxBase {
     void onPrepare() override {
-        n_ = dsp::stftSizeFor(sr_);
+        // Low latency: a quarter-length window (512 points at 44.1/48 kHz, ~11 ms instead of ~43 ms)
+        n_ = dsp::stftSizeFor(sr_, latMode_ == LatencyMode::Quality ? 2048 : 512);
         hop_ = n_ / 4;
         for (int c = 0; c < 2; ++c) {
             stft_[c].prepare(n_, hop_);
@@ -285,7 +287,8 @@ enum { oShift, oDetail, oOut, oMix };
 
 class FormantShift final : public FxBase {
     void onPrepare() override {
-        n_ = dsp::stftSizeFor(sr_);
+        // Low latency: a quarter-length window (512 points at 44.1/48 kHz, ~11 ms instead of ~43 ms)
+        n_ = dsp::stftSizeFor(sr_, latMode_ == LatencyMode::Quality ? 2048 : 512);
         hop_ = n_ / 4;
         for (int c = 0; c < 2; ++c) { stft_[c].prepare(n_, hop_); ana_[c].prepare(n_, hop_); }
         mix_.prepare(sr_, maxBlock_, n_, MixLaw::Linear);
@@ -334,7 +337,8 @@ enum { zFreeze, zFade, zBlur, zSmear, zShimmer, zHighCut, zMix };
 
 class SpectralFreeze final : public FxBase {
     void onPrepare() override {
-        n_ = dsp::stftSizeFor(sr_);
+        // Low latency: a quarter-length window (512 points at 44.1/48 kHz, ~11 ms instead of ~43 ms)
+        n_ = dsp::stftSizeFor(sr_, latMode_ == LatencyMode::Quality ? 2048 : 512);
         hop_ = n_ / 4;
         const size_t B = static_cast<size_t>(n_ / 2 + 1);
         for (int c = 0; c < 2; ++c) {

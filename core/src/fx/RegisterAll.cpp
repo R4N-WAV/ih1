@@ -31,6 +31,7 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeRotary());
     r.push_back(describeFreqShifter());
     // Texture & Spectral
+    r.push_back(describeGrainEngine());
     r.push_back(describeGranular());
     r.push_back(describeSpectral());
     r.push_back(describeStutter());

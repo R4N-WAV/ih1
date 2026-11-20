@@ -287,12 +287,17 @@ class Resonator final : public FxBase {
 // Uniform partitioned overlap-save convolution (partition P = 256 -> latency 256). All built-in IRs and
 // their partition spectra are generated in prepare(), so switching IR on the audio thread is a crossfade
 // between two precomputed responses, never an allocation.
+// Zero / Low latency (V2.1 Phase 16): hybrid partitioning. The first P taps of each IR are convolved
+// directly in the time domain (no block delay); the FFT partitions hold the IR from tap P onward, so the
+// FFT path's inherent P-sample block delay lines up exactly with where that part of the IR begins. Same
+// response, zero reported and measured latency, more CPU (2 x 256 MACs per sample).
 enum { cvIr, cvLength, cvPredelay, cvTone, cvWidth, cvMix };
 class Convolution final : public FxBase {
     static constexpr int P = 256, NF = 2 * P;
     static constexpr int kIrs = 6;
     static constexpr double kIrSeconds = 2.5;
     void onPrepare() override {
+        zero_ = latMode_ != LatencyMode::Quality;
         fft_.prepare(NF);
         parts_ = static_cast<int>(std::ceil(kIrSeconds * sr_ / P));
         const size_t B = NF;
@@ -325,9 +330,15 @@ class Convolution final : public FxBase {
                 for (size_t i = 0; i < len; ++i) e += static_cast<double>(ir[i]) * ir[i];
                 const float norm = static_cast<float>(1.0 / std::sqrt(std::max(e, 1e-12)) * 0.5);
                 std::vector<dsp::cfloat> buf(B);
+                const int skip = zero_ ? P : 0;  // hybrid: the FFT partitions start after the direct head
+                head0_[t][c].assign(static_cast<size_t>(P), 0.0f);
+                if (zero_) for (int k = 0; k < P; ++k) head0_[t][c][static_cast<size_t>(P - 1 - k)] = ir[static_cast<size_t>(k)] * norm;  // reversed for the FIR
                 for (int p = 0; p < parts_; ++p) {
                     std::fill(buf.begin(), buf.end(), dsp::cfloat());
-                    for (int k = 0; k < P; ++k) buf[static_cast<size_t>(k)] = dsp::cfloat(ir[static_cast<size_t>(p * P + k)] * norm, 0.0f);
+                    for (int k = 0; k < P; ++k) {
+                        const size_t idx = static_cast<size_t>(skip + p * P + k);
+                        if (idx < ir.size()) buf[static_cast<size_t>(k)] = dsp::cfloat(ir[idx] * norm, 0.0f);
+                    }
                     fft_.forward(buf.data());
                     std::copy(buf.begin(), buf.end(), h_[t][c].begin() + static_cast<long>(p) * static_cast<long>(B));
                 }
@@ -340,9 +351,11 @@ class Convolution final : public FxBase {
         acc_.assign(B, dsp::cfloat());
         acc2_.assign(B, dsp::cfloat());
         pre_.prepare(static_cast<int>(0.26 * sr_));
-        mix_.prepare(sr_, maxBlock_, P, MixLaw::Flat);
+        hist_.assign(static_cast<size_t>(2 * P), 0.0f);
+        histPos_ = 0;
+        mix_.prepare(sr_, maxBlock_, latencySamples(), MixLaw::Flat);
     }
-    int latencySamples() const override { return P; }
+    int latencySamples() const override { return zero_ ? 0 : P; }
     double tailSeconds() const override { return kIrSeconds; }
     void reset() override {
         for (auto& x : fdl_) std::fill(x.begin(), x.end(), dsp::cfloat());
@@ -350,6 +363,8 @@ class Convolution final : public FxBase {
         for (auto& x : outBuf_) std::fill(x.begin(), x.end(), 0.0f);
         fill_ = 0;
         head_ = 0;
+        std::fill(hist_.begin(), hist_.end(), 0.0f);
+        histPos_ = 0;
         cur_ = prev_ = std::clamp(ip(cvIr), 0, kIrs - 1);
         xf_ = 1.0f;
         pre_.reset();
@@ -375,6 +390,27 @@ class Convolution final : public FxBase {
             for (int c = 0; c < 2; ++c) {
                 inBuf_[c][static_cast<size_t>(P + fill_)] = x;
                 y[c] = outBuf_[c][static_cast<size_t>(fill_)];
+            }
+            if (zero_) {
+                // direct-form head: history written twice so the P-tap window is contiguous
+                hist_[static_cast<size_t>(histPos_)] = x;
+                hist_[static_cast<size_t>(histPos_ + P)] = x;
+                histPos_ = (histPos_ + 1) % P;
+                const float* hw = &hist_[static_cast<size_t>(histPos_)];  // oldest .. newest
+                const float a = xf_, b = std::min(1.0f, xf_ + static_cast<float>(P) / (0.08f * srf()));
+                const float w = a + (b - a) * static_cast<float>(fill_) / P;
+                for (int c = 0; c < 2; ++c) {
+                    const float* hc = head0_[cur_][c].data();
+                    float acc = 0.0f;
+                    for (int k = 0; k < P; ++k) acc += hc[k] * hw[k];
+                    if (a < 1.0f) {
+                        const float* hp = head0_[prev_][c].data();
+                        float acc2 = 0.0f;
+                        for (int k = 0; k < P; ++k) acc2 += hp[k] * hw[k];
+                        acc = w * acc + (1.0f - w) * acc2;
+                    }
+                    y[c] += acc;
+                }
             }
             if (++fill_ == P) { fill_ = 0; block(useParts); }
             const float M = 0.5f * (y[0] + y[1]), S = 0.5f * (y[0] - y[1]) * width;
@@ -421,6 +457,9 @@ class Convolution final : public FxBase {
     float xf_ = 1.0f;
     std::vector<dsp::cfloat> h_[kIrs][2], fdl_[2], work_, acc_, acc2_;
     std::vector<float> inBuf_[2], outBuf_[2];
+    std::vector<float> head0_[kIrs][2], hist_;  // Zero/Low latency: direct-form IR head (reversed) + input history
+    int histPos_ = 0;
+    bool zero_ = false;
     dsp::DelayLine pre_;
     dsp::Svf tone_[2];
     MixStage mix_;
@@ -430,7 +469,7 @@ class Convolution final : public FxBase {
 enum { amGain, amBass, amMid, amTreble, amPresence, amMaster, amCab, amOut, amMix };
 class Amp final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_);
+        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         work_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         out_.prepare(sr_, 30.0f);
@@ -447,7 +486,7 @@ class Amp final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override {
-        const double hi = sr_ * 2.0;  // the amp stages run at 2x
+        const double hi = sr_ * os_[0].factor();  // the amp stages run at 2x (1x in Zero latency)
         for (int c = 0; c < 2; ++c) {
             s1_[c].setShape(dsp::Shape::Asym);
             s2_[c].setShape(dsp::Shape::Tanh);
@@ -474,12 +513,12 @@ class Amp final : public FxBase {
         mix_.capture(ch, n);
         const float g1 = dsp::dbToGain(fp(amGain) * 0.6f), g2 = dsp::dbToGain(fp(amGain) * 0.4f);
         const float master = dsp::dbToGain(fp(amMaster));
-        const float sagA = 1.0f - std::exp(-1.0f / (0.06f * 2.0f * srf()));
+        const float sagA = 1.0f - std::exp(-1.0f / (0.06f * static_cast<float>(os_[0].factor()) * srf()));
         const bool cabOn = ip(amCab) > 0;
         for (int c = 0; c < 2; ++c) {
             for (int i = 0; i < n; ++i) work_[static_cast<size_t>(i)] = ch[c][i];
             float* hi = os_[c].up(work_.data(), n);
-            for (int k = 0; k < 2 * n; ++k) {
+            for (int k = 0; k < os_[c].factor() * n; ++k) {
                 float x = f_[c][0].process(hi[k]) * g1;
                 x = s1_[c].process(x);                         // first preamp stage (asymmetric: even harmonics)
                 x = f_[c][1].process(x) * g2;

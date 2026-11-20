@@ -76,6 +76,7 @@ public:
         if (hasParams_) applyParams(true);
         reset();
     }
+    void setLatencyMode(LatencyMode m) final { latMode_ = m; }
     void setParams(const ParamValues& v, bool snap) final {
         p_ = v;
         hasParams_ = true;
@@ -96,6 +97,7 @@ protected:
     int maxBlock_ = 512;
     ParamValues p_{};
     bool hasParams_ = false;
+    LatencyMode latMode_ = LatencyMode::Quality;  // already resolved for this type by the Session
 };
 
 // Tempo-synced or free time helper: returns seconds.

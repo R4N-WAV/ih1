@@ -71,6 +71,7 @@ uint64_t Session::newId() {
 std::unique_ptr<FxProcessor> Session::makeProcessor(int typeIndex, const ParamValues& values) {
     const auto& d = fxRegistry()[static_cast<size_t>(typeIndex)];
     auto p = d.create();
+    p->setLatencyMode(d.resolveLatency(latencyMode_));
     p->prepare(sampleRate_, maxBlock_);
     p->setParams(d.clamp(values), true);
     return p;
@@ -275,6 +276,35 @@ void Session::setMute(bool on) {
     ++revision_;
 }
 
+void Session::setLatencyMode(LatencyMode m) {
+    if (m == latencyMode_) return;
+    latencyMode_ = m;
+    // fresh processors of the resolved variant, same ids / frozen values / seeds; the old ones are retired
+    // through the program queue and freed here once the audio thread has let go of them
+    std::vector<CommittedInstance> next;
+    next.reserve(chain_.size());
+    for (const auto& ci : chain_)
+        next.emplace_back(ci.id(), ci.typeIndex(), ci.values(), ci.visualSeed(), adopt(makeProcessor(ci.typeIndex(), ci.values())));
+    chain_.swap(next);
+    if (selected_ >= 0) staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
+    rebuild(false);
+    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
+    collectGarbage();
+}
+
+std::vector<Session::LatencyContributor> Session::latencyContributors() const {
+    std::vector<LatencyContributor> v;
+    for (const auto& ci : chain_) {
+        const int l = ci.processor()->latencySamples();
+        if (l > 0) v.push_back({ci.id(), ci.typeIndex(), l, ci.descriptor().resolveLatency(latencyMode_), false});
+    }
+    if (staged_ && selected_ >= 0) {
+        const int l = staged_->latencySamples();
+        if (l > 0) v.push_back({0, selected_, l, fxRegistry()[static_cast<size_t>(selected_)].resolveLatency(latencyMode_), true});
+    }
+    return v;
+}
+
 int Session::latencySamples() const {
     int l = 0;
     for (const auto& ci : chain_) l += ci.processor()->latencySamples();
@@ -337,6 +367,7 @@ std::string Session::toJson(bool includeSession) const {
         s.set("selected", selected_ >= 0 ? json::Value(reg[static_cast<size_t>(selected_)].typeId) : json::Value());
         s.set("solo", solo_);
         s.set("mute", mute_);
+        s.set("latencyMode", static_cast<int>(latencyMode_));
         root.set("session", std::move(s));
     }
     return root.dump(1);
@@ -372,6 +403,7 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
     std::vector<ParamValues> newDrafts = drafts_;
     int newSelected = -1;
     bool newSolo = false, newMute = false;
+    LatencyMode newLatency = latencyMode_;
     if (includeSession) {
         const auto& s = root.get("session");
         if (s.isObject()) {
@@ -385,10 +417,14 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
             if (s.get("selected").isString()) newSelected = fxTypeIndex(s.get("selected").asString());
             newSolo = s.get("solo").asBool();
             newMute = s.get("mute").asBool() && !newSolo;
+            // older states have no latency mode: Full Quality (the V1 behaviour)
+            const int lm = static_cast<int>(s.get("latencyMode").asNumber(0));
+            newLatency = static_cast<LatencyMode>(std::clamp(lm, 0, 2));
         }
     }
 
     // ---- apply ----
+    if (includeSession) latencyMode_ = newLatency;  // before any processor is built
     chain_.clear();
     staged_ = nullptr;
     for (auto& ni : insts) {

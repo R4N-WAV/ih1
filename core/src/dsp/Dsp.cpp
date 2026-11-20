@@ -31,7 +31,8 @@ static double besselI0(double x) {
     return sum;
 }
 
-void Oversampler2x::prepare(int maxBlock, int taps, float beta) {
+void Oversampler2x::prepare(int maxBlock, int taps, float beta, bool passthrough) {
+    passthrough_ = passthrough;
     if (taps % 2 == 0) ++taps;
     h_.assign(static_cast<size_t>(taps), 0.0f);
     const int M = taps - 1;
@@ -58,6 +59,10 @@ void Oversampler2x::reset() {
 }
 
 float* Oversampler2x::up(const float* in, int n) {
+    if (passthrough_) {
+        std::copy(in, in + n, hi_.begin());
+        return hi_.data();
+    }
     const int T = static_cast<int>(h_.size());
     for (int i = 0; i < n; ++i) {
         for (int ph = 0; ph < 2; ++ph) {
@@ -75,6 +80,10 @@ float* Oversampler2x::up(const float* in, int n) {
 }
 
 void Oversampler2x::down(const float* hi, float* out, int n) {
+    if (passthrough_) {
+        if (hi != out) std::copy(hi, hi + n, out);
+        return;
+    }
     const int T = static_cast<int>(h_.size());
     for (int i = 0; i < n; ++i) {
         float acc = 0.0f;

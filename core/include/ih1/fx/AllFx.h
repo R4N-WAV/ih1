@@ -21,6 +21,7 @@ FxDescriptor describeDoubler();
 FxDescriptor describeChorus();
 FxDescriptor describeFilter();
 FxDescriptor describeGranular();
+FxDescriptor describeGrainEngine();
 FxDescriptor describeSpectral();
 FxDescriptor describeStutter();
 FxDescriptor describeEq();

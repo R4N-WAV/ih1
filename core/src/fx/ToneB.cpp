@@ -59,13 +59,13 @@ class Bitcrusher final : public FxBase {
 enum { tcMode, tcDrive, tcBump, tcHfLoss, tcAuto, tcOut, tcMix };
 class TapeColour final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_);
+        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         work_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         inPow_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         drive_.prepare(sr_, 30.0f);
         out_.prepare(sr_, 30.0f);
-        for (auto& d : dc_) d.prepare(sr_ * 2.0, 6.0f);
+        for (auto& d : dc_) d.prepare(sr_ * os_[0].factor(), 6.0f);
     }
     int latencySamples() const override { return os_[0].latency(); }
     void reset() override {
@@ -99,8 +99,8 @@ class TapeColour final : public FxBase {
         for (int c = 0; c < 2; ++c) {
             for (int i = 0; i < n; ++i) work_[static_cast<size_t>(i)] = lift_[c].process(bump_[c].process(ch[c][i]));
             float* hi = os_[c].up(work_.data(), n);
-            for (int k = 0; k < 2 * n; ++k) {
-                const float drv = d0 + (d1 - d0) * static_cast<float>(k) / static_cast<float>(2 * n);
+            for (int k = 0; k < os_[c].factor() * n; ++k) {
+                const float drv = d0 + (d1 - d0) * static_cast<float>(k) / static_cast<float>(os_[c].factor() * n);
                 hi[k] = dc_[c].process(sh_[c].process(hi[k] * drv) / std::max(0.25f, drv));
             }
             os_[c].down(hi, ch[c], n);
@@ -132,7 +132,7 @@ class TapeColour final : public FxBase {
 // =============================================================================================== Exciter
 enum { exFreq, exDrive, exAmount, exMode };
 class Exciter final : public FxBase {
-    void onPrepare() override { for (auto& o : os_) o.prepare(maxBlock_); work_.assign(static_cast<size_t>(maxBlock_), 0.0f); band_.assign(static_cast<size_t>(maxBlock_) * 2, 0.0f); amt_.prepare(sr_, 30.0f); }
+    void onPrepare() override { for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality); work_.assign(static_cast<size_t>(maxBlock_), 0.0f); band_.assign(static_cast<size_t>(maxBlock_) * 2, 0.0f); amt_.prepare(sr_, 30.0f); }
     int latencySamples() const override { return os_[0].latency(); }
     void reset() override {
         for (auto& o : os_) o.reset();
@@ -158,7 +158,7 @@ class Exciter final : public FxBase {
         for (int c = 0; c < 2; ++c) {
             for (int i = 0; i < n; ++i) work_[static_cast<size_t>(i)] = hp2_[c].process(hp_[c].process(ch[c][i])) * drive;
             float* hi = os_[c].up(work_.data(), n);
-            for (int k = 0; k < 2 * n; ++k) hi[k] = sh_[c].process(hi[k]) - hi[k] * 0.8f;  // keep the harmonics, drop most of the fundamental
+            for (int k = 0; k < os_[c].factor() * n; ++k) hi[k] = sh_[c].process(hi[k]) - hi[k] * 0.8f;  // keep the harmonics, drop most of the fundamental
             os_[c].down(hi, band + c * maxBlock_, n);
         }
         for (int i = 0; i < n; ++i) {

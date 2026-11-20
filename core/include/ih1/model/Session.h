@@ -69,6 +69,17 @@ public:
     bool solo() const { return solo_; }
     bool mute() const { return mute_; }
 
+    // ---- latency mode (V2.1 Phase 16) -------------------------------------------------------
+    // Requested globally; each FX builds the best variant it really supports (FxDescriptor::resolveLatency).
+    // Changing it rebuilds every processor (chain + staged) here on the message thread with the same
+    // frozen values and swaps them in through the normal program hand-over (5 ms output crossfade). Tails
+    // restart. Never call from the audio thread.
+    void setLatencyMode(LatencyMode m);
+    LatencyMode latencyMode() const { return latencyMode_; }
+    // Effects whose current variant still reports latency (in processing order, staged last).
+    struct LatencyContributor { uint64_t id; int typeIndex; int samples; LatencyMode resolved; bool staged; };
+    std::vector<LatencyContributor> latencyContributors() const;
+
     int latencySamples() const;  // committed + staged
     double tailSeconds() const;
     uint64_t revision() const { return revision_; }  // bumps on any model change (for the UI)
@@ -99,6 +110,7 @@ private:
     int selected_ = -1;
     FxProcessor* staged_ = nullptr;
     bool solo_ = false, mute_ = false;
+    LatencyMode latencyMode_ = LatencyMode::Quality;
     std::vector<CommittedInstance> chain_;
 
     std::unordered_map<FxProcessor*, std::unique_ptr<FxProcessor>> owned_;
