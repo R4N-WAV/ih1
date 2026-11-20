@@ -50,6 +50,17 @@ MemoryBlock chainState() {
     return mb;
 }
 
+MemoryBlock wrapState(const String& json) {
+    MemoryBlock raw;
+    raw.append("IH1STATE1", 9);
+    raw.append(json.toRawUTF8(), json.getNumBytesAsUTF8());
+    XmlElement env("VST3PluginState");
+    env.createNewChildElement("IComponent")->addTextElement(raw.toBase64Encoding());
+    MemoryBlock mb;
+    AudioProcessor::copyXmlToBinary(env, mb);
+    return mb;
+}
+
 // The component state (IH1's own JSON) inside a hosted instance's state blob.
 String componentJson(AudioPluginInstance& p) {
     MemoryBlock mb;
@@ -193,6 +204,52 @@ int main(int argc, char** argv) {
             check(err < 1e-4, "bypassed output equals input delayed by latency (err " + String(err, 7) + ")");
             bypass->setValue(0.0f);
         }
+    }
+
+    // 5b. V2.1 Phase 16: latency modes through the real VST3. For each mode the host-reported latency must
+    //     equal the measured offset of an impulse (global Mix = 0: the dry path is delayed by exactly the
+    //     latency the plug-in reports), and in Zero mode the wet path of a zero-capable chain is aligned too.
+    {
+        AudioProcessorParameter* mixP = nullptr;
+        for (auto* prm : p->getParameters()) if (prm->getName(32) == "Global Mix") mixP = prm;
+        auto impulseOffset = [&](float mix01) {
+            if (mixP) mixP->setValueNotifyingHost(mix01);
+            run(*p, 48000.0, 512, 30, 1, true);  // settle ramps, clear tails
+            AudioBuffer<float> buf(2, 512);
+            MidiBuffer midi;
+            int at = -1;
+            float best = 0.0f;
+            for (int b = 0; b < 16; ++b) {
+                buf.clear();
+                if (b == 1) { buf.setSample(0, 100, 0.5f); buf.setSample(1, 100, 0.5f); }
+                p->processBlock(buf, midi);
+                for (int i = 0; i < 512; ++i)
+                    if (std::fabs(buf.getSample(0, i)) > best) { best = std::fabs(buf.getSample(0, i)); at = b * 512 + i - (512 + 100); }
+            }
+            return at;
+        };
+        const char* chains[2] = {R"([{"type":"saturation","params":{"drive":3}},{"type":"convolution","params":{"mix":40}},{"type":"harmony","params":{"mode":0}}])",
+                                 R"([{"type":"eq"},{"type":"saturation","params":{"drive":2}},{"type":"compressor"},{"type":"tape_colour"}])"};
+        for (int c = 0; c < 2; ++c)
+            for (int mode = 0; mode < 3; ++mode) {
+                const String js = String(R"({"format":"ih1-state","version":1,"chain":)") + chains[c] + R"(,"session":{"latencyMode":)" + String(mode) + "}}";
+                auto blob = wrapState(js);
+                p->setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+                MessageManager::getInstance()->runDispatchLoopUntil(200);
+                const int reported = p->getLatencySamples();
+                const int dryOffset = impulseOffset(0.0f);
+                check(dryOffset == reported, "chain " + String(c) + ", latency mode " + String(mode) + ": host-reported " + String(reported) +
+                                                 " samples == measured " + String(dryOffset));
+                if (c == 1 && mode == 2) {
+                    const int wet = impulseOffset(1.0f);
+                    check(reported == 0 && wet >= 0 && wet <= 2, "Zero Latency chain: reports 0 and the processed impulse arrives at +" + String(wet));
+                }
+                if (c == 0 && mode == 2) check(reported > 0, "Zero requested with Harmony in the chain: the real latency is still reported (" + String(reported) + ")");
+            }
+        if (mixP) mixP->setValueNotifyingHost(1.0f);
+        auto st2 = chainState();
+        p->setStateInformation(st2.getData(), static_cast<int>(st2.getSize()));
+        MessageManager::getInstance()->runDispatchLoopUntil(200);
     }
 
     // 6. state round trip into a fresh instance: identical state blob and identical audio (null test)

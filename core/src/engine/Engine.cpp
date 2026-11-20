@@ -315,7 +315,7 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
 
     // --- output assembly -------------------------------------------------------------------
     const int T = Lc + Ls;
-    double outSq = 0.0, lowSq = 0.0, midSq = 0.0, highSq = 0.0;
+    double outSq = 0.0, lowSq = 0.0, midSq = 0.0, highSq = 0.0, lSq = 0.0, rSq = 0.0;
     float peak = 0.0f;
     const float aLow = 1.0f - std::exp(-2.0f * 3.14159265f * 250.0f / sr);
     const float aHigh = 1.0f - std::exp(-2.0f * 3.14159265f * 4000.0f / sr);
@@ -342,6 +342,8 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
         oR = std::clamp(oR, -kSafetyLimit, kSafetyLimit);
         L[i] = oL;
         R[i] = oR;
+        lSq += static_cast<double>(oL) * oL;
+        rSq += static_cast<double>(oR) * oR;
         outSq += 0.5 * (static_cast<double>(oL) * oL + static_cast<double>(oR) * oR);
         peak = std::max(peak, std::max(std::fabs(oL), std::fabs(oR)));
         const float m = 0.5f * (oL + oR);
@@ -362,6 +364,10 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
     tele_.outLow.store(static_cast<float>(std::sqrt(lowSq * inv)), std::memory_order_relaxed);
     tele_.outMid.store(static_cast<float>(std::sqrt(midSq * inv)), std::memory_order_relaxed);
     tele_.outHigh.store(static_cast<float>(std::sqrt(highSq * inv)), std::memory_order_relaxed);
+    {
+        const double a = std::sqrt(lSq * inv), b = std::sqrt(rSq * inv);
+        tele_.outBalance.store(a + b > 1e-6 ? static_cast<float>((b - a) / (a + b)) : 0.0f, std::memory_order_relaxed);
+    }
     tele_.soloAmount.store(soloAmt_, std::memory_order_relaxed);
     tele_.muteAmount.store(muteAmt_, std::memory_order_relaxed);
 

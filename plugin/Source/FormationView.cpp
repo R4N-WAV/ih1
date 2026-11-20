@@ -4,6 +4,7 @@
 
 #include "Ih1LookAndFeel.h"
 #include "PluginProcessor.h"
+#include "Widgets.h"
 
 namespace ih1::plugin {
 
@@ -11,7 +12,8 @@ using namespace juce::gl;
 
 namespace {
 constexpr float kExposure = 2.2f;
-constexpr float kBloomGain = 1.6f;
+constexpr float kBloomGain = 0.45f;  // V2.1: bloom is a secondary halo; the filament cores carry the image
+constexpr int kMaxGlows = 64;
 constexpr double kMaxPixels = 2.4e6;
 constexpr int kMaxSide = 4096;
 constexpr double kResizeSettleMs = 150.0;
@@ -41,6 +43,20 @@ void main() {
   vec4 s = texture(uTex, vUv) * w[0];
   for (int i = 1; i < 5; ++i) { s += texture(uTex, vUv + uDir * float(i) * 1.5) * w[i]; s += texture(uTex, vUv - uDir * float(i) * 1.5) * w[i]; }
   o = s; })";
+// The formation-coupled field response: soft Gaussian glows (field coordinates), added into the bloom target.
+const char* kGlowFS = R"(#version 150
+uniform vec4 uGlow[64]; uniform vec3 uGlowCol[64]; uniform int uCount; uniform float uAspect; in vec2 vUv; out vec4 o;
+void main() {
+  vec2 p = vec2(vUv.x * uAspect, 1.0 - vUv.y);
+  vec3 s = vec3(0.0);
+  for (int i = 0; i < 64; ++i) {
+    if (i >= uCount) break;
+    vec2 d = p - uGlow[i].xy;
+    float r2 = max(uGlow[i].z * uGlow[i].z, 1e-6);
+    s += uGlowCol[i] * exp(-dot(d, d) / r2);
+  }
+  o = vec4(s, 1.0);
+})";
 // Mirrors ih1::visual::toneMap (core/src/visual/Formation.cpp): hue-preserving, black stays exactly black.
 const char* kCompFS = R"(#version 150
 uniform sampler2D uAccum; uniform sampler2D uBloom; uniform float uExposure; uniform float uBloomGain; in vec2 vUv; out vec4 o;
@@ -104,6 +120,34 @@ void fillLevels(Processor& proc, std::vector<visual::InstanceInput>& chain) {
             if (tel.slotIds[static_cast<size_t>(s)].load() == ii.id) ii.level = tel.slotRms[static_cast<size_t>(s)].load();
 }
 
+void AudioAnalyser::update(const Telemetry& t, float dt, visual::AudioFeatures& out) {
+    auto fin = [](float x) { return std::isfinite(x) ? std::clamp(x, 0.0f, 8.0f) : 0.0f; };
+    const float r = fin(t.outRms.load(std::memory_order_relaxed)), pk = fin(t.outPeak.load(std::memory_order_relaxed));
+    dt = std::clamp(std::isfinite(dt) ? dt : 0.016f, 0.001f, 0.1f);
+    auto follow = [dt](float& y, float x, float att, float rel) { y += (x - y) * (1.0f - std::exp(-dt / (x > y ? att : rel))); };
+    follow(rms, r, 0.03f, 0.25f);
+    follow(slow, r, 0.6f, 0.6f);
+    follow(peakEnv, pk, 0.005f, 0.12f);
+    follow(low, fin(t.outLow.load(std::memory_order_relaxed)), 0.15f, 0.8f);
+    follow(mid, fin(t.outMid.load(std::memory_order_relaxed)), 0.05f, 0.4f);
+    follow(high, fin(t.outHigh.load(std::memory_order_relaxed)), 0.02f, 0.25f);
+    lastOnset += dt;
+    // onset: the fast peak envelope jumps well above the slow level (bounded, refractory 120 ms)
+    float onset = 0.0f;
+    if (peakEnv > 0.02f && peakEnv > 2.2f * slow + 0.01f && lastOnset > 0.12f) {
+        onset = std::clamp((peakEnv / std::max(slow, 1e-4f) - 2.2f) / 3.0f + 0.4f, 0.0f, 1.0f);
+        lastOnset = 0.0f;
+    }
+    auto map = [](float x) { return std::clamp(std::sqrt(std::max(0.0f, x)) * 1.5f, 0.0f, 1.2f); };
+    out.energy = map(rms);
+    out.transient = onset;
+    out.low = map(low);
+    out.mid = map(mid);
+    out.high = map(high * 1.6f);
+    const float b = t.outBalance.load(std::memory_order_relaxed);
+    out.balance = std::isfinite(b) ? std::clamp(b, -1.0f, 1.0f) : 0.0f;
+}
+
 // =============================================================================================== renderer
 FormationRenderer::FormationRenderer(Processor& p, juce::OpenGLContext& ctx) : proc_(p), ctx_(ctx) {}
 FormationRenderer::~FormationRenderer() = default;
@@ -137,7 +181,10 @@ void FormationRenderer::newOpenGLContextCreated() {
     copyProg_ = makeProgram(ctx_, kQuadVS, kCopyFS);
     blurProg_ = makeProgram(ctx_, kQuadVS, kBlurFS);
     compProg_ = makeProgram(ctx_, kQuadVS, kCompFS);
-    if (!lineProg_ || !decayProg_ || !copyProg_ || !blurProg_ || !compProg_) { failed_ = true; return; }
+    glowProg_ = makeProgram(ctx_, kQuadVS, kGlowFS);
+    if (!lineProg_ || !decayProg_ || !copyProg_ || !blurProg_ || !compProg_ || !glowProg_) { failed_ = true; return; }
+    glowPos_.reserve(kMaxGlows * 4);
+    glowCol_.reserve(kMaxGlows * 3);
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &lineVbo_);
     glGenBuffers(1, &quadVbo_);
@@ -241,6 +288,10 @@ void FormationRenderer::renderOpenGL() {
     // ---- simulation (committed chain + telemetry only) ----
     fillLevels(proc_, in.chain);
     in.dt = static_cast<float>(juce::jlimit(0.001, 0.1, (now - lastMs_) * 0.001));
+    analyser_.update(proc_.telemetry(), in.dt, in.audio);
+    // SOLO: the formation follows the real DSP routing ramp, so it is monochrome exactly while the committed
+    // chain is faded out of the audio
+    in.monochrome = juce::jlimit(0.0f, 1.0f, proc_.telemetry().soloAmount.load(std::memory_order_relaxed));
     lastMs_ = now;
     in.aspect = static_cast<float>(w) / static_cast<float>(h);
     const double t0 = juce::Time::getMillisecondCounterHiRes();
@@ -264,7 +315,19 @@ void FormationRenderer::renderOpenGL() {
     drawQuad();
     const auto& segs = formation_.segments();
     verts_.clear();
-    for (const auto& s : segs) verts_.insert(verts_.end(), {s.x0, s.y0, s.r, s.g, s.b, s.x1, s.y1, s.r, s.g, s.b});
+    const float px = 1.0f / static_cast<float>(std::max(1, rh));  // one pixel in field units
+    for (const auto& s : segs) {
+        if (s.r + s.g + s.b <= 0.0f) continue;  // parked strand ends draw nothing
+        verts_.insert(verts_.end(), {s.x0, s.y0, s.r, s.g, s.b, s.x1, s.y1, s.r, s.g, s.b});
+        if (s.w >= 1.5f) {  // near / bright filament: a 2-px core
+            float dx = s.x1 - s.x0, dy = s.y1 - s.y0;
+            const float l = std::sqrt(dx * dx + dy * dy);
+            if (l > 1e-9f) {
+                const float ox = -dy / l * px, oy = dx / l * px;
+                verts_.insert(verts_.end(), {s.x0 + ox, s.y0 + oy, s.r * 0.8f, s.g * 0.8f, s.b * 0.8f, s.x1 + ox, s.y1 + oy, s.r * 0.8f, s.g * 0.8f, s.b * 0.8f});
+            }
+        }
+    }
     if (!verts_.empty()) {
         glBlendFunc(GL_ONE, GL_ONE);  // additive light
         lineProg_->use();
@@ -302,6 +365,34 @@ void FormationRenderer::renderOpenGL() {
         drawQuad();
     }
 
+    // ---- the field response in empty space: Gaussian glows added at bloom resolution ----
+    {
+        const auto& gl = formation_.glows();
+        const int n = std::min(kMaxGlows, static_cast<int>(gl.size()));
+        if (n > 0) {
+            glowPos_.clear();
+            glowCol_.clear();
+            for (int i = 0; i < n; ++i) {
+                const auto& g = gl[static_cast<size_t>(i)];
+                glowPos_.insert(glowPos_.end(), {g.x, g.y, g.radius, 0.0f});
+                // the composite multiplies the bloom target by kBloomGain: pre-divide so glows keep their level
+                glowCol_.insert(glowCol_.end(), {g.r / kBloomGain, g.g / kBloomGain, g.b / kBloomGain});
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomA_.fbo);
+            glViewport(0, 0, bloomA_.w, bloomA_.h);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glowProg_->use();
+            const auto pid = glowProg_->getProgramID();
+            glUniform4fv(glGetUniformLocation(pid, "uGlow"), n, glowPos_.data());
+            glUniform3fv(glGetUniformLocation(pid, "uGlowCol"), n, glowCol_.data());
+            glUniform1i(glGetUniformLocation(pid, "uCount"), n);
+            glUniform1f(glGetUniformLocation(pid, "uAspect"), in.aspect);
+            drawQuad();
+            glDisable(GL_BLEND);
+        }
+    }
+
     // ---- composite to screen ----
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(screenFbo));
     glViewport(x, y, w, h);
@@ -330,25 +421,29 @@ void FormationRenderer::openGLContextClosing() {
     if (quadVbo_) glDeleteBuffers(1, &quadVbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
     lineVbo_ = quadVbo_ = vao_ = 0;
-    lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset();
+    lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset(); glowProg_.reset();
     wantW_ = wantH_ = 0;
 }
 
 // =============================================================================================== confirm
 class FormationView::Confirm final : public juce::Component {
 public:
-    Confirm(const juce::String& name, juce::Colour colour, std::function<void(bool)> done) : done_(std::move(done)), name_(name), colour_(colour) {
+    // A modal, in-editor confirmation. Cancel, Escape and a click outside the box never perform the action;
+    // the result is delivered exactly once. The confirm button is the only red element (destructive emphasis
+    // lives in the dialog, never on the idle surface). Keyboard focus starts on Cancel.
+    Confirm(juce::AttributedString title, juce::String body, juce::String confirmText, std::function<void(bool)> done)
+        : done_(std::move(done)), title_(std::move(title)), body_(std::move(body)) {
         cancel_.setButtonText("Cancel");
-        del_.setButtonText("Delete");
+        ok_.setButtonText(confirmText);
         cancel_.getProperties().set("quiet", true);
-        del_.getProperties().set("quiet", true);
-        del_.setColour(juce::TextButton::textColourOffId, Colours::danger);
+        ok_.getProperties().set("quiet", true);
+        ok_.setColour(juce::TextButton::textColourOffId, Colours::danger);
         cancel_.onClick = [this] { finish(false); };
-        del_.onClick = [this] { finish(true); };
+        ok_.onClick = [this] { finish(true); };
         addAndMakeVisible(cancel_);
-        addAndMakeVisible(del_);
+        addAndMakeVisible(ok_);
         setWantsKeyboardFocus(true);
-        setTitle("Delete " + name);
+        setTitle(title_.getText());
     }
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colours::black.withAlpha(0.6f));
@@ -356,46 +451,41 @@ public:
         g.fillRect(box_);
         g.setColour(Colours::border);
         g.drawRect(box_.toFloat(), 1.0f);
-        auto r = box_.reduced(22, 18);
-        g.setFont(LookAndFeel::font(18.0f, true));
-        g.setColour(Colours::text);
-        juce::AttributedString t;
-        t.append("Delete ", LookAndFeel::font(18.0f, true), Colours::text);
-        t.append(name_, LookAndFeel::font(18.0f, true), readable(colour_));
-        t.append("?", LookAndFeel::font(18.0f, true), Colours::text);
-        t.draw(g, r.removeFromTop(28).toFloat());
+        auto r = box_.reduced(24, 20);
+        title_.draw(g, r.removeFromTop(28).toFloat());
+        r.removeFromTop(6);
         g.setColour(Colours::textDim);
         g.setFont(LookAndFeel::font(13.0f));
-        g.drawFittedText("This removes this one " + name_ + " from the committed chain. Every other effect, including other " + name_ +
-                             " instances, stays as it is.",
-                         r.withHeight(40), juce::Justification::topLeft, 3);
+        g.drawFittedText(body_, r.withHeight(58), juce::Justification::topLeft, 4);
     }
     void resized() override {
-        box_ = getLocalBounds().withSizeKeepingCentre(std::min(430, getWidth() - 40), 150);
-        auto b = box_.reduced(16, 14).removeFromBottom(30);
-        del_.setBounds(b.removeFromRight(84));
+        box_ = getLocalBounds().withSizeKeepingCentre(std::min(460, getWidth() - 40), 172);
+        auto b = box_.reduced(18, 16).removeFromBottom(30);
+        ok_.setBounds(b.removeFromRight(104));
         b.removeFromRight(8);
         cancel_.setBounds(b.removeFromRight(84));
     }
     void mouseDown(const juce::MouseEvent& e) override { if (!box_.contains(e.getPosition())) finish(false); }
     bool keyPressed(const juce::KeyPress& k) override {
         if (k == juce::KeyPress::escapeKey) { finish(false); return true; }
-        if (k == juce::KeyPress::returnKey && del_.hasKeyboardFocus(false)) { finish(true); return true; }
+        if (k == juce::KeyPress::returnKey && ok_.hasKeyboardFocus(false)) { finish(true); return true; }
         return true;  // swallow everything else while open
     }
     void parentHierarchyChanged() override { if (isShowing()) cancel_.grabKeyboardFocus(); }
+    juce::Button& confirmButton() { return ok_; }
+    juce::Button& cancelButton() { return cancel_; }
 
 private:
-    void finish(bool del) {
+    void finish(bool yes) {
         if (finished_) return;  // exactly once
         finished_ = true;
-        done_(del);
+        done_(yes);
     }
     std::function<void(bool)> done_;
-    juce::String name_;
-    juce::Colour colour_;
+    juce::AttributedString title_;
+    juce::String body_;
     juce::Rectangle<int> box_;
-    juce::TextButton cancel_, del_;
+    juce::TextButton cancel_, ok_;
     bool finished_ = false;
 };
 
@@ -436,6 +526,10 @@ void FormationView::setSoftwareFallback(bool on) {
 }
 
 void FormationView::requestTransfer(uint64_t id, float originY) {
+    // publish the new chain before the transfer (the timer may not have run yet); the formation also keeps a
+    // request until its instance arrives, so ordering can never lose the animation
+    syncChain();
+    seenRevision_ = proc_.revision();
     if (software_) softTransfers_.push_back({id, originY});
     else renderer_.requestTransfer(id, originY);
 }
@@ -449,11 +543,13 @@ void FormationView::renderSoftware() {
     fillLevels(proc_, in.chain);
     in.transfers.swap(softTransfers_);
     in.dt = 1.0f / 30.0f;
+    softAnalyser_.update(proc_.telemetry(), in.dt, in.audio);
+    in.monochrome = juce::jlimit(0.0f, 1.0f, proc_.telemetry().soloAmount.load(std::memory_order_relaxed));
     in.aspect = static_cast<float>(w) / static_cast<float>(h);
     cpuForm_->update(in);
     canvas_.decay(cpuForm_->decay(in.dt));
     canvas_.draw(cpuForm_->segments(), static_cast<float>(h), std::sqrt(juce::jlimit(0.36f, 2.6f, 860.0f / static_cast<float>(h))));
-    canvas_.composite(rgb_, kExposure, kBloomGain);
+    canvas_.composite(rgb_, kExposure, kBloomGain, &cpuForm_->glows(), static_cast<float>(h));
     juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
     for (int y = 0; y < h; ++y) {
         auto* line = bd.getLinePointer(y);
@@ -489,7 +585,11 @@ void FormationView::layoutStrip() {
     strip_ = juce::Rectangle<float>(0.0f, static_cast<float>(getHeight() - kStripH), static_cast<float>(getWidth()), static_cast<float>(kStripH));
     float x = pad;
     const float y = strip_.getY() + 12.0f;
-    const float maxX = static_cast<float>(getWidth()) - pad;
+    // right end of the strip: the discreet chain utility (···) and a quiet latency status
+    chainMenu_ = {static_cast<float>(getWidth()) - pad - 26.0f, y, 26.0f, 22.0f};
+    const float statusW = std::min(330.0f, std::max(0.0f, static_cast<float>(getWidth()) * 0.34f));
+    status_ = {chainMenu_.getX() - 8.0f - statusW, y, statusW, 22.0f};
+    const float maxX = status_.getX() - pad;
     bool overflow = false;
     for (auto& it : items_) {
         const float w = juce::GlyphArrangement::getStringWidth(font, it.name) + 18.0f;
@@ -504,6 +604,7 @@ void FormationView::timerCallback() {
     if (proc_.revision() != seenRevision_) {
         seenRevision_ = proc_.revision();
         syncChain();
+        latency_ = proc_.latencyStatus();
         repaint();
     }
     if (software_ && cpuForm_ && getWidth() > 0) { renderSoftware(); repaint(artworkArea()); }
@@ -519,7 +620,7 @@ void FormationView::resized() {
     mix_.setBounds(r.removeFromRight(40));
     r.removeFromRight(6);
     inGain_.setBounds(r.removeFromRight(40));
-    if (confirm_) confirm_->setBounds(getLocalBounds());
+    if (confirm_) mountConfirm();
 }
 
 void FormationView::paint(juce::Graphics& g) {
@@ -555,7 +656,9 @@ void FormationView::paint(juce::Graphics& g) {
     if (hidden > 0) {
         g.setColour(Colours::textDim);
         g.setFont(LookAndFeel::font(11.0f));
-        g.drawText("+" + juce::String(hidden), strip_.withTrimmedRight(14.0f).withTrimmedTop(12.0f).withHeight(22.0f), juce::Justification::centredRight);
+        float rx = 0.0f;
+        for (const auto& it : items_) if (!it.r.isEmpty()) rx = it.r.getRight();
+        g.drawText("+" + juce::String(hidden), juce::Rectangle<float>(rx + 6.0f, strip_.getY() + 12.0f, 40.0f, 22.0f), juce::Justification::centredLeft);
     }
     if (dragging_) {
         // insertion marker: a thin vertical line in the gap where the effect would land
@@ -586,13 +689,28 @@ void FormationView::paint(juce::Graphics& g) {
                 g.drawText(it.name, juce::Rectangle<float>(dragPos_.x + 12.0f, dragPos_.y - 11.0f, 220.0f, 22.0f), juce::Justification::centredLeft);
             }
     }
-    // toast (status messages only; never an FX name over the field)
+    // the chain utility: three faint dots, brighter on hover; no box, no red (Phase 15)
+    {
+        const bool hot = !dragging_ && chainMenu_.expanded(4.0f).contains(mouse);
+        const bool open = MenuOverlay::find(this) && MenuOverlay::find(this)->isOpenFor(this);
+        g.setColour(open ? Colours::accent : (hot ? Colours::textDim : Colours::textFaint));
+        const float cy = chainMenu_.getCentreY();
+        for (int k = -1; k <= 1; ++k) g.fillEllipse(chainMenu_.getCentreX() + 6.0f * static_cast<float>(k) - 1.5f, cy - 1.5f, 3.0f, 3.0f);
+    }
+    // quiet latency status (names the effect that prevents strict zero latency)
     const double age = juce::Time::getMillisecondCounterHiRes() - toastMs_;
-    if (toast_.isNotEmpty() && age < 2600.0) {
+    const bool toastOn = toast_.isNotEmpty() && age < 2600.0;
+    if (!toastOn && latency_.headline.isNotEmpty()) {
+        g.setColour(latency_.degraded ? Colours::textDim : Colours::textFaint);
+        g.setFont(LookAndFeel::font(11.0f));
+        g.drawFittedText(latency_.headline, status_.toNearestInt(), juce::Justification::centredRight, 1, 0.85f);
+    }
+    // toast (status messages only; never an FX name over the field)
+    if (toastOn) {
         const float a = static_cast<float>(age < 2000.0 ? 1.0 : 1.0 - (age - 2000.0) / 600.0);
         g.setColour(Colours::textDim.withAlpha(a));
         g.setFont(LookAndFeel::font(12.5f));
-        g.drawText(toast_, strip_.withTrimmedRight(16.0f).withTrimmedTop(12.0f).withHeight(22.0f), juce::Justification::centredRight);
+        g.drawText(toast_, status_, juce::Justification::centredRight);
     }
 }
 
@@ -622,11 +740,19 @@ int FormationView::insertionFor(juce::Point<float> p) const {
     return best;
 }
 
-void FormationView::mouseMove(const juce::MouseEvent&) { repaint(strip_.toNearestInt()); }
+void FormationView::mouseMove(const juce::MouseEvent& e) {
+    setMouseCursor(chainMenu_.expanded(6.0f, 8.0f).contains(e.position) ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    repaint(strip_.toNearestInt());
+}
 void FormationView::mouseExit(const juce::MouseEvent&) { repaint(strip_.toNearestInt()); }
 
 void FormationView::mouseDown(const juce::MouseEvent& e) {
-    if (confirm_ || e.mods.isPopupMenu()) return;
+    if (confirm_) return;
+    if (chainMenu_.expanded(6.0f, 8.0f).contains(e.position) || (e.mods.isPopupMenu() && strip_.contains(e.position))) {
+        showChainMenu();  // right-click on the chain strip opens the same discreet chain options
+        return;
+    }
+    if (e.mods.isPopupMenu()) return;
     downPos_ = e.position;
     const int i = hitItem(e.position);
     pressed_ = i >= 0;
@@ -690,15 +816,98 @@ bool FormationView::keyPressed(const juce::KeyPress& k) {
 void FormationView::openConfirm(uint64_t id, const juce::String& name) {
     juce::Colour colour = Colours::text;
     for (const auto& it : items_) if (it.id == id) colour = it.colour;
-    confirm_ = std::make_unique<Confirm>(name, colour, [this, id](bool doDelete) {
+    juce::AttributedString t;
+    t.append("Delete ", LookAndFeel::font(18.0f, true), Colours::text);
+    t.append(name, LookAndFeel::font(18.0f, true), readable(colour));
+    t.append("?", LookAndFeel::font(18.0f, true), Colours::text);
+    const auto body = "This removes this one " + name + " from the committed chain. Every other effect, including other " + name + " instances, stays as it is.";
+    confirm_ = std::make_unique<Confirm>(t, body, "Delete", [this, id](bool doDelete) {
         if (doDelete) proc_.uiRemove(id);  // by stable id: duplicates are never confused
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<FormationView>(this)] { if (safe) safe->closeConfirm(); });
     });
-    addAndMakeVisible(*confirm_);
-    confirm_->setBounds(getLocalBounds());
+    mountConfirm();
+}
+
+void FormationView::openClearConfirm() {
+    // V2.1 Phase 15: exact wording; Cancel / Escape / outside click leave the chain untouched
+    juce::AttributedString t;
+    t.append("Clear the FX chain?", LookAndFeel::font(18.0f, true), Colours::text);
+    const juce::String body = "This will remove every committed FX from the tree and audio chain. This action cannot be undone unless a saved preset or undo state is available.";
+    confirm_ = std::make_unique<Confirm>(t, body, "Clear Chain", [this](bool yes) {
+        if (yes) {
+            proc_.uiClearChain();  // safe hand-over: empty program posted, old processors retired off the audio thread
+            showToast("FX chain cleared");
+        }
+        juce::MessageManager::callAsync([safe = juce::Component::SafePointer<FormationView>(this)] { if (safe) safe->closeConfirm(); });
+    });
+    mountConfirm();
+}
+
+void FormationView::showChainMenu() {
+    auto* ov = MenuOverlay::find(this);
+    if (ov == nullptr || ov->isOpen() || confirm_) return;
+    LatencyMode mode;
+    bool hasChain;
+    {
+        const juce::ScopedLock sl(proc_.sessionLock());
+        mode = proc_.session().latencyMode();
+        hasChain = !proc_.session().chain().empty();
+    }
+    std::vector<MenuItem> items;
+    MenuItem h;
+    h.header = true;
+    h.text = "Latency";
+    items.push_back(h);
+    const LatencyMode modes[3] = {LatencyMode::Quality, LatencyMode::Low, LatencyMode::Zero};
+    const char* hints[3] = {"true latency", "short windows", "0 when possible"};
+    for (int i = 0; i < 3; ++i) {
+        MenuItem it;
+        it.id = 1 + i;
+        it.text = latencyModeName(modes[i]);
+        it.hint = hints[i];
+        it.ticked = mode == modes[i];
+        items.push_back(it);
+    }
+    MenuItem h2;
+    h2.header = true;
+    h2.text = "Chain";
+    items.push_back(h2);
+    MenuItem clear;
+    clear.id = 10;
+    clear.text = "Clear FX Chain...";
+    clear.enabled = hasChain;
+    items.push_back(clear);
+    MenuOverlay::Options o;
+    o.anchor = ov->getLocalArea(this, chainMenu_.toNearestInt());
+    o.minWidth = 230;
+    o.rowHeight = 25;
+    ov->open(std::move(items), o, [safe = juce::Component::SafePointer<FormationView>(this)](int id) {
+        if (safe == nullptr || id <= 0) return;
+        if (id >= 1 && id <= 3) {
+            safe->proc_.uiSetLatencyMode(static_cast<LatencyMode>(id - 1));
+            safe->refreshLatencyStatus();
+        } else if (id == 10) {
+            safe->openClearConfirm();
+        }
+    }, this);
+}
+
+void FormationView::refreshLatencyStatus() {
+    latency_ = proc_.latencyStatus();
+    repaint(strip_.toNearestInt());
+}
+
+void FormationView::mountConfirm() {
+    // modal over the whole editor: a click anywhere outside the box (left column included) cancels
+    auto* host = getParentComponent() != nullptr ? getParentComponent() : static_cast<juce::Component*>(this);
+    if (confirm_->getParentComponent() != host) host->addAndMakeVisible(*confirm_);
+    confirm_->setBounds(host->getLocalBounds());
+    confirm_->toFront(true);
 }
 
 juce::Component* FormationView::confirmDialog() const { return confirm_.get(); }
+juce::Button* FormationView::confirmButton() const { return confirm_ ? &confirm_->confirmButton() : nullptr; }
+juce::Button* FormationView::cancelButton() const { return confirm_ ? &confirm_->cancelButton() : nullptr; }
 
 void FormationView::closeConfirm() {
     confirm_.reset();
@@ -725,6 +934,9 @@ juce::String FormationView::describe(uint64_t id) {
 
 juce::String FormationView::getTooltip() {
     if (dragging_ || confirm_) return {};
+    const auto m = getMouseXYRelative().toFloat();
+    if (chainMenu_.expanded(6.0f, 8.0f).contains(m)) return "Chain options: latency mode, and Clear FX Chain (asks first).";
+    if (status_.contains(m)) return latency_.detail;
     const int i = hitItem(getMouseXYRelative().toFloat());
     return i >= 0 ? describe(items_[static_cast<size_t>(i)].id) : juce::String();
 }

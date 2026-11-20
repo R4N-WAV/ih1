@@ -90,19 +90,22 @@ void Editor::paint(juce::Graphics& g) {
 void Editor::resized() {
     const int W = std::max(1, getWidth()), H = std::max(1, getHeight());
     proc_.setLastEditorSize(W, H);
-    const int lw = juce::jlimit(400, 500, static_cast<int>(W * 0.30));
+    // V2.1 spacing (Phase 5): a wider column with a deliberate hierarchy -- outer inset 32 px, header to
+    // carousel 16, carousel to settings 24, settings to the COMMIT row 24. The column grows a little with
+    // the window so the settings area is not squeezed by the larger insets.
+    const int lw = juce::jlimit(440, 560, static_cast<int>(W * 0.32));
     left_ = juce::Rectangle<int>(0, 0, lw, H);
-    auto r = left_.reduced(Tokens::gutter, 16);
+    auto r = left_.reduced(Tokens::gutter, Tokens::gutterV);
     header_ = r.removeFromTop(36);
     presetBar_.setBounds(header_.withTrimmedLeft(84));
-    r.removeFromTop(10);
-    carousel_.setBounds(r.removeFromTop(juce::jlimit(180, 250, H / 4)));
-    r.removeFromTop(14);
+    r.removeFromTop(Tokens::space4);
+    carousel_.setBounds(r.removeFromTop(juce::jlimit(170, 240, H / 4)));
+    r.removeFromTop(Tokens::space5);
     auto buttons = r.removeFromBottom(40);
-    commit_.setBounds(buttons.removeFromLeft(buttons.getWidth() / 2 - 6));
-    buttons.removeFromLeft(12);
+    commit_.setBounds(buttons.removeFromLeft(buttons.getWidth() / 2 - Tokens::space2));
+    buttons.removeFromLeft(Tokens::space4);
     reset_.setBounds(buttons);
-    r.removeFromBottom(16);
+    r.removeFromBottom(Tokens::space5);
     settings_.setBounds(r);
     const auto field = juce::Rectangle<int>(lw, 0, W - lw, H);
     formation_.setBounds(field);
@@ -152,9 +155,20 @@ void Editor::timerCallback() {
             sel = proc_.session().selected();
             chain = static_cast<int>(proc_.session().chain().size());
         }
+        bool muted;
+        {
+            const juce::ScopedLock sl(proc_.sessionLock());
+            muted = proc_.session().mute();
+        }
         carousel_.setSelected(sel);
-        commit_.setEnabled(sel >= 0 && chain < kMaxChain);
-        reset_.setEnabled(sel >= 0);
+        // MUTE (V2.1 9.7): the whole staged area is greyed and inactive -- carousel, settings, COMMIT, RESET.
+        // Only S / M stay live so the user can unmute. Matches the DSP: the staged FX is silent while muted.
+        carousel_.setEnabled(!muted);
+        carousel_.setAlpha(muted ? 0.35f : 1.0f);
+        commit_.setEnabled(sel >= 0 && chain < kMaxChain && !muted);
+        reset_.setEnabled(sel >= 0 && !muted);
+        commit_.setAlpha(muted ? 0.4f : 1.0f);
+        reset_.setAlpha(muted ? 0.4f : 1.0f);
         settings_.setVisible(sel >= 0);  // no empty panel when nothing is staged
         presetBar_.refresh();
     }

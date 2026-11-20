@@ -22,24 +22,22 @@ void styleQuiet(juce::TextButton& b) {
 
 // =============================================================================================== bar
 PresetBar::PresetBar(Processor& p) : proc_(p) {
-    for (auto* b : {&prev_, &next_}) {
-        b->setShape(chevron(b == &prev_), false, true, false);
-        b->setOutline(Colours::textDim, 1.3f);
-        b->setMouseCursor(juce::MouseCursor::PointingHandCursor);
-        b->setWantsKeyboardFocus(false);
-        addAndMakeVisible(*b);
-    }
-    prev_.setTooltip("Previous preset");
-    next_.setTooltip("Next preset");
-    auto stepper = [this](int dir) {
-        juce::String msg;
-        if (!proc_.stepPreset(dir, msg) && onMessage) onMessage(msg);
-        refresh();
-    };
-    prev_.onClick = [stepper] { stepper(-1); };
-    next_.onClick = [stepper] { stepper(1); };
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
-    setTooltip("Presets: click the name to browse by category; the arrows step through every preset. Presets hold the committed chain.");
+    setRepaintsOnMouseActivity(true);
+    refresh();
+}
+
+juce::String PresetBar::getTooltip() {
+    const auto m = getMouseXYRelative();
+    if (prevArea().contains(m)) return "Previous preset";
+    if (nextArea().contains(m)) return "Next preset";
+    return "Presets: click the name to browse by category; the arrows step through every preset in the browser's order. Presets hold the committed chain.";
+}
+
+void PresetBar::step(int dir) {
+    juce::String msg;
+    ++steps_;
+    if (!proc_.stepPreset(dir, msg) && onMessage) onMessage(msg);
     refresh();
 }
 
@@ -49,17 +47,25 @@ void PresetBar::refresh() {
     if (n != name_ || m != modified_) { name_ = n; modified_ = m; repaint(); }
 }
 
-juce::Rectangle<int> PresetBar::nameArea() const { return getLocalBounds().reduced(26, 0); }
-
-void PresetBar::resized() {
-    auto r = getLocalBounds();
-    prev_.setBounds(r.removeFromLeft(22).withSizeKeepingCentre(10, 14));
-    next_.setBounds(r.removeFromRight(22).withSizeKeepingCentre(10, 14));
-}
+juce::Rectangle<int> PresetBar::nameArea() const { return getLocalBounds().reduced(kArrowW, 0); }
 
 void PresetBar::paint(juce::Graphics& g) {
+    const auto mouse = getMouseXYRelative();
+    const bool over = isMouseOver(false);
+    // chevrons, centred in their (generous) hit zones
+    for (int side : {-1, 1}) {
+        const auto zone = (side < 0 ? prevArea() : nextArea()).toFloat();
+        const bool hot = over && zone.contains(mouse.toFloat());
+        const bool down = pressedSide_ == side;
+        juce::Path p;
+        const float cx = zone.getCentreX(), cy = zone.getCentreY();
+        if (side < 0) { p.startNewSubPath(cx + 3.0f, cy - 6.0f); p.lineTo(cx - 3.0f, cy); p.lineTo(cx + 3.0f, cy + 6.0f); }
+        else { p.startNewSubPath(cx - 3.0f, cy - 6.0f); p.lineTo(cx + 3.0f, cy); p.lineTo(cx - 3.0f, cy + 6.0f); }
+        g.setColour(down ? Colours::accent : (hot ? Colours::text : Colours::textDim));
+        g.strokePath(p, juce::PathStrokeType(1.4f));
+    }
     auto r = nameArea().toFloat();
-    const bool hot = isMouseOver(false) && r.contains(getMouseXYRelative().toFloat());
+    const bool hot = over && r.contains(mouse.toFloat());
     g.setColour(Colours::border.brighter(hot ? 0.6f : 0.2f));
     g.fillRect(r.getX(), r.getBottom() - 1.0f, r.getWidth(), 1.0f);
     const bool none = name_.isEmpty();
@@ -74,7 +80,11 @@ void PresetBar::paint(juce::Graphics& g) {
 }
 
 void PresetBar::mouseDown(const juce::MouseEvent& e) {
-    if (nameArea().contains(e.getPosition()) && onOpenBrowser) onOpenBrowser();
+    if (e.mods.isPopupMenu()) return;
+    const auto p = e.getPosition();
+    if (prevArea().contains(p)) { pressedSide_ = -1; step(-1); return; }
+    if (nextArea().contains(p)) { pressedSide_ = 1; step(1); return; }
+    if (nameArea().contains(p) && onOpenBrowser) onOpenBrowser();
 }
 
 // =============================================================================================== browser
@@ -96,7 +106,7 @@ PresetBrowser::PresetBrowser(Processor& p) : proc_(p) {
     nameEdit_.onReturnKey = [this] { commitName(); };
     nameEdit_.onEscapeKey = [this] { setMode(Mode::Browse); };
     nameEdit_.setInputRestrictions(60);
-    for (auto* b : {&save_, &saveAs_, &rename_, &del_, &clear_, &ok_, &cancel_}) { styleQuiet(*b); addChildComponent(*b); }
+    for (auto* b : {&save_, &saveAs_, &rename_, &del_, &ok_, &cancel_}) { styleQuiet(*b); addChildComponent(*b); }
     del_.setColour(juce::TextButton::textColourOffId, Colours::danger);
     save_.setTooltip("Save the current chain over the selected user preset (asks first).");
     saveAs_.setTooltip("Save the current committed chain as a new user preset.");
@@ -106,16 +116,11 @@ PresetBrowser::PresetBrowser(Processor& p) : proc_(p) {
     saveAs_.onClick = [this] { setMode(Mode::SaveAs); };
     rename_.onClick = [this] { if (const auto* e = current(); e && !e->factory) setMode(Mode::Rename); };
     del_.onClick = [this] { if (const auto* e = current(); e && !e->factory) setMode(Mode::ConfirmDelete); };
-    clear_.setTooltip("Remove every committed effect (asks first). The staged effect is kept.");
-    clear_.onClick = [this] { setMode(Mode::ConfirmClear); };
     cancel_.onClick = [this] { setMode(Mode::Browse); };
     ok_.onClick = [this] {
         juce::String msg;
         const auto* e = current();
-        if (mode_ == Mode::ConfirmClear) {
-            proc_.uiClearChain();
-            if (onMessage) onMessage("Chain cleared");
-        } else if (mode_ == Mode::ConfirmDelete && e) {
+        if (mode_ == Mode::ConfirmDelete && e) {
             const bool ok = proc_.deleteUserPreset(e->key, msg);
             if (onMessage) onMessage(ok ? "Preset deleted" : msg);
         } else if (mode_ == Mode::ConfirmOverwrite) {
@@ -196,16 +201,15 @@ void PresetBrowser::setMode(Mode m) {
     saveAs_.setVisible(browse);
     rename_.setVisible(browse);
     del_.setVisible(browse);
-    clear_.setVisible(browse);
     save_.setEnabled(user);
     rename_.setEnabled(user);
     del_.setEnabled(user);
     nameEdit_.setVisible(m == Mode::SaveAs || m == Mode::Rename);
     ok_.setVisible(!browse);
     cancel_.setVisible(!browse);
-    ok_.setButtonText(m == Mode::ConfirmDelete ? "Delete" : (m == Mode::ConfirmOverwrite ? "Overwrite" : (m == Mode::ConfirmClear ? "Clear" : "Save")));
+    ok_.setButtonText(m == Mode::ConfirmDelete ? "Delete" : (m == Mode::ConfirmOverwrite ? "Overwrite" : "Save"));
     if (m == Mode::Rename) ok_.setButtonText("Rename");
-    ok_.setColour(juce::TextButton::textColourOffId, (m == Mode::ConfirmDelete || m == Mode::ConfirmClear) ? Colours::danger : Colours::text);
+    ok_.setColour(juce::TextButton::textColourOffId, m == Mode::ConfirmDelete ? Colours::danger : Colours::text);
     if (m == Mode::SaveAs) { nameEdit_.setText(proc_.currentPresetName().isNotEmpty() ? proc_.currentPresetName() : "My Chain", false); nameEdit_.grabKeyboardFocus(); }
     if (m == Mode::Rename && e) { nameEdit_.setText(e->name, false); nameEdit_.grabKeyboardFocus(); }
     resized();
@@ -244,7 +248,6 @@ void PresetBrowser::resized() {
     auto f = footer_;
     if (mode_ == Mode::Browse) {
         for (auto* b : {&saveAs_, &save_, &rename_, &del_}) { b->setBounds(f.removeFromLeft(74)); f.removeFromLeft(4); }
-        clear_.setBounds(f.removeFromRight(96));
     } else {
         cancel_.setBounds(f.removeFromRight(76));
         f.removeFromRight(4);
@@ -315,11 +318,6 @@ void PresetBrowser::paint(juce::Graphics& g) {
         g.setColour(Colours::textDim);
         g.setFont(LookAndFeel::font(12.5f));
         g.drawFittedText(d->description.isNotEmpty() ? d->description : (d->factory ? juce::String() : juce::String("User preset")), descArea_, juce::Justification::centredLeft, 2);
-    }
-    if (mode_ == Mode::ConfirmClear) {
-        g.setColour(Colours::text);
-        g.setFont(LookAndFeel::font(13.0f));
-        g.drawText("Remove every committed effect?", footer_.withTrimmedRight(180), juce::Justification::centredLeft);
     }
     if (mode_ == Mode::ConfirmDelete || mode_ == Mode::ConfirmOverwrite) {
         g.setColour(Colours::text);

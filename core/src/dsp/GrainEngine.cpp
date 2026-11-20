@@ -73,6 +73,8 @@ void GrainEngine::reset() {
     loopStart_ = loopLen_ = 0.0;
     lastMode_ = -1;
     lastFreeze_ = false;
+    latched_ = false;
+    heard_ = 0;
     retrigCount_ = 0.0;
     energy_ = 0.0f;
     sumPow_ = indPow_ = 0.0f;
@@ -251,8 +253,13 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
     const double sr = sr_;
     const double loopLen = std::clamp(static_cast<double>(p.loopMs) * 0.001 * sr, 256.0, static_cast<double>(mask_) * 0.9);
     const bool scan = p.mode == Stretch || p.mode == Loop;
-    // Loop holds its segment: writing stops while looping (the captured segment cannot be overwritten)
-    const bool hold = p.freeze || p.mode == Loop;
+    // Loop holds its segment: writing stops while looping (the captured segment cannot be overwritten).
+    // Both Loop and Freeze arm first and latch once enough real signal has been captured.
+    const bool wantHold = p.freeze || p.mode == Loop;
+    if (!wantHold) latched_ = false;
+    const int64_t need = p.mode == Loop ? static_cast<int64_t>(loopLen) : static_cast<int64_t>(0.75 * sr);
+    if (wantHold && !latched_ && heard_ >= need) latched_ = true;
+    const bool hold = wantHold && latched_;
 
     if (p.fbHp != lastHp_ || p.fbLp != lastLp_) {
         for (int c = 0; c < 2; ++c) {
@@ -266,7 +273,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
     // mode / freeze transitions set the playhead anchor
     if (p.mode != lastMode_ || hold != lastFreeze_) {
         const double avail = static_cast<double>(std::min<int64_t>(filled_, mask_ - 64));
-        if (p.mode == Loop) {
+        if (p.mode == Loop && hold) {
             loopLen_ = std::min(loopLen, std::max(256.0, avail - 64.0));
             loopStart_ = static_cast<double>(head_) - loopLen_ - kMinLag;
             playhead_ = p.speed >= 0.0f ? loopStart_ : loopStart_ + loopLen_;
@@ -289,7 +296,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             retrigCount_ += 1.0;
             if (retrigCount_ >= std::max(64.0, p.retrigSamples)) {
                 retrigCount_ = 0.0;
-                if (p.mode == Loop) playhead_ = p.speed >= 0.0f ? loopStart_ : loopStart_ + loopLen_;
+                if (p.mode == Loop && hold) playhead_ = p.speed >= 0.0f ? loopStart_ : loopStart_ + loopLen_;
                 else playhead_ = static_cast<double>(head_) - static_cast<double>(p.positionMs) * 0.001 * sr;
                 forced = true;
             }
@@ -297,7 +304,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         if (scan) {
             playhead_ += p.speed;
             const double head = static_cast<double>(head_);
-            if (p.mode == Loop) {
+            if (p.mode == Loop && hold) {
                 if (playhead_ >= loopStart_ + loopLen_) playhead_ -= loopLen_;
                 if (playhead_ < loopStart_) playhead_ += loopLen_;
             } else if (hold) {
@@ -307,9 +314,11 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
                 if (playhead_ >= head - kMinLag) playhead_ -= span;
                 if (playhead_ < lo) playhead_ += span;
             } else {
-                // live Stretch: cannot read the future; cannot fall off the end of the buffer
-                const double lo = head - static_cast<double>(std::min<int64_t>(filled_, mask_ - 64)) + 64.0;
-                playhead_ = std::clamp(playhead_, lo, head - kMinLag);
+                // live Stretch: cannot read the future (follows the input at > 1x); slower than 1x it drifts
+                // back and, at the end of the buffer, wraps to the Offset point (an implicit retrigger)
+                const double lo = head - static_cast<double>(std::min<int64_t>(filled_, mask_ - 64)) + 64.0 + 2.0 * sr;
+                if (playhead_ < lo && filled_ > static_cast<int64_t>(4.0 * sr)) playhead_ = head - static_cast<double>(p.positionMs) * 0.001 * sr;
+                playhead_ = std::clamp(playhead_, head - static_cast<double>(std::min<int64_t>(filled_, mask_ - 64)) + 64.0, head - kMinLag);
             }
         }
         // ---- scheduler ----
@@ -381,6 +390,8 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         // ---- capture (after reading, so a grain never reads the sample being written) ----
         if (!hold) {
             const float xl = inL[i] + fbIn[0], xr = inR[i] + fbIn[1];
+            if (std::fabs(inL[i]) + std::fabs(inR[i]) > 0.002f && heard_ < (int64_t{1} << 40)) ++heard_;  // real signal captured
+            if (wantHold && !latched_ && heard_ >= need) latched_ = true;  // takes effect from the next block
             buf_[0][static_cast<size_t>(head_ & mask_)] = std::isfinite(xl) ? std::clamp(xl, -8.0f, 8.0f) : 0.0f;
             buf_[1][static_cast<size_t>(head_ & mask_)] = std::isfinite(xr) ? std::clamp(xr, -8.0f, 8.0f) : 0.0f;
             ++head_;

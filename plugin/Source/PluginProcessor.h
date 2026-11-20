@@ -60,6 +60,17 @@ public:
     void uiClearChain();
     void uiSetSolo(bool on);
     void uiSetMute(bool on);
+    // Latency mode (V2.1 Phase 16). Message thread. Rebuilds the processor variants off the audio thread and
+    // reports the new latency to the host (JUCE -> VST3 restartComponent(kLatencyChanged)).
+    void uiSetLatencyMode(LatencyMode m);
+    struct LatencyStatus {
+        LatencyMode mode = LatencyMode::Quality;
+        int samples = 0;            // reported to the host (== what the engine runs)
+        juce::String headline;      // e.g. "Zero Latency - 0 samples"
+        juce::String detail;        // which effects add latency and why (from the registry), for the tooltip
+        bool degraded = false;      // the requested mode could not be met fully
+    };
+    LatencyStatus latencyStatus();
     uint64_t revision() const { return revision_.load(); }
 
     // ---- presets (message thread) -------------------------------------------------------------
@@ -114,6 +125,9 @@ private:
     std::atomic<double> hostBpm_{120.0};
     std::atomic<int> editorW_{0}, editorH_{0};
     juce::String presetKey_, presetName_;
+    std::vector<PresetEntry> listCache_;
+    double listCacheMs_ = -1e9;
+    void invalidatePresetList() { listCacheMs_ = -1e9; }
     std::string presetSig_;      // chain signature when the preset was loaded / saved
     std::string chainSignature() const;  // lock held
     bool applyPresetJson(const std::string& text, const juce::String& key, const juce::String& name, juce::String& message);

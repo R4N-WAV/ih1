@@ -33,6 +33,7 @@ public:
     SettingsPanel& settings() { return settings_; }
     MenuOverlay& menu() { return menu_; }
     FormationView& formation() { return formation_; }
+    PresetBar& presetBar() { return presetBar_; }
     bool usingSoftwareFormation() const { return formation_.softwareFallback(); }
 
 private:

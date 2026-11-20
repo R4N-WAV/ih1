@@ -160,32 +160,34 @@ void Carousel::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDet
 void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
     auto* ov = MenuOverlay::find(this);
     if (ov == nullptr || ov->isOpen()) return;
-    // the full catalogue, grouped by family, each name in its identity colour; choosing stages (never commits)
+    // V2.1: categories (data-driven from the registry) each open a submenu of their effects, every name in its
+    // family colour; choosing stages the effect (never commits). The mouse wheel / arrow carousel is unchanged.
     std::vector<MenuItem> items;
     const auto& reg = fxRegistry();
-    int lastFamily = -1;
-    for (int idx : order_) {
-        const auto& d = reg[static_cast<size_t>(idx)];
-        if (static_cast<int>(d.family) != lastFamily) {
-            lastFamily = static_cast<int>(d.family);
-            MenuItem h;
-            h.header = true;
-            h.text = familyName(d.family);
-            items.push_back(h);
+    for (int cat = 0; cat < kNumCategories; ++cat) {
+        MenuItem parent;
+        parent.text = categoryName(static_cast<FxCategory>(cat));
+        parent.colour = categoryColour(cat);
+        for (int idx : order_) {
+            const auto& d = reg[static_cast<size_t>(idx)];
+            if (static_cast<int>(d.category) != cat) continue;
+            MenuItem it;
+            it.id = idx + 1;
+            it.text = d.name;
+            it.colour = fxColourForIndex(idx);
+            it.ticked = idx == selected_;
+            parent.sub.push_back(it);
         }
-        MenuItem it;
-        it.id = idx + 1;
-        it.text = d.name;
-        it.colour = fxColourForIndex(idx);
-        it.ticked = idx == selected_;
-        items.push_back(it);
+        if (parent.sub.empty()) continue;
+        parent.hint = juce::String(static_cast<int>(parent.sub.size()));
+        items.push_back(std::move(parent));
     }
     MenuOverlay::Options o;
     o.atPoint = true;
     o.point = ov->getLocalPoint(this, atLocal);
-    o.minWidth = 200;
+    o.minWidth = 190;
     o.maxVisibleRows = 22;
-    o.rowHeight = 23;
+    o.rowHeight = 25;
     ov->open(std::move(items), o, [safe = juce::Component::SafePointer<Carousel>(this)](int id) {
         if (safe != nullptr && id > 0 && safe->onSelect) safe->onSelect(id - 1);
     }, this);

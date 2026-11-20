@@ -22,18 +22,27 @@ public:
     std::function<void()> onOpenBrowser;
     std::function<void(const juce::String& message)> onMessage;
     void paint(juce::Graphics&) override;
-    void resized() override;
+    void resized() override {}
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { pressedSide_ = 0; repaint(); }
     void mouseMove(const juce::MouseEvent&) override { repaint(); }
     void mouseExit(const juce::MouseEvent&) override { repaint(); }
+    juce::String getTooltip() override;
+    // V2.1 (feedback 10): the arrows are full-height zones, 30 px wide, aligned with the drawn chevrons. They act
+    // on mouse-down, so every press steps exactly once: a fast second click (a double-click) is a second step,
+    // and a press that drifts before release is never lost (the old 10 x 14 px buttons fired on mouse-up only).
+    juce::Rectangle<int> prevArea() const { return getLocalBounds().removeFromLeft(kArrowW); }
+    juce::Rectangle<int> nextArea() const { return getLocalBounds().removeFromRight(kArrowW); }
     juce::Rectangle<int> nameArea() const;
+    int steps() const { return steps_; }  // tests: arrow presses handled
 
 private:
+    static constexpr int kArrowW = 30;
+    void step(int dir);
     Processor& proc_;
-    juce::ShapeButton prev_{"prev", juce::Colours::transparentBlack, juce::Colours::transparentBlack, juce::Colours::transparentBlack};
-    juce::ShapeButton next_{"next", juce::Colours::transparentBlack, juce::Colours::transparentBlack, juce::Colours::transparentBlack};
     juce::String name_;
     bool modified_ = false;
+    int pressedSide_ = 0, steps_ = 0;
 };
 
 class PresetBrowser final : public juce::Component {
@@ -58,7 +67,7 @@ public:
 
 private:
     struct Entry { juce::String key, name, category, description; bool factory; };
-    enum class Mode { Browse, SaveAs, Rename, ConfirmDelete, ConfirmOverwrite, ConfirmClear };
+    enum class Mode { Browse, SaveAs, Rename, ConfirmDelete, ConfirmOverwrite };
     void reload();
     void filter();
     int rowAt(juce::Point<int>) const;
@@ -75,7 +84,7 @@ private:
     int category_ = 0, hot_ = -1, pressedRow_ = -1, scroll_ = 0, hotCat_ = -1;
     juce::Rectangle<int> panel_, catArea_, listArea_, footer_, descArea_;
     juce::TextEditor search_, nameEdit_;
-    juce::TextButton save_{"Save"}, saveAs_{"Save As"}, rename_{"Rename"}, del_{"Delete"}, clear_{"Clear chain"}, ok_{"OK"}, cancel_{"Cancel"};
+    juce::TextButton save_{"Save"}, saveAs_{"Save As"}, rename_{"Rename"}, del_{"Delete"}, ok_{"OK"}, cancel_{"Cancel"};
     Mode mode_ = Mode::Browse;
     juce::String pendingName_;
     static constexpr int kRowH = 26;

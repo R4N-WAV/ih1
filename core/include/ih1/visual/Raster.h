@@ -20,8 +20,9 @@ public:
     void decay(float d);
     // field coordinates (x in [0, aspect], y in [0, 1]) scaled by `scale` pixels per field-height unit
     void draw(const std::vector<Segment>& segs, float scale, float gain = 1.0f);
-    // Composite to 8-bit RGB (row-major, 3 bytes per pixel): accumulation + bloom -> toneMap.
-    void composite(std::vector<uint8_t>& rgb, float exposure, float bloomGain = 1.6f) const;
+    // Composite to 8-bit RGB (row-major, 3 bytes per pixel): accumulation + bloom + field glows -> toneMap.
+    // Glows (field coordinates, `scale` px per field-height unit) are evaluated at bloom resolution.
+    void composite(std::vector<uint8_t>& rgb, float exposure, float bloomGain = 0.75f, const std::vector<Glow>* glows = nullptr, float scale = 1.0f) const;
     // Linear value of the accumulation buffer (tests).
     float at(int x, int y, int ch) const { return acc_[static_cast<size_t>((y * w_ + x) * 3 + ch)]; }
 

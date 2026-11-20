@@ -23,12 +23,21 @@
 #include <memory>
 #include <vector>
 
+#include "ih1/engine/Engine.h"
 #include "ih1/visual/Formation.h"
 #include "ih1/visual/Raster.h"
+#include "PluginProcessor.h"
 
 namespace ih1::plugin {
 
 class Processor;
+
+// Audio -> visual analysis bridge (V2.1 9.6). Reads only the engine's telemetry atomics (never audio buffers)
+// at frame rate and turns them into smoothed, bounded features: energy, onset strength, bands, balance.
+struct AudioAnalyser {
+    float rms = 0.0f, slow = 0.0f, peakEnv = 0.0f, low = 0.0f, mid = 0.0f, high = 0.0f, lastOnset = 1.0f;
+    void update(const Telemetry& t, float dt, visual::AudioFeatures& out);
+};
 
 class FormationRenderer final : public juce::OpenGLRenderer {
 public:
@@ -61,7 +70,9 @@ private:
     std::vector<visual::InstanceInput> chain_;
     std::vector<visual::TransferRequest> transfers_;
 
-    std::unique_ptr<juce::OpenGLShaderProgram> lineProg_, decayProg_, copyProg_, blurProg_, compProg_;
+    std::unique_ptr<juce::OpenGLShaderProgram> lineProg_, decayProg_, copyProg_, blurProg_, compProg_, glowProg_;
+    AudioAnalyser analyser_;
+    std::vector<float> glowPos_, glowCol_;
     unsigned vao_ = 0, lineVbo_ = 0, quadVbo_ = 0;
     Target accum_, bloomA_, bloomB_;
     int wantW_ = 0, wantH_ = 0;
@@ -100,6 +111,12 @@ public:
     }
     juce::Rectangle<float> deleteZone() const { return deleteZone_; }
     juce::Component* confirmDialog() const;
+    // Phase 15 / 16 (tests): the discreet chain utility and the clear-chain confirmation
+    juce::Rectangle<float> chainMenuBounds() const { return chainMenu_; }
+    void showChainMenu();
+    void openClearConfirm();
+    juce::Button* confirmButton() const;
+    juce::Button* cancelButton() const;
 
 private:
     struct Item { uint64_t id; int index; juce::String name; juce::Colour colour; juce::Rectangle<float> r; };
@@ -112,15 +129,18 @@ private:
     int insertionFor(juce::Point<float>) const;  // gap index 0..n
     void openConfirm(uint64_t id, const juce::String& name);
     void closeConfirm();
+    void mountConfirm();
     void cancelDrag();
     juce::String describe(uint64_t id);
     void renderSoftware();
+    void refreshLatencyStatus();
 
     Processor& proc_;
     FormationRenderer& renderer_;
     uint64_t seenRevision_ = 0;
     std::vector<Item> items_;
-    juce::Rectangle<float> strip_, deleteZone_;
+    juce::Rectangle<float> strip_, deleteZone_, chainMenu_, status_;
+    Processor::LatencyStatus latency_;
     // drag state (the dragged instance is tracked by id, never by a stale index)
     uint64_t dragId_ = 0;
     bool pressed_ = false, dragging_ = false, deleteHover_ = false;
@@ -139,6 +159,7 @@ private:
     juce::Image image_;
     std::vector<visual::InstanceInput> chain_;
     std::vector<visual::TransferRequest> softTransfers_;
+    AudioAnalyser softAnalyser_;
 };
 
 // Shared: per-instance colours (type identity + duplicate shade by instance id order, so reordering never

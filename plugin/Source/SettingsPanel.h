@@ -1,7 +1,10 @@
 // Staged FX settings (UI sketch): S (SOLO FX) / M (MUTE FX) at the top-right, a one-line description, an
 // effect-specific graph where one helps, then the controls generated from the FX's parameter schema:
-// selectors first, then the primary sound-shaping knobs sized to the space available, advanced controls
-// behind "More". No border; only shown while an effect is staged (V1 feedback 4.11, 4.12, 4.19).
+// selectors first, then the primary sound-shaping knobs sized to the space available, then the advanced
+// controls, always visible under an "Advanced" label (V2.1 feedback 8). Controls that depend on another one
+// (a free time knob while Sync is on) are greyed out, ignore every gesture and say why in their tooltip.
+// While the staged FX is MUTED the whole panel is greyed and inactive except S / M (V2.1 9.7).
+// No border; only shown while an effect is staged (V1 feedback 4.11, 4.12, 4.19).
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -36,10 +39,13 @@ private:
         std::unique_ptr<Segmented> seg;
         std::unique_ptr<juce::ToggleButton> toggle;
         bool dragging = false;
+        bool active = true;
+        juce::String tooltip;
     };
     void rebuild(int typeIndex);
     void layoutControls();
     void refreshValues();
+    void applyEnablement(const ParamValues& v, bool muted);
     void setFromUi(int index, float plain);
 
     Processor& proc_;
@@ -49,9 +55,9 @@ private:
     juce::Component content_;
     FxGraph graph_;
     bool showGraph_ = false;
-    juce::TextButton solo_{"S"}, mute_{"M"}, more_{"More"};
+    juce::TextButton solo_{"S"}, mute_{"M"};
     juce::Label desc_, advHeading_;
-    bool showAdvanced_ = false;
+    bool muted_ = false;
 };
 
 }  // namespace ih1::plugin

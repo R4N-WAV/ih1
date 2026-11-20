@@ -28,9 +28,14 @@ struct MenuItem {
     bool enabled = true;
     bool ticked = false;      // current value
     juce::String hint;        // small right-aligned detail text
+    std::vector<MenuItem> sub;  // non-empty: this row opens a nested submenu (one level deep)
 };
 
-class MenuOverlay final : public juce::Component {
+// Nested menus (V2.1 Phase 4): a row with `sub` items opens a submenu beside it, on hover (with intent: while
+// the pointer moves towards the open submenu, through the triangle between the pointer and the submenu's near
+// edge, the submenu stays open even when the pointer crosses other rows) or on click / Right arrow. Left arrow
+// or Escape closes only the submenu. Submenus flip to the left or shift up at the editor's edges.
+class MenuOverlay final : public juce::Component, private juce::Timer {
 public:
     struct Options {
         juce::Rectangle<int> anchor;     // place below (or above) this rectangle (overlay coordinates)
@@ -43,6 +48,7 @@ public:
     using Callback = std::function<void(int id)>;  // 0 = cancelled
 
     MenuOverlay();
+    ~MenuOverlay() override;
     static MenuOverlay* find(juce::Component* anyChildOfEditor);
 
     void open(std::vector<MenuItem> items, const Options& o, Callback cb, juce::Component* owner);
@@ -51,14 +57,17 @@ public:
     bool isOpenFor(const juce::Component* owner) const { return open_ && owner_.getComponent() == owner; }
     // The owner forwards the mouse-up of its opening press: releasing over an item after dragging selects it.
     void ownerMouseUp(const juce::MouseEvent& eInOwner);
-    int highlighted() const { return hot_; }
-    juce::Rectangle<int> listBounds() const { return list_; }
-    juce::Rectangle<int> rowBounds(int itemIndex) const;  // overlay coordinates (for tests)
-    int indexOfText(const juce::String& t) const {  // tests
-        for (size_t i = 0; i < items_.size(); ++i) if (items_[i].text == t && !items_[i].header) return static_cast<int>(i);
-        return -1;
-    }
-    int itemCount() const { return static_cast<int>(items_.size()); }
+    int highlighted() const { return root_.hot; }
+    juce::Rectangle<int> listBounds() const { return root_.list; }
+    juce::Rectangle<int> rowBounds(int itemIndex) const { return rowBoundsIn(root_, itemIndex); }  // overlay coords (tests)
+    int indexOfText(const juce::String& t) const { return indexIn(root_, t); }
+    int itemCount() const { return static_cast<int>(root_.items.size()); }
+    // submenu (tests)
+    bool subOpen() const { return sub_.open; }
+    int subParent() const { return subParent_; }
+    juce::Rectangle<int> subListBounds() const { return sub_.list; }
+    juce::Rectangle<int> subRowBounds(int i) const { return rowBoundsIn(sub_, i); }
+    int subIndexOfText(const juce::String& t) const { return indexIn(sub_, t); }
 
     void paint(juce::Graphics&) override;
     void mouseMove(const juce::MouseEvent&) override;
@@ -71,19 +80,39 @@ public:
     bool hitTest(int, int) override { return open_; }
 
 private:
-    int itemAt(juce::Point<int> p) const;
-    void moveHot(int dir);
-    void ensureVisible(int index);
-    bool selectable(int i) const;
+    struct Level {
+        bool open = false;
+        std::vector<MenuItem> items;
+        juce::Rectangle<int> list;
+        int hot = -1, scroll = 0, visibleRows = 0;
+    };
+    void timerCallback() override;
+    void layoutLevel(Level& L, juce::Rectangle<int> placeNear, bool beside);
+    void paintLevel(juce::Graphics& g, const Level& L, bool isRoot) const;
+    static int itemAtIn(const Level& L, juce::Point<int> p, int rowH);
+    juce::Rectangle<int> rowBoundsIn(const Level& L, int i) const;
+    static int indexIn(const Level& L, const juce::String& t) {
+        for (size_t i = 0; i < L.items.size(); ++i) if (L.items[i].text == t && !L.items[i].header) return static_cast<int>(i);
+        return -1;
+    }
+    static bool selectableIn(const Level& L, int i);
+    static bool isParent(const Level& L, int i) { return i >= 0 && i < static_cast<int>(L.items.size()) && !L.items[static_cast<size_t>(i)].sub.empty(); }
+    void moveHotIn(Level& L, int dir);
+    void ensureVisibleIn(Level& L, int i);
+    void openSub(int parentIndex, bool focusFirst);
+    void closeSub();
+    bool aimingAtSub(juce::Point<int> p) const;
+    void activate(Level& L, int i);  // select (leaf) or open (parent)
 
-    std::vector<MenuItem> items_;
+    Level root_, sub_;
+    int subParent_ = -1, pendingParent_ = -1;
+    bool keyInSub_ = false;
     Options opts_;
     Callback cb_;
     juce::Component::SafePointer<juce::Component> owner_, previousFocus_;
-    juce::Rectangle<int> list_;
-    juce::Point<int> openPoint_;
+    juce::Point<int> openPoint_, lastMouse_;
     bool open_ = false;
-    int hot_ = -1, pressed_ = -1, scroll_ = 0, visibleRows_ = 0;
+    int pressedLevel_ = -1, pressed_ = -1;
     double openedMs_ = 0.0;
     float wheelAcc_ = 0.0f;
     juce::String typed_;

@@ -248,6 +248,56 @@ void Processor::uiSetMute(bool on) {
     revision_.fetch_add(1);
 }
 
+void Processor::uiSetLatencyMode(LatencyMode m) {
+    const juce::ScopedLock sl(lock_);
+    session_->setLatencyMode(m);
+    afterModelChange();  // setLatencySamples on the message thread, never from processBlock
+}
+
+Processor::LatencyStatus Processor::latencyStatus() {
+    LatencyStatus st;
+    const juce::ScopedLock sl(lock_);
+    st.mode = session_->latencyMode();
+    st.samples = session_->latencySamples();
+    const double sr = session_->sampleRate() > 0 ? session_->sampleRate() : 48000.0;
+    auto ms = [sr](int n) { return juce::String(1000.0 * n / sr, 1) + " ms"; };
+    const auto contributors = session_->latencyContributors();
+    const juce::String modeName = latencyModeName(st.mode);
+    if (st.samples == 0) {
+        st.headline = modeName + "  0 samples";
+    } else if (st.mode == LatencyMode::Zero) {
+        // name the effect that prevents strict zero latency
+        const auto& d = fxRegistry()[static_cast<size_t>(contributors.front().typeIndex)];
+        st.headline = "Zero latency unavailable: " + juce::String(d.name) + " needs " + juce::String(contributors.front().samples) + " samples";
+        st.degraded = true;
+    } else {
+        st.headline = modeName + "  " + juce::String(st.samples) + " samples (" + ms(st.samples) + ")";
+    }
+    juce::String detail;
+    detail << "Latency mode: " << modeName << ". Reported to the host: " << st.samples << " samples (" << ms(st.samples) << ").\n";
+    detail << "This is the plug-in's own processing delay, compensated by the DAW. Echoes, reverb tails and grains taken from the past are part of an effect's sound, not latency.\n";
+    for (const auto& c : contributors) {
+        const auto& d = fxRegistry()[static_cast<size_t>(c.typeIndex)];
+        detail << "\n" << d.name << (c.staged ? " (staged)" : "") << ": " << c.samples << " samples, " << latencyModeName(c.resolved);
+        if (st.mode != LatencyMode::Quality && !d.latency.zero) detail << " (no zero-latency variant: it needs an analysis window)";
+    }
+    if (st.mode != LatencyMode::Quality) {
+        // what changed to get there, from the registry (only effects actually in use)
+        juce::StringArray notes;
+        auto addNote = [&](int typeIndex) {
+            const auto& d = fxRegistry()[static_cast<size_t>(typeIndex)];
+            const auto r = d.resolveLatency(st.mode);
+            const std::string& n = r == LatencyMode::Zero ? d.latency.zeroNote : (r == LatencyMode::Low ? d.latency.lowNote : std::string());
+            if (!n.empty()) notes.addIfNotAlreadyThere(juce::String(d.name) + ": " + juce::String(n));
+        };
+        for (const auto& ci : session_->chain()) addNote(ci.typeIndex());
+        if (session_->selected() >= 0) addNote(session_->selected());
+        if (!notes.isEmpty()) detail << "\n\nTrade-offs in this mode:\n" << notes.joinIntoString("\n");
+    }
+    st.detail = detail;
+    return st;
+}
+
 void Processor::pullHostParams(bool enforceExclusive) {
     // SOLO / MUTE: exclusive; the one switched on last wins. With nothing staged the engine ignores both.
     const bool solo = pSolo_->load() > 0.5f, mute = pMute_->load() > 0.5f;
@@ -401,6 +451,10 @@ juce::String safeFileName(const juce::String& name) {
 }  // namespace
 
 std::vector<Processor::PresetEntry> Processor::presetList() {
+    // cached for 2 s (and invalidated by save / rename / delete): stepping presets must not rescan and parse
+    // every user preset file on each click
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (now - listCacheMs_ < 2000.0 && !listCache_.empty()) return listCache_;
     std::vector<PresetEntry> v;
     for (const auto& p : factoryPresets())
         v.push_back({"f:" + juce::String(p.id), juce::String::fromUTF8(p.name.c_str()), juce::String::fromUTF8(p.category.c_str()), juce::String::fromUTF8(p.description.c_str()), true});
@@ -412,6 +466,8 @@ std::vector<Processor::PresetEntry> Processor::presetList() {
     }
     std::sort(user.begin(), user.end(), [](const PresetEntry& a, const PresetEntry& b) { return a.name.compareNatural(b.name) < 0; });
     v.insert(v.end(), user.begin(), user.end());
+    listCache_ = v;
+    listCacheMs_ = now;
     return v;
 }
 
@@ -459,6 +515,7 @@ bool Processor::stepPreset(int direction, juce::String& message) {
 }
 
 bool Processor::saveUserPreset(const juce::String& name, bool overwrite, juce::String& message, bool& exists) {
+    invalidatePresetList();
     const auto dir = userPresetDir();
     if (!dir.createDirectory()) { message = "Cannot create " + dir.getFullPathName(); return false; }
     const auto file = dir.getChildFile(safeFileName(name) + ".ih1chain");
@@ -496,6 +553,7 @@ bool Processor::saveUserPreset(const juce::String& name, bool overwrite, juce::S
 }
 
 bool Processor::renameUserPreset(const juce::String& key, const juce::String& newName, juce::String& message) {
+    invalidatePresetList();
     if (!key.startsWith("u:")) { message = "Factory presets are read-only."; return false; }
     const juce::File f(key.substring(2));
     const auto target = f.getSiblingFile(safeFileName(newName) + ".ih1chain");
@@ -514,6 +572,7 @@ bool Processor::renameUserPreset(const juce::String& key, const juce::String& ne
 }
 
 bool Processor::deleteUserPreset(const juce::String& key, juce::String& message) {
+    invalidatePresetList();
     if (!key.startsWith("u:")) { message = "Factory presets are read-only."; return false; }
     const juce::File f(key.substring(2));
     if (!f.isAChildOf(userPresetDir()) || !f.deleteFile()) { message = "Could not delete the preset."; return false; }

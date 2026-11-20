@@ -16,10 +16,13 @@
 //             playhead, so playback speed and pitch are independent (granular time stretch). A live buffer
 //             has no future: at speed > 1 the playhead catches up with the input and then follows it.
 //             `varispeed` makes pitch follow the speed instead (tape-like repitch).
-//   Loop    : on entry the last `loop` ms are captured and held; the playhead cycles through that segment at
-//             `speed` (negative = reversed).
-//   Freeze  : (any mode) stops writing. Cloud reads a frozen moment; Stretch scans the frozen buffer as an
-//             endless loop.
+//   Loop    : captures the last `loop` ms and holds it; the playhead cycles through that segment at `speed`
+//             (negative = reversed). It arms first: the segment is latched only once that much real (non-silent)
+//             audio has arrived, so a preset or a gesture made during silence never loops silence.
+//   Freeze  : (any mode) stops writing, also after arming (0.75 s of real signal). Cloud reads a frozen
+//             moment; Stretch scans the frozen buffer as an endless loop.
+//   Live Stretch slower than 1x drifts behind the input; when it reaches the end of the buffer it wraps back
+//   to the Offset point (an implicit retrigger), so long sessions keep stretching recent material.
 //   Retrigger resets the playhead to its anchor on a (tempo-synced) grid and fires a grain: slice/stutter.
 //
 // Gain: each grain's window^2 is summed per sample; the output is scaled by 1/sqrt(max(1, E * K)) with E the
@@ -130,6 +133,8 @@ private:
     double loopStart_ = 0.0, loopLen_ = 0.0;
     int lastMode_ = -1;
     bool lastFreeze_ = false;
+    bool latched_ = false;   // Loop / Freeze: armed until enough real signal has been captured
+    int64_t heard_ = 0;      // non-silent samples captured (since reset)
     double retrigCount_ = 0.0;
     float energy_ = 0.0f, energyA_ = 0.0f;
     // coherence: smoothed power of the summed grains vs the sum of each grain's own power. ~1 when grains

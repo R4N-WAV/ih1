@@ -115,21 +115,61 @@ int main() {
     const auto at = ed->getLocalPoint(&car, rc);
     check(menu.listBounds().getX() >= at.x && menu.listBounds().getX() <= at.x + 10 && std::abs(menu.listBounds().getY() - at.y) <= 10,
           "the list opens beside the pointer");
-    check(menu.itemCount() >= static_cast<int>(fxCarouselOrder().size()), "the list holds the whole catalogue (" + String(menu.itemCount()) + " rows incl. headings)");
+    {
+        // V2.1 Phase 4: categories, each with a submenu; together they hold the whole catalogue
+        int total = 0, cats = 0;
+        for (int c = 0; c < kNumCategories; ++c) {
+            int n = 0;
+            for (int idx : fxCarouselOrder()) n += static_cast<int>(fxRegistry()[static_cast<size_t>(idx)].category) == c;
+            total += n;
+            cats += n > 0;
+        }
+        check(menu.itemCount() == cats && total == static_cast<int>(fxCarouselOrder().size()),
+              "the list shows " + String(menu.itemCount()) + " categories holding all " + String(total) + " effects");
+    }
     check(selected(*proc) == -1, "opening the list stages nothing");
     d.key(KeyPress(KeyPress::escapeKey));
     check(!menu.isOpen() && selected(*proc) == -1, "Escape closes the list without staging");
-    // pick Reverb
+    // pick Reverb: hover its category, the submenu opens beside it; click Reverb
     d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
     {
-        const int i = menu.indexOfText("Reverb");
-        const auto rb = menu.rowBounds(i).getCentre().toFloat();
+        const int cat = menu.indexOfText("Time & Space");
+        d.move(menu.rowBounds(cat).getCentre().toFloat());
+        pump(60);
+        check(menu.subOpen() && menu.subParent() == cat, "hovering a category opens its submenu");
+        check(menu.subListBounds().getX() >= menu.listBounds().getRight() - 4 || menu.subListBounds().getRight() <= menu.listBounds().getX() + 4,
+              "the submenu sits beside its parent list");
+        const int i = menu.subIndexOfText("Reverb");
+        const auto rb = menu.subRowBounds(i).getCentre().toFloat();
+        // move diagonally from the category to the item, crossing other category rows: the submenu must stay
+        const auto from = menu.rowBounds(cat).getCentre().toFloat();
+        bool stayed = true;
+        for (int k = 1; k <= 12; ++k) {
+            d.move(from + (rb - from) * (static_cast<float>(k) / 12.0f));
+            pump(8);
+            stayed = stayed && menu.subOpen() && menu.subParent() == cat;
+        }
+        check(stayed, "moving diagonally into the submenu never dismisses or switches it");
         d.click(rb);
     }
     pump(150);
     check(selected(*proc) == reverb, "choosing Reverb stages Reverb");
     check(chainSize(*proc) == 0, "...and never commits");
     check(ed->settings().isVisible(), "the settings panel appears once an effect is staged");
+    // resting on another category switches the submenu (hover intent)
+    {
+        d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
+        const int a = menu.indexOfText("Modulation"), b = menu.indexOfText("Dynamics");
+        d.move(menu.rowBounds(a).getCentre().toFloat());
+        pump(60);
+        d.move(menu.rowBounds(b).getCentre().toFloat());
+        pump(400);
+        check(menu.subOpen() && menu.subParent() == b, "resting on another category switches the submenu");
+        d.key(KeyPress(KeyPress::leftKey));
+        check(menu.isOpen() && !menu.subOpen(), "Left closes only the submenu");
+        d.key(KeyPress(KeyPress::escapeKey));
+        check(!menu.isOpen() && selected(*proc) == reverb, "Escape closes the menu; nothing changed");
+    }
     // with something staged (COMMIT live): open the list, click where COMMIT sits -> list closes, no commit
     {
         d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
@@ -137,18 +177,24 @@ int main() {
         pump(400);
         check(!menu.isOpen() && chainSize(*proc) == 0 && selected(*proc) == reverb, "an outside click cancels the list and never clicks through to COMMIT");
     }
-    // near the bottom-right edge: the list flips to stay inside the editor
+    // near the bottom-right edge: the list and its submenu flip to stay inside the editor
     {
         d.clickOn(car, {car.getWidth() - 50, car.getHeight() - 4}, ModifierKeys::rightButtonModifier);
         check(menu.isOpen() && ed->getLocalBounds().contains(menu.listBounds()), "the list stays inside the window near its edges");
+        const int last = menu.itemCount() - 1;
+        d.click(menu.rowBounds(last).getCentre().toFloat());
+        check(menu.subOpen() && ed->getLocalBounds().contains(menu.subListBounds()), "a submenu opened near the edge stays inside the window");
+        d.key(KeyPress(KeyPress::escapeKey));
         d.key(KeyPress(KeyPress::escapeKey));
     }
-    // keyboard: down / Enter selects the highlighted entry
+    // keyboard: Down, Right opens the category, Enter stages its first entry
     {
         d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
         d.key(KeyPress(KeyPress::downKey));
+        d.key(KeyPress(KeyPress::rightKey));
+        const bool subByKey = menu.subOpen();
         d.key(KeyPress(KeyPress::returnKey));
-        check(!menu.isOpen() && selected(*proc) != reverb && selected(*proc) >= 0, "keyboard: Down + Enter stages the next entry");
+        check(subByKey && !menu.isOpen() && selected(*proc) >= 0, "keyboard: Down, Right, Enter stages an entry from the submenu");
     }
 
     // ---- 4.6 every dropdown applies exactly the clicked item ----
@@ -331,6 +377,154 @@ int main() {
         const auto n0 = chainSize(*proc);
         check(!proc->loadPresetKey("u:" + bad.getFullPathName(), msg) && chainSize(*proc) == n0, "a malformed preset file is rejected; the chain is untouched (" + msg + ")");
         bad.deleteFile();
+    }
+
+    // ---- V2.1 Phase 10: preset arrows, 100 rapid clicks, every click exactly one step ----
+    {
+        String msg;
+        proc->loadPresetKey(proc->presetList().front().key, msg);
+        pump(100);
+        auto& bar = ed->presetBar();
+        const auto list = proc->presetList();
+        const int n = static_cast<int>(list.size());
+        auto indexOfCurrent = [&] {
+            for (int i = 0; i < n; ++i) if (list[static_cast<size_t>(i)].key == proc->currentPresetKey()) return i;
+            return -1;
+        };
+        std::mt19937 rng(17);
+        int expected = indexOfCurrent(), dropped = 0, wrong = 0;
+        String log;
+        for (int k = 0; k < 120; ++k) {
+            const bool next = rng() % 3 != 0;  // mostly forward, some back
+            const auto zone = next ? bar.nextArea() : bar.prevArea();
+            // vary the click position across the whole visible zone (edges included), and click fast: many of
+            // these presses arrive within the double-click interval
+            const Point<int> p(zone.getX() + 2 + static_cast<int>(rng() % static_cast<unsigned>(std::max(1, zone.getWidth() - 4))),
+                               zone.getY() + 2 + static_cast<int>(rng() % static_cast<unsigned>(std::max(1, zone.getHeight() - 4))));
+            const auto pp = d.toPeer(bar, p);
+            d.t += 70;
+            d.press(pp);
+            d.release(pp);
+            pump(5);
+            expected = ((expected + (next ? 1 : -1)) % n + n) % n;
+            const int actual = indexOfCurrent();
+            if (actual != expected) { ++wrong; log << k << ":" << expected << "/" << actual << " "; expected = actual; }
+            (void) dropped;
+        }
+        check(wrong == 0, "preset arrows: 120 rapid clicks (incl. double-clicks, zone edges) -> " + String(120 - wrong) + " exact single steps" + (log.isEmpty() ? String() : " mismatches " + log));
+        check(bar.steps() >= 120, "every press was handled (" + String(bar.steps()) + ")");
+    }
+
+    // ---- V2.1 Phase 15: discreet Clear FX Chain with confirmation ----
+    {
+        auto& fv = ed->formation();
+        proc->uiSelect(delay); proc->uiCommit();
+        proc->uiSelect(delay); proc->uiCommit();
+        proc->uiSelect(reverb); proc->uiCommit();
+        proc->uiSelect(fxTypeIndex("chorus"));
+        proc->uiSetParam(0, 0.9f);
+        pump(200);
+        const auto n0 = chainSize(*proc);
+        const int stagedBefore = selected(*proc);
+        const auto dots = d.toPeer(fv, fv.chainMenuBounds().getCentre().toInt());
+        auto openClear = [&] {
+            d.click(dots);
+            if (!menu.isOpen()) return false;
+            d.click(menu.rowBounds(menu.indexOfText("Clear FX Chain...")).getCentre().toFloat());
+            pump(80);
+            return fv.confirmDialog() != nullptr;
+        };
+        check(openClear(), "the chain options (...) offer Clear FX Chain, which asks first");
+        check(chainSize(*proc) == n0, "...and nothing is cleared yet");
+        if (auto* c = fv.cancelButton()) d.clickOn(*c, c->getLocalBounds().getCentre());
+        pump(150);
+        check(fv.confirmDialog() == nullptr && chainSize(*proc) == n0, "Cancel leaves the chain untouched");
+        openClear();
+        d.key(KeyPress(KeyPress::escapeKey));
+        pump(150);
+        check(fv.confirmDialog() == nullptr && chainSize(*proc) == n0, "Escape leaves the chain untouched");
+        openClear();
+        d.click({4.0f, 4.0f});  // outside the dialog box
+        pump(150);
+        check(fv.confirmDialog() == nullptr && chainSize(*proc) == n0, "clicking outside leaves the chain untouched");
+        openClear();
+        if (auto* ok = fv.confirmButton()) {
+            check(ok->getButtonText() == "Clear Chain", "the destructive action is labelled Clear Chain");
+            d.clickOn(*ok, ok->getLocalBounds().getCentre());
+        }
+        pump(200);
+        check(chainSize(*proc) == 0, "Clear Chain removes every committed FX (duplicates included)");
+        check(selected(*proc) == stagedBefore && ed->settings().isVisible(), "...and keeps the staged FX and its settings");
+        // repeated rapid open / cancel is safe
+        for (int k = 0; k < 10; ++k) { openClear(); d.key(KeyPress(KeyPress::escapeKey)); }
+        check(fv.confirmDialog() == nullptr && !menu.isOpen(), "rapid open / cancel leaves no dialog behind");
+    }
+
+    // ---- V2.1 Phase 16: latency mode through the chain options ----
+    {
+        auto& fv = ed->formation();
+        proc->uiSelect(-1);
+        proc->uiSelect(fxTypeIndex("saturation")); proc->uiCommit();
+        proc->uiSelect(fxTypeIndex("convolution")); proc->uiCommit();
+        pump(150);
+        const int full = proc->getLatencySamples();
+        const auto dots = d.toPeer(fv, fv.chainMenuBounds().getCentre().toInt());
+        d.click(dots);
+        d.click(menu.rowBounds(menu.indexOfText("Zero Latency")).getCentre().toFloat());
+        pump(150);
+        LatencyMode m;
+        { const ScopedLock sl(proc->sessionLock()); m = proc->session().latencyMode(); }
+        check(m == LatencyMode::Zero && full > 0 && proc->getLatencySamples() == 0,
+              "Zero Latency: host latency " + String(full) + " -> " + String(proc->getLatencySamples()) + " samples");
+        proc->uiSelect(fxTypeIndex("harmony")); proc->uiCommit();
+        pump(100);
+        const auto st = proc->latencyStatus();
+        check(proc->getLatencySamples() > 0 && st.degraded && st.headline.contains("Harmony"),
+              "a chain with Harmony names it as the reason: \"" + st.headline + "\"");
+        proc->uiSetLatencyMode(LatencyMode::Quality);
+        proc->uiClearChain();
+        pump(100);
+    }
+
+    // ---- V2.1 Phase 2 / 8 / 9.7: sync-disabled controls, advanced always visible, mute greys the column ----
+    {
+        proc->uiSelect(delay);
+        pump(200);
+        const auto& dl = fxRegistry()[static_cast<size_t>(delay)];
+        const int pTime = dl.paramIndex("time_ms"), pSync = dl.paramIndex("sync");
+        proc->uiSetParam(pSync, 1.0f);
+        pump(150);
+        auto* timeKnob = ed->settings().controlFor(pTime);
+        const float before = draft(*proc, delay, pTime);
+        check(timeKnob && !timeKnob->isEnabled(), "Sync on: the free Time knob is disabled");
+        if (timeKnob) {
+            const auto c = d.toPeer(*timeKnob, timeKnob->getLocalBounds().getCentre());
+            d.dragTo(c, c + Point<float>(0.0f, -60.0f));
+            d.wheel(c, 0.5f);
+            check(draft(*proc, delay, pTime) == before, "...and ignores drags and the wheel (value kept: " + String(before) + ")");
+            auto* tc = dynamic_cast<SettableTooltipClient*>(timeKnob);
+            check(tc && tc->getTooltip().containsIgnoreCase("Sync"), "...and its tooltip says why");
+        }
+        auto* div = ed->settings().controlFor(dl.paramIndex("division"));
+        check(div && div->isEnabled(), "the Division selector stays active");
+        proc->uiSetParam(pSync, 0.0f);
+        pump(150);
+        check(timeKnob && timeKnob->isEnabled() && draft(*proc, delay, pTime) == before, "Sync off: Time is active again with its kept value");
+        // advanced controls are always visible (no More / Less)
+        bool allVisible = true;
+        for (size_t i = 0; i < dl.params.size(); ++i) if (auto* c = ed->settings().controlFor(static_cast<int>(i))) allVisible = allVisible && c->isVisible();
+        check(allVisible, "every Delay control, advanced included, is visible without any toggle");
+        // MUTE greys and disables the whole staged column except S / M
+        proc->uiSetMute(true);
+        pump(200);
+        bool allOff = !car.isEnabled();
+        for (size_t i = 0; i < dl.params.size(); ++i) if (auto* c = ed->settings().controlFor(static_cast<int>(i))) allOff = allOff && !c->isEnabled();
+        bool commitOff = true;
+        for (auto* c : ed->getChildren()) if (auto* b = dynamic_cast<TextButton*>(c); b && (b->getButtonText() == "COMMIT" || b->getButtonText() == "RESET")) commitOff = commitOff && !b->isEnabled();
+        check(allOff && commitOff, "MUTE: carousel, every control, COMMIT and RESET are greyed and inactive");
+        proc->uiSetMute(false);
+        pump(200);
+        check(car.isEnabled() && ed->settings().controlFor(pTime)->isEnabled(), "unmuting restores the column");
     }
 
     // ---- editor close with a menu open, reopen ----

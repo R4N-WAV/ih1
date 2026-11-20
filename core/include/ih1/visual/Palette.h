@@ -1,14 +1,13 @@
-// IH1 colour identities. One palette shared by the carousel, the settings panel and the formation, so an
-// effect has the same colour everywhere.
+// IH1 colour identities (V2.1). One palette shared by the carousel, menus, settings accents and the
+// formation, so an effect has the same colour everywhere.
 //
-// The palette stays inside the reference video's world (measured in docs/VISUAL_REFERENCE_ANALYSIS.md and
-// the V1 feedback research): blue-indigo, periwinkle, violet, lavender, purple-magenta (orchid), restrained
-// rose, icy blue and a pale lavender-white. No greens, yellows, oranges or reds.
-//
-// Each FX type has a fixed role (one of 8) plus a tier. The tier nudges hue and value slightly, so types
-// that share a role are still not identical. Families are spread across roles, so the combinations people
-// commonly chain (delay + reverb, harmony + doubler, ...) read as different colours. Duplicates of one type
-// keep the type's hue and differ by shade (see fxColour's `shade`).
+// Colour is assigned per FX *family* (FxCategory), not per type: nine family colours fitted inside the
+// envelope measured from the reference video (61 frames, scripts in docs/V2_1_IMPLEMENTATION.md):
+// lit pixels sit at hue 195-345 deg with 89 % between 225 and 315, saturation 0.16-0.36, cores near-white
+// lavender (h 280, s 0.16). The families use saturation 0.14-0.46 and keep >= 15 delta-E from each other.
+// Types inside a family vary slightly (hue +-6 deg, small value/saturation steps) so they read as related
+// but still discernible; duplicate instances of one type share its colour with gentle deeper / lighter shades.
+// No greens, yellows, oranges or reds; no neon saturation.
 #pragma once
 
 #include <array>
@@ -22,22 +21,12 @@ struct Rgb { float r = 0, g = 0, b = 0; };
 Rgb hsvToRgb(float hDeg, float s, float v);
 void rgbToHsv(const Rgb& c, float& hDeg, float& s, float& v);
 
-enum class PaletteRole : uint8_t { Indigo, Periwinkle, Violet, Lavender, Orchid, Rose, Ice, Pearl, Count };
-constexpr int kNumRoles = static_cast<int>(PaletteRole::Count);
-
-const char* roleName(PaletteRole r);
-Rgb roleColour(PaletteRole r);  // base display colour (sRGB, 0..1)
-
-struct FxIdentity {
-    PaletteRole role = PaletteRole::Violet;
-    int tier = 0;  // 0..4: small hue/value variation between types sharing a role
-};
-
-// Stable identity for an FX type id. Unknown ids hash deterministically onto a role.
-FxIdentity fxIdentity(const std::string& typeId);
+// Base colour of a catalogue family (index = FxCategory value, 0..8). Out-of-range indices are clamped.
+Rgb familyColour(int category);
+const char* familyColourName(int category);
 
 // Display colour of an FX type. `shade` = rank of a duplicate among committed instances of the same type
-// (0 = first / the carousel colour). Shades alternate lighter / deeper around the type's own hue.
+// (0 = first / the carousel colour). Unknown type ids get the Experimental family colour.
 Rgb fxColour(const std::string& typeId, int shade = 0);
 
 // Perceptual distance helper (CIE76 delta-E in Lab, sRGB input), used by tests and the palette preview.

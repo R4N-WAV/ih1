@@ -16,6 +16,11 @@ juce::Colour fxColourForIndex(int idx) {
     return fxColour(reg[static_cast<size_t>(idx)].typeId);
 }
 
+juce::Colour categoryColour(int category) {
+    const auto c = visual::familyColour(category);
+    return juce::Colour::fromFloatRGBA(c.r, c.g, c.b, 1.0f);
+}
+
 juce::Colour readable(juce::Colour c, float minBrightness) {
     return c.getBrightness() < minBrightness ? c.withBrightness(minBrightness) : c;
 }

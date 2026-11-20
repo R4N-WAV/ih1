@@ -21,6 +21,7 @@ struct FactoryPreset {
     std::string description;  // one line: what it sounds like
     int version = 1;
     std::vector<PresetFx> chain;  // processing order
+    std::string tags;         // suggested sources, comma separated (vocals, drums, bass, synths, guitars, keys, loops, full mix)
 };
 
 // Category display order. The last one, "User", holds user presets (not part of the factory list).

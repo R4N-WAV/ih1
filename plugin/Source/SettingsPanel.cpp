@@ -6,7 +6,7 @@
 namespace ih1::plugin {
 
 namespace {
-constexpr int kLabelH = 16, kValueH = 16, kSelectorH = 46;
+constexpr int kLabelH = 16, kValueH = 16, kSelectorH = 50;
 }
 
 SettingsPanel::SettingsPanel(Processor& p) : proc_(p) {
@@ -16,7 +16,7 @@ SettingsPanel::SettingsPanel(Processor& p) : proc_(p) {
     viewport_.setScrollBarThickness(6);
     content_.addAndMakeVisible(graph_);
 
-    for (auto* b : {&solo_, &mute_, &more_}) {
+    for (auto* b : {&solo_, &mute_}) {
         b->getProperties().set("quiet", true);
         b->setClickingTogglesState(false);
         b->setWantsKeyboardFocus(true);
@@ -30,13 +30,6 @@ SettingsPanel::SettingsPanel(Processor& p) : proc_(p) {
     mute_.setTooltip("MUTE FX: silence only the staged effect, so you hear the committed chain on its own. Nothing committed is changed.");
     solo_.onClick = [this] { proc_.uiSetSolo(!solo_.getToggleState()); };
     mute_.onClick = [this] { proc_.uiSetMute(!mute_.getToggleState()); };
-    more_.getProperties().set("fontSize", 12.0);
-    more_.setTooltip("Show this effect's advanced controls.");
-    more_.onClick = [this] {
-        showAdvanced_ = !showAdvanced_;
-        more_.setButtonText(showAdvanced_ ? "Less" : "More");
-        layoutControls();
-    };
 
     desc_.setFont(LookAndFeel::font(13.0f));
     desc_.setColour(juce::Label::textColourId, Colours::textDim);
@@ -44,8 +37,8 @@ SettingsPanel::SettingsPanel(Processor& p) : proc_(p) {
     desc_.setMinimumHorizontalScale(1.0f);
     desc_.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(desc_);
-    advHeading_.setText("ADVANCED", juce::dontSendNotification);
-    advHeading_.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
+    advHeading_.setText("Advanced", juce::dontSendNotification);
+    advHeading_.setFont(LookAndFeel::font(11.0f, true).withExtraKerningFactor(0.06f));
     advHeading_.setColour(juce::Label::textColourId, Colours::textFaint);
     content_.addChildComponent(advHeading_);
     setVisible(false);
@@ -71,6 +64,11 @@ void SettingsPanel::sync() {
     graph_.setDisplay(hasDisp ? &disp : nullptr);
     solo_.setToggleState(solo, juce::dontSendNotification);
     mute_.setToggleState(mute, juce::dontSendNotification);
+    if (mute != muted_) {
+        muted_ = mute;
+        refreshValues();
+        repaint();
+    }
 }
 
 juce::Component* SettingsPanel::controlFor(int paramIndex) const {
@@ -89,9 +87,6 @@ void SettingsPanel::setFromUi(int index, float plain) { proc_.uiSetParam(index, 
 void SettingsPanel::rebuild(int typeIndex) {
     type_ = typeIndex;
     ctls_.clear();
-    showAdvanced_ = false;
-    more_.setButtonText("More");
-    more_.setVisible(false);
     graph_.setType(typeIndex);
     if (typeIndex < 0) { showGraph_ = false; layoutControls(); return; }
     const auto& d = fxRegistry()[static_cast<size_t>(typeIndex)];
@@ -99,13 +94,12 @@ void SettingsPanel::rebuild(int typeIndex) {
     showGraph_ = FxGraph::hasGraph(d.typeId);
     graph_.setVisible(showGraph_);
     desc_.setText(d.tooltip, juce::dontSendNotification);
-    bool anyAdvanced = false;
     for (size_t i = 0; i < d.params.size(); ++i) {
         const auto& spec = d.params[i];
         auto c = std::make_unique<Ctl>();
         c->index = static_cast<int>(i);
         c->advanced = spec.advanced;
-        anyAdvanced = anyAdvanced || spec.advanced;
+        c->tooltip = spec.tooltip;
         c->label = std::make_unique<juce::Label>(juce::String(), juce::String(spec.name));
         c->label->setFont(LookAndFeel::font(12.0f, true));
         c->label->setColour(juce::Label::textColourId, Colours::text.withAlpha(0.82f));
@@ -195,7 +189,6 @@ void SettingsPanel::rebuild(int typeIndex) {
         content_.addAndMakeVisible(*c->value);
         ctls_.push_back(std::move(c));
     }
-    more_.setVisible(anyAdvanced);
     refreshValues();
     resized();
 }
@@ -219,6 +212,37 @@ void SettingsPanel::refreshValues() {
         if (c->toggle) c->toggle->setToggleState(x >= 0.5f, juce::dontSendNotification);
         if (c->slider && !c->value->isBeingEdited()) c->value->setText(spec.format(x), juce::dontSendNotification);
     }
+    applyEnablement(v, muted_);
+}
+
+void SettingsPanel::applyEnablement(const ParamValues& v, bool muted) {
+    // Data-driven dependencies (ParamSpec::enabledBy): a disabled JUCE component receives no mouse, wheel or
+    // keyboard input, so an inactive control cannot be changed by accident. Its value stays as it was (dormant).
+    if (type_ < 0) return;
+    const auto& d = fxRegistry()[static_cast<size_t>(type_)];
+    for (auto& c : ctls_) {
+        const auto& spec = d.params[static_cast<size_t>(c->index)];
+        const bool dep = d.paramEnabled(c->index, v);
+        const bool active = dep && !muted;
+        const juce::String tip = muted ? juce::String("Inactive while the staged effect is muted (M). Unmute to edit it.")
+                                       : (dep ? c->tooltip : juce::String(spec.disabledReason));
+        for (juce::Component* comp : {static_cast<juce::Component*>(c->slider.get()), static_cast<juce::Component*>(c->drop.get()),
+                                      static_cast<juce::Component*>(c->seg.get()), static_cast<juce::Component*>(c->toggle.get()),
+                                      static_cast<juce::Component*>(c->value.get())}) {
+            if (!comp) continue;
+            comp->setEnabled(active);
+            comp->setAlpha(active ? 1.0f : 0.32f);
+            if (auto* tc = dynamic_cast<juce::SettableTooltipClient*>(comp); tc && comp != c->value.get())
+                tc->setTooltip(c->slider && dep && !muted ? tip + "\n\nDrag to change. Double-click to reset; double-click the value to type one." : tip);
+        }
+        c->label->setAlpha(active ? 1.0f : 0.38f);
+        c->label->setTooltip(tip);
+        if (c->active != active && c->dragging && !active) c->dragging = false;
+        c->active = active;
+    }
+    for (juce::Component* comp : {static_cast<juce::Component*>(&desc_), static_cast<juce::Component*>(&graph_), static_cast<juce::Component*>(&advHeading_)})
+        comp->setAlpha(muted ? 0.32f : 1.0f);
+    graph_.setEnabled(!muted);
 }
 
 void SettingsPanel::layoutControls() {
@@ -227,9 +251,9 @@ void SettingsPanel::layoutControls() {
     if (showGraph_) {
         const int gh = juce::jlimit(84, 150, viewport_.getHeight() / 4);
         graph_.setBounds(0, 0, W, gh);
-        y = gh + 14;
+        y = gh + Tokens::space5;
     }
-    auto visible = [&](const Ctl& c) { return !c.advanced || showAdvanced_; };
+    auto visible = [&](const Ctl&) { return true; };  // V2.1: advanced controls are always shown
     for (auto& c : ctls_)
         for (juce::Component* comp : {static_cast<juce::Component*>(c->label.get()), static_cast<juce::Component*>(c->value.get()),
                                       static_cast<juce::Component*>(c->slider.get()), static_cast<juce::Component*>(c->drop.get()),
@@ -244,11 +268,11 @@ void SettingsPanel::layoutControls() {
             (c->slider ? knobs : sel).push_back(c.get());
         }
         const int selCols = W >= 330 ? 2 : 1;
-        const int selW = (W - (selCols - 1) * 16) / selCols;
+        const int selW = (W - (selCols - 1) * Tokens::space5) / selCols;
         for (size_t i = 0; i < sel.size(); ++i) {
             const int col = static_cast<int>(i) % selCols;
             if (col == 0 && i > 0) y += kSelectorH;
-            auto cell = juce::Rectangle<int>(col * (selW + 16), y, selW, kSelectorH - 8);
+            auto cell = juce::Rectangle<int>(col * (selW + Tokens::space5), y, selW, kSelectorH - 8);
             sel[i]->label->setBounds(cell.removeFromTop(kLabelH));
             cell.removeFromTop(3);
             auto ctrl = cell.withHeight(24);
@@ -257,7 +281,7 @@ void SettingsPanel::layoutControls() {
             if (sel[i]->toggle) sel[i]->toggle->setBounds(ctrl.withWidth(80));
             sel[i]->value->setBounds({});
         }
-        if (!sel.empty()) y += kSelectorH + 4;
+        if (!sel.empty()) y += kSelectorH + Tokens::space2;
         // 2. knobs: as large as the remaining space allows (52..80 px), never smaller than readable
         if (knobs.empty()) return;
         const int cols = juce::jlimit(2, 5, W / 96);
@@ -282,9 +306,9 @@ void SettingsPanel::layoutControls() {
     for (auto& c : ctls_) anyAdv = anyAdv || (c->advanced && visible(*c));
     advHeading_.setVisible(anyAdv);
     if (anyAdv) {
-        y += 8;
-        advHeading_.setBounds(0, y, W, 14);
-        y += 22;
+        y += Tokens::space5;
+        advHeading_.setBounds(0, y, W, 16);
+        y += 16 + Tokens::space3;
         layoutGroup(true, 0);
     }
     content_.setSize(W, std::max(y + 6, 10));
@@ -300,10 +324,7 @@ void SettingsPanel::resized() {
     sm.removeFromRight(6);
     solo_.setBounds(sm.removeFromRight(28).withSizeKeepingCentre(28, 26));
     desc_.setBounds(top.withTrimmedRight(10));
-    auto bottom = r.removeFromBottom(24);
-    more_.setBounds(bottom.removeFromLeft(56));
-    r.removeFromBottom(4);
-    r.removeFromTop(8);
+    r.removeFromTop(Tokens::space2);
     viewport_.setBounds(r);
     layoutControls();
 }

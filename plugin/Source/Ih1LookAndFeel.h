@@ -25,7 +25,11 @@ const juce::Colour danger{0xffe0566a};       // DELETE only
 namespace Tokens {
 constexpr float radius = 1.5f;     // the only corner radius used
 constexpr float hairline = 1.0f;
-constexpr int gutter = 22;         // outer padding of the control column
+// V2.1 spacing scale (4-px grid). The left column uses it as a hierarchy, not a uniform margin:
+// outer inset (gutter) > between sections (space6) > inside a section (space4) > control rows (space2).
+constexpr int space1 = 4, space2 = 8, space3 = 12, space4 = 16, space5 = 24, space6 = 32;
+constexpr int gutter = 32;         // outer padding of the control column (was 22)
+constexpr int gutterV = 24;        // top / bottom padding of the control column
 constexpr int gap = 12;
 constexpr int rowH = 28;
 }  // namespace Tokens
@@ -33,6 +37,8 @@ constexpr int rowH = 28;
 // FX identity colour (shared with the formation): visual::fxColour as a juce::Colour.
 juce::Colour fxColour(const std::string& typeId, int shade = 0);
 juce::Colour fxColourForIndex(int registryIndex);
+// Catalogue family colour (FxCategory index), shared with the formation.
+juce::Colour categoryColour(int category);
 // A readable version of an identity colour for small text on the dark column.
 juce::Colour readable(juce::Colour c, float minBrightness = 0.78f);
 

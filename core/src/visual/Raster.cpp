@@ -19,7 +19,20 @@ void Canvas::decay(float d) {
 }
 
 void Canvas::draw(const std::vector<Segment>& segs, float scale, float gain) {
-    for (const auto& s : segs) line(s, scale, gain);
+    for (const auto& s : segs) {
+        line(s, scale, gain);
+        if (s.w >= 1.5f && scale > 0.0f) {
+            // a 2-px core: the same line again, one pixel to the side (perpendicular)
+            float dx = s.x1 - s.x0, dy = s.y1 - s.y0;
+            const float l = std::sqrt(dx * dx + dy * dy);
+            if (l <= 1e-9f || !std::isfinite(l)) continue;
+            dx /= l; dy /= l;
+            const float o = 1.0f / scale;
+            Segment t = s;
+            t.x0 -= dy * o; t.x1 -= dy * o; t.y0 += dx * o; t.y1 += dx * o;
+            line(t, scale, gain * 0.8f);
+        }
+    }
 }
 
 void Canvas::line(const Segment& s, float scale, float gain) {
@@ -78,7 +91,7 @@ void boxBlur(std::vector<float>& v, std::vector<float>& t, int w, int h, int r) 
 }
 }  // namespace
 
-void Canvas::composite(std::vector<uint8_t>& rgb, float exposure, float bloomGain) const {
+void Canvas::composite(std::vector<uint8_t>& rgb, float exposure, float bloomGain, const std::vector<Glow>* glows, float scale) const {
     // bloom at quarter resolution: downsample, blur twice, sample back bilinearly
     const int bw = std::max(1, w_ / 4), bh = std::max(1, h_ / 4);
     bloom_.assign(static_cast<size_t>(bw * bh * 3), 0.0f);
@@ -90,6 +103,24 @@ void Canvas::composite(std::vector<uint8_t>& rgb, float exposure, float bloomGai
             b[0] += a[0] * (1.0f / 16.0f); b[1] += a[1] * (1.0f / 16.0f); b[2] += a[2] * (1.0f / 16.0f);
         }
     for (int pass = 0; pass < 2; ++pass) boxBlur(bloom_, tmp_, bw, bh, 3);
+    if (bloomGain > 0.0f) for (auto& v : bloom_) v *= bloomGain;
+    // the formation-coupled field response (soft Gaussian glows), at bloom resolution
+    if (glows && !glows->empty()) {
+        for (int y = 0; y < bh; ++y)
+            for (int x = 0; x < bw; ++x) {
+                const float fx = (static_cast<float>(x) + 0.5f) * 4.0f / scale, fy = (static_cast<float>(y) + 0.5f) * 4.0f / scale;
+                float* b = &bloom_[static_cast<size_t>((y * bw + x) * 3)];
+                for (const auto& g : *glows) {
+                    const float dx = fx - g.x, dy = fy - g.y, r2 = g.radius * g.radius;
+                    if (!(r2 > 0.0f)) continue;
+                    const float d2 = dx * dx + dy * dy;
+                    if (d2 > 9.0f * r2) continue;
+                    const float k = std::exp(-d2 / r2);
+                    b[0] += g.r * k; b[1] += g.g * k; b[2] += g.b * k;
+                }
+            }
+    }
+    bloomGain = 1.0f;  // already applied
     rgb.resize(static_cast<size_t>(w_ * h_ * 3));
     for (int y = 0; y < h_; ++y) {
         const float fy = std::clamp((static_cast<float>(y) + 0.5f) / 4.0f - 0.5f, 0.0f, static_cast<float>(bh - 1));

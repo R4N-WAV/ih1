@@ -29,12 +29,25 @@ Rgb toneMap(Rgb a, float exposure) {
 
 // ------------------------------------------------------------------------------------- helpers
 namespace {
+using V3 = Formation::V3;
 constexpr float kPi = 3.14159265358979f;
-constexpr float kCamDist = 4.0f;  // camera distance (world units)
-constexpr float kScale = 0.34f;   // field-height units per world unit at the focal distance
-constexpr int kMaxStrandsPerInst = 210;
-constexpr float kTransferDur = 0.65f;
-constexpr float kGain = 4.3f;  // overall strand intensity (tuned against the reference with exposure 1.6)
+constexpr float kCamDist = 4.2f;   // camera distance (world units)
+constexpr float kScale = 0.23f;    // field-height units per world unit at the focal distance
+constexpr int kMaxStrandsPerInst = 170;
+constexpr float kTransferDur = 0.95f;
+constexpr float kGain = 1.7f;      // overall strand intensity (tuned with exposure 2.2)
+constexpr float kPulseTravel = 0.6f;  // seconds for a pulse to cross one link
+
+inline V3 add(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline V3 sub(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline V3 mul(V3 a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+inline float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float len(V3 a) { return std::sqrt(dot(a, a)); }
+inline V3 norm(V3 a) { const float l = len(a); return l > 1e-9f ? mul(a, 1.0f / l) : V3{0, 1, 0}; }
+inline V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+inline V3 lerp3(V3 a, V3 b, float t) { return add(a, mul(sub(b, a), t)); }
+inline Rgb lerpC(const Rgb& a, const Rgb& b, float t) { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; }
+inline bool finite3(V3 a) { return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z); }
 
 uint64_t mix64(uint64_t z) {
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -45,35 +58,44 @@ struct Rng {
     uint64_t s;
     explicit Rng(uint64_t seed) : s(seed) {}
     float next() { s += 0x9E3779B97F4A7C15ull; return static_cast<float>(mix64(s) >> 40) * (1.0f / 16777216.0f); }
+    float bip() { return next() * 2.0f - 1.0f; }
     float gauss() {
         const float u = std::max(1e-6f, next()), v = next();
         return std::sqrt(-2.0f * std::log(u)) * std::cos(2.0f * kPi * v);
     }
+    V3 sphere() { return norm({gauss(), gauss(), gauss()}); }
 };
 
-// Divergence-free flow: v(p, t) = sum_k a_k cos(w_k . p + phi_k(t)) (w_k x e_k). Each term is the curl of
-// a_k sin(w_k . p + phi_k) e_k, so the sum is exactly divergence-free. Wavelengths 0.7..2.6 world units, phase
-// drift 0.05..0.12 rad/s: smooth, low-frequency and slow.
+// Divergence-free curl noise: v(p, t) = sum_k cos(w_k . p + phi_k(t)) (w_k x e_k) / |.|. Each term is the curl
+// of a_k sin(w_k . p + phi_k) e_k, so the sum is exactly divergence-free. Wavelengths 1.1..3.1 world units,
+// phase drift 0.04..0.10 rad/s: smooth, low-frequency and slow (no swirling).
 struct FlowTerm { float wx, wy, wz, cx, cy, cz, phase, omega; };
-constexpr int kTerms = 9;
+constexpr int kTerms = 6;
 const std::array<FlowTerm, kTerms>& flowTerms() {
     static const std::array<FlowTerm, kTerms> terms = [] {
         std::array<FlowTerm, kTerms> t{};
         Rng r(0x1A1ull ^ 0xA5A5F00Dull);
         for (int k = 0; k < kTerms; ++k) {
-            float dx = r.gauss(), dy = r.gauss(), dz = r.gauss();
-            float l = std::sqrt(dx * dx + dy * dy + dz * dz) + 1e-6f;
-            const float freq = 2.0f * kPi / (1.3f + 2.2f * r.next());
-            const float wx = dx / l * freq, wy = dy / l * freq, wz = dz / l * freq;
-            float ex = r.gauss(), ey = r.gauss(), ez = r.gauss();
-            // c = w x e, normalised so each term has unit amplitude
-            float cx = wy * ez - wz * ey, cy = wz * ex - wx * ez, cz = wx * ey - wy * ex;
-            l = std::sqrt(cx * cx + cy * cy + cz * cz) + 1e-6f;
-            t[static_cast<size_t>(k)] = {wx, wy, wz, cx / l, cy / l, cz / l, r.next() * 2.0f * kPi, (0.05f + 0.07f * r.next()) * (r.next() < 0.5f ? -1.0f : 1.0f)};
+            const V3 d = r.sphere();
+            const float freq = 2.0f * kPi / (1.1f + 2.0f * r.next());
+            const V3 w = mul(d, freq);
+            const V3 c = norm(cross(w, r.sphere()));
+            t[static_cast<size_t>(k)] = {w.x, w.y, w.z, c.x, c.y, c.z, r.next() * 2.0f * kPi, (0.04f + 0.06f * r.next()) * (r.next() < 0.5f ? -1.0f : 1.0f)};
         }
         return t;
     }();
     return terms;
+}
+
+// The understated signal path: bottom-left (input) to top-right (output), with a gentle S so it never reads
+// as a straight line, axis or arrow.
+const V3 kIn{-1.65f, -1.0f, 0.25f}, kOut{1.65f, 1.0f, -0.25f};
+V3 pathTangent() { return norm(sub(kOut, kIn)); }
+V3 pathPerp() { return norm(cross(pathTangent(), {0, 0, 1})); }
+V3 pathPoint(float t, float extent) {
+    const V3 base = lerp3(kIn, kOut, t);
+    const V3 s = mul(pathPerp(), 0.30f * std::sin(2.0f * kPi * t + 0.6f));
+    return mul(add(base, s), extent);
 }
 
 float smooth01(float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); }
@@ -81,32 +103,66 @@ float easeInOut(float x) {
     x = std::clamp(x, 0.0f, 1.0f);
     return x < 0.5f ? 4.0f * x * x * x : 1.0f - std::pow(-2.0f * x + 2.0f, 3.0f) * 0.5f;
 }
-float safeLevel(float x) { return std::isfinite(x) ? std::clamp(std::sqrt(std::max(0.0f, x)) * 1.6f, 0.0f, 1.2f) : 0.0f; }
+float safe(float x, float lo, float hi, float def = 0.0f) { return std::isfinite(x) ? std::clamp(x, lo, hi) : def; }
+float levelMap(float x) { return std::isfinite(x) ? std::clamp(std::sqrt(std::max(0.0f, x)) * 1.6f, 0.0f, 1.2f) : 0.0f; }
+// one-pole follower with separate attack / release (seconds)
+void follow(float& y, float x, float dt, float att, float rel) {
+    const float tc = x > y ? att : rel;
+    y += (x - y) * (1.0f - std::exp(-dt / std::max(1e-3f, tc)));
+    if (!std::isfinite(y)) y = 0.0f;
+}
 }  // namespace
 
 // ------------------------------------------------------------------------------------- formation
 Formation::Formation(Quality q) : quality_(q) {
-    segs_.reserve(120000);
+    segs_.reserve(140000);
+    glows_.reserve(80);
     pts_.reserve(128);
+    nodes_.reserve(64);
 }
 
-float Formation::decay(float dt) const { return std::pow(0.5f, std::clamp(dt, 0.0f, 0.2f) * 60.0f); }
+// Light temporal smoothing only: most of the previous frame is gone after two frames, so filaments stay crisp.
+float Formation::decay(float dt) const { return std::pow(0.3f, std::clamp(dt, 0.0f, 0.2f) * 60.0f); }
 
 bool Formation::transferActive() const {
     for (const auto& kv : insts_) if (kv.second.transfer) return true;
-    return false;
+    return !pending_.empty();
 }
 
-Formation::V3 Formation::field(const V3& p, float t) const {
+V3 Formation::nodePosition(uint64_t id) const {
+    auto it = insts_.find(id);
+    return it == insts_.end() ? V3{} : it->second.anchor;
+}
+
+V3 Formation::curl(const V3& p, float t) const {
     V3 v;
+    const float lean = balance_ * 0.35f;  // stereo balance leans the noise slightly
     for (const auto& f : flowTerms()) {
-        const float c = std::cos(f.wx * p.x + f.wy * p.y + f.wz * p.z + f.phase + f.omega * t);
+        const float c = std::cos(f.wx * (p.x - lean) + f.wy * p.y + f.wz * p.z + f.phase + f.omega * t);
         v.x += c * f.cx;
         v.y += c * f.cy;
         v.z += c * f.cz;
     }
-    const float k = 1.0f / 2.1f;
-    return {v.x * k, v.y * k, v.z * k};
+    return mul(v, 1.0f / 1.6f);
+}
+
+V3 Formation::field(const V3& p, float t) const {
+    // soft dipoles: B = s (3 (m.r) r / r^2 - m) / r^3, softened by the node radius
+    V3 b;
+    for (const auto& n : nodes_) {
+        const V3 r = sub(p, n.p);
+        const float d2 = dot(r, r);
+        if (d2 > 9.0f) continue;  // beyond 3 units a dipole contributes < 1 %: skip (bounded cost)
+        const float e2 = n.radius * n.radius;
+        const float r2 = d2 + e2;
+        const float inv = n.strength / (r2 * std::sqrt(r2));
+        const float md = 3.0f * dot(n.axis, r) / r2;
+        b = add(b, mul(sub(mul(r, md), n.axis), inv));
+    }
+    // weak input -> output transmission flow, plus slow curl noise for organic bending
+    const V3 flow = mul(pathTangent(), 1.1f);
+    const V3 c = mul(curl(p, t), 1.6f * (1.0f + 0.5f * low_));
+    return add(b, add(flow, c));
 }
 
 void Formation::project(const V3& p, float& x, float& y, float& depth) const {
@@ -116,320 +172,426 @@ void Formation::project(const V3& p, float& x, float& y, float& depth) const {
     const float y2 = cp * p.y - sp * z1, z2 = sp * p.y + cp * z1;
     depth = std::max(0.6f, kCamDist - z2);
     const float k = kCamDist / depth;
-    // composition: the core sits right of centre with room on the left for the arm (landscape field)
-    const float cx = std::clamp(aspect_ * 0.64f, aspect_ * 0.5f, std::max(aspect_ * 0.5f, aspect_ - 0.36f));
+    const float cx = aspect_ * 0.54f;  // slightly right of centre: generous black space on both sides
     x = cx + x1 * k * kScale;
     y = 0.5f - y2 * k * kScale;
+}
+
+V3 Formation::unproject(float fx, float fy, float worldZ) const {
+    // inverse of project() for a point at world depth z (ignores the tiny camera sway)
+    const float depth = std::max(0.6f, kCamDist - worldZ);
+    const float k = kCamDist / depth;
+    const float cx = aspect_ * 0.54f;
+    return {(fx - cx) / (k * kScale), (0.5f - fy) / (k * kScale), worldZ};
+}
+
+Rgb Formation::shade(const Rgb& c) const {
+    if (mono_ <= 0.0f) return c;
+    const float l = 0.30f * c.r + 0.55f * c.g + 0.15f * c.b;
+    const Rgb grey{l * 0.93f, l * 0.95f, l * 1.03f};
+    return lerpC(c, grey, std::clamp(mono_, 0.0f, 1.0f));
 }
 
 void Formation::buildStrands(Inst& inst, int count) {
     inst.strands.clear();
     inst.strands.reserve(static_cast<size_t>(count));
     for (int k = 0; k < count; ++k) {
-        Rng r(mix64((static_cast<uint64_t>(inst.seed) << 20) ^ static_cast<uint64_t>(k) ^ 0x5EEDull));
+        Rng r(mix64((static_cast<uint64_t>(inst.seed) << 20) ^ static_cast<uint64_t>(k) ^ 0xF1E1Dull));
         Strand s;
-        const float kindR = r.next();
-        s.kind = kindR < 0.50f ? 0 : (kindR < 0.70f ? 1 : (kindR < 0.80f ? 2 : 3));  // hair, wisp, spark, veil
-        s.offset = {r.gauss(), r.gauss(), r.gauss()};
-        s.drift = {r.next() * 2.0f * kPi, r.next() * 2.0f * kPi, r.next() * 2.0f * kPi};
+        const float kr = r.next();
+        s.kind = kr < 0.38f ? 0 : (kr < 0.72f ? 1 : 2);
+        s.start = r.sphere();
         const float g = r.next();
-        s.gain = 0.22f + 2.2f * g * g * g;  // mostly faint, a few bright
-        s.turb = s.kind == 0 ? 0.45f + 0.3f * r.next() : (s.kind == 1 ? 1.1f + 0.5f * r.next() : (s.kind == 2 ? 0.7f : 0.75f + 0.3f * r.next()));
+        s.gain = 0.16f + 1.7f * g * g * g * g;  // mostly fine and faint, a few bright cores
         s.phase = r.next() * 2.0f * kPi;
-        s.steps = static_cast<uint8_t>(s.kind == 0 ? 10 + static_cast<int>(22 * r.next() * r.next()) + static_cast<int>(8 * r.next())
-                                       : (s.kind == 1 ? 8 + static_cast<int>(8 * r.next()) : (s.kind == 2 ? 4 + static_cast<int>(4 * r.next()) : 10 + static_cast<int>(10 * r.next()))));
-        s.dirBias = (r.next() - 0.5f) * 0.75f;  // fan angle within the sheet (radians): a plume, not a burst
+        s.lenScale = 0.7f + 0.6f * r.next();
+        s.dir = r.next() < 0.5f ? 1 : -1;
+        if (s.kind == 1) {
+            const float tr = r.next();
+            s.target = tr < 0.12f ? 3 : (tr < 0.30f ? 2 : 1);  // 3: an input strand (only drawn on the first node)
+            s.steps = static_cast<uint8_t>(36 + static_cast<int>(20 * r.next()));
+        } else if (s.kind == 0) {
+            s.steps = static_cast<uint8_t>(22 + static_cast<int>(26 * r.next() * r.next()));
+        } else {
+            s.steps = static_cast<uint8_t>(9 + static_cast<int>(10 * r.next()));
+            s.gain *= 0.55f;
+        }
         inst.strands.push_back(s);
     }
 }
 
 void Formation::layout(const FrameInput& in) {
     const int n = static_cast<int>(in.chain.size());
-    extentTarget_ = 0.42f + 0.58f * std::min(1.0f, static_cast<float>(std::max(0, n - 1)) / 6.0f);
+    extentTarget_ = 0.40f + 0.60f * std::min(1.0f, static_cast<float>(std::max(0, n - 1)) / 6.0f);
     for (auto& kv : insts_) kv.second.inChain = false;
+    order_.clear();
     for (int i = 0; i < n; ++i) {
         const auto& ii = in.chain[static_cast<size_t>(i)];
-        auto it = insts_.find(ii.id);
-        const bool fresh = it == insts_.end();
+        if (ii.id == 0) continue;
+        order_.push_back(ii.id);
+        const bool fresh = insts_.find(ii.id) == insts_.end();
         Inst& c = insts_[ii.id];
         c.inChain = true;
-        c.index = i;
+        c.index = static_cast<int>(order_.size()) - 1;
         auto ch = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.5f; };
         c.colour = {ch(ii.colour.r), ch(ii.colour.g), ch(ii.colour.b)};
         if (fresh || c.seed != ii.seed || c.strands.empty()) {
             c.id = ii.id;
             c.seed = ii.seed ? ii.seed : 1u;
             buildStrands(c, kMaxStrandsPerInst);
+            Rng ar(mix64(c.seed ^ 0xA715ull));
+            // dipole axis: deliberately oblique to the path, so arcs cross it instead of lying along it
+            const float a = (35.0f + 50.0f * ar.next()) * kPi / 180.0f, b = ar.next() * 2.0f * kPi;
+            const V3 T = pathTangent(), P = pathPerp(), Z{0, 0, 1};
+            c.axisBase = norm(add(mul(T, std::cos(a)), add(mul(P, std::sin(a) * std::cos(b)), mul(Z, std::sin(a) * std::sin(b)))));
+            c.axis = c.axisBase;
+            c.axisPhase = ar.next() * 2.0f * kPi;
+            c.breathe = ar.next() * 2.0f * kPi;
         }
-        // slot on the skeleton: first FX at the arm's tip, through the core, last FX up/down the plume
-        V3 pos, tan;
-        float plume;
+        // slot along the path; seeded offsets sideways and in depth give the field its own route
+        const int m = static_cast<int>(in.chain.size());
+        const float t = m <= 1 ? 0.5f : 0.10f + 0.80f * static_cast<float>(c.index) / static_cast<float>(m - 1);
         Rng jr(mix64(c.seed ^ 0xC0FFEEull));
-        if (n == 1) {
-            pos = {0, 0, 0};
-            tan = {0.1f, 1.0f, -0.12f};  // a single FX is a small vertical plume, not a radial burst
-            plume = 0.85f;
-        } else {
-            const float t = static_cast<float>(i) / static_cast<float>(n - 1);
-            if (t <= 0.5f) {
-                const float s = (0.5f - t) / 0.5f * 0.95f;
-                pos = {-1.40f * s, -0.05f * s - 0.06f * s * s, 0.50f * s};
-                tan = {-1.40f, -0.05f - 0.12f * s, 0.50f};
-                plume = std::clamp(0.5f - s * 3.0f, 0.0f, 0.5f);
-            } else {
-                const float m = (t - 0.5f) / 0.5f * 0.85f;
-                const float sgn = (i % 2) ? 1.0f : -1.0f;
-                const float s = sgn * m;
-                pos = {0.06f * s + 0.05f * s * s, 0.95f * s, -0.15f * s};
-                tan = {0.06f, 0.95f, -0.15f};
-                plume = std::clamp(0.5f + m * 2.0f, 0.5f, 1.0f);
-            }
-        }
         const float e = extentTarget_;
-        c.target = {pos.x * e + (jr.next() - 0.5f) * 0.12f, pos.y * e + (jr.next() - 0.5f) * 0.10f, pos.z * e + (jr.next() - 0.5f) * 0.12f};
-        const float tl = std::sqrt(tan.x * tan.x + tan.y * tan.y + tan.z * tan.z) + 1e-6f;
-        c.tangentTarget = {tan.x / tl, tan.y / tl, tan.z / tl};
-        c.plumeTarget = plume;
+        const V3 base = pathPoint(t, e);
+        const V3 lateral = mul(pathPerp(), (0.42f * jr.bip()) * (0.6f + 0.4f * e));
+        const V3 depth{0, 0, 0.70f * jr.bip()};
+        const V3 along = mul(pathTangent(), 0.10f * jr.bip());
+        c.target = add(base, add(lateral, add(depth, along)));
         if (fresh) {
             c.anchor = c.target;
-            c.tangent = c.tangentTarget;
-            c.plume = plume;
             c.presence = first_ ? 1.0f : 0.0f;
             c.grow = first_ ? 1.0f : 0.0f;
         }
     }
-    for (const auto& tr : in.transfers) {
-        auto it = insts_.find(tr.id);
-        if (it == insts_.end() || !it->second.inChain) continue;
-        Inst& c = it->second;
-        c.transfer = true;
-        c.tTransfer = 0.0f;
-        c.originY = std::isfinite(tr.originY) ? std::clamp(tr.originY, 0.02f, 0.98f) : 0.35f;
-        c.hold = kTransferDur * 0.9f;
-        c.grow = 0.0f;
-        c.presence = 1.0f;
+    // transfer requests: wait for their instance (up to 2 s) instead of being dropped
+    for (const auto& tr : in.transfers) if (tr.id != 0 && pending_.size() < 64) pending_.push_back({tr, 0.0f});
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        auto f = insts_.find(it->req.id);
+        if (f != insts_.end() && f->second.inChain) {
+            Inst& c = f->second;
+            c.transfer = true;
+            c.tTransfer = 0.0f;
+            c.originY = std::isfinite(it->req.originY) ? std::clamp(it->req.originY, 0.02f, 0.98f) : 0.35f;
+            c.origin = unproject(0.0f, c.originY, 0.6f);
+            c.hold = kTransferDur;
+            c.grow = 0.0f;
+            c.presence = 1.0f;
+            it = pending_.erase(it);
+        } else if (it->age > 2.0f) {
+            it = pending_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
-void Formation::emitStrand(const Inst& inst, const Strand& s, float lengthFrac, float bright) {
-    if (lengthFrac <= 0.001f) return;
-    // local frame: T along the skeleton, N the sheet normal, B across within the sheet
-    const V3 T = inst.tangent;
-    const float pl = inst.plume;
-    V3 N{0.0f * (1 - pl) + 0.18f * pl, 1.0f * (1 - pl) + 0.0f * pl, 0.0f * (1 - pl) + 1.0f * pl};
-    {
-        // orthogonalise against T
-        const float d = N.x * T.x + N.y * T.y + N.z * T.z;
-        N = {N.x - d * T.x, N.y - d * T.y, N.z - d * T.z};
-        const float l = std::sqrt(N.x * N.x + N.y * N.y + N.z * N.z) + 1e-6f;
-        N = {N.x / l, N.y / l, N.z / l};
-    }
-    const V3 B{N.y * T.z - N.z * T.y, N.z * T.x - N.x * T.z, N.x * T.y - N.y * T.x};
-    const float e = std::sqrt(extent_);
-    const float t = time_;
-    // seed point: gaussian in the local frame, thin across the sheet, breathing slowly
-    const float br = 0.025f;
-    const V3 o{s.offset.x * (0.24f + 0.06f * pl) * e, s.offset.y * (0.13f + 0.17f * pl) * e, s.offset.z * (0.06f + 0.05f * pl)};
-    V3 p0{inst.anchor.x + T.x * o.x + B.x * o.y + N.x * o.z + br * std::sin(0.11f * t + s.drift.x),
-          inst.anchor.y + T.y * o.x + B.y * o.y + N.y * o.z + br * std::sin(0.083f * t + s.drift.y),
-          inst.anchor.z + T.z * o.x + B.z * o.y + N.z * o.z + br * std::sin(0.067f * t + s.drift.z)};
-    if (s.kind == 2) {
-        // sparks from every instance gather where the sheets cross: overlapping colours make the pale,
-        // luminous core of the reference (the brightest energy stays focused there)
-        const float k = 0.62f;
-        p0 = {(inst.anchor.x + (p0.x - inst.anchor.x) * 0.35f) * (1.0f - k), (inst.anchor.y + (p0.y - inst.anchor.y) * 0.35f) * (1.0f - k),
-              (inst.anchor.z + (p0.z - inst.anchor.z) * 0.35f) * (1.0f - k)};
-    }
-    const float ca = std::cos(s.dirBias), sa = std::sin(s.dirBias);
-    const V3 guide{T.x * ca + B.x * sa, T.y * ca + B.y * sa, T.z * ca + B.z * sa};
-    const float tension = 1.0f + 0.12f * energy_;  // audio tightens strands slightly, never spins them
-    const float turb = s.turb * (0.8f + 0.55f * pl) / tension;  // the plume is smokier than the arm
-    const float h = (s.kind == 0 ? 0.034f : (s.kind == 1 ? 0.028f : 0.02f)) * (0.55f + 0.45f * e) * lengthFrac;
-    int steps = s.steps;
-    if (quality_ == Quality::Low) steps = std::max(3, steps * 3 / 5);
-    else if (quality_ == Quality::High) steps = steps * 5 / 4;
-    const float fieldT = t * 1.0f;
-
-    // trace both ways from the seed
-    pts_.clear();
-    pts_.resize(static_cast<size_t>(2 * steps + 1));
-    pts_[static_cast<size_t>(steps)] = p0;
-    for (int dir = -1; dir <= 1; dir += 2) {
-        V3 p = p0;
-        for (int k = 1; k <= steps; ++k) {
-            // midpoint (RK2) step on the guided field: smooth curves, no kinks
-            V3 f = field(p, fieldT);
-            {
-                const V3 gd0{guide.x * dir, guide.y * dir, guide.z * dir};
-                const float ft = turb * static_cast<float>(dir);  // a streamline: backwards = -(guide + field)
-                V3 v0{gd0.x + f.x * ft, gd0.y + f.y * ft, gd0.z + f.z * ft};
-                const float l0 = std::sqrt(v0.x * v0.x + v0.y * v0.y + v0.z * v0.z) + 1e-6f;
-                f = field({p.x + v0.x / l0 * h * 0.5f, p.y + v0.y / l0 * h * 0.5f, p.z + v0.z / l0 * h * 0.5f}, fieldT);
+void Formation::emitPolyline(const std::vector<V3>& pts, const Rgb& c0, const Rgb& c1, float gain, const Inst* pulsesOf, bool fineCore) {
+    const size_t np = pts.size();
+    if (np < 2) return;
+    gain = std::max(0.0f, gain);
+    float px = 0, py = 0, pd = 0;
+    project(pts[0], px, py, pd);
+    for (size_t k = 1; k < np; ++k) {
+        float x, y, d;
+        project(pts[k], x, y, d);
+        const float u = static_cast<float>(k) / static_cast<float>(np - 1);
+        // fade in / out along the strand: soft tips, luminous body
+        const float tip = smooth01(std::min(u, 1.0f - u) * 5.0f + 0.12f);
+        // depth: near strands are brighter and thicker, far ones dim and cool towards indigo
+        const float dd = 0.5f * (d + pd);
+        const float fog = std::exp(-std::max(0.0f, dd - kCamDist) * 0.42f);
+        const float nearB = 1.0f + 0.45f * std::clamp((kCamDist - dd) / 0.8f, 0.0f, 1.0f);
+        // filaments that come too close to the camera fade out instead of sweeping across the view
+        const float nearFade = smooth01((dd - 2.4f) / 0.7f);
+        float g = gain * tip * fog * nearB * nearFade;
+        if (pulsesOf) {
+            for (const auto& p : pulsesOf->pulses) {
+                const float pu = p.age / kPulseTravel;
+                const float x0 = (u - pu) / 0.07f;
+                g *= 1.0f + 2.4f * p.strength * std::exp(-x0 * x0);
             }
-            // keep the sheet thin: pull back toward the anchor along the sheet normal
-            const float dn = (p.x - inst.anchor.x) * N.x + (p.y - inst.anchor.y) * N.y + (p.z - inst.anchor.z) * N.z;
-            const V3 gd{guide.x * dir, guide.y * dir, guide.z * dir};
-            const float ft = turb * static_cast<float>(dir);
-            V3 v{gd.x + f.x * ft - N.x * dn * 2.2f, gd.y + f.y * ft - N.y * dn * 2.2f, gd.z + f.z * ft - N.z * dn * 2.2f};
-            // always keep moving forward along the guide: where the field opposes it the step would cancel
-            // and the strand's tail could flip from one frame to the next. This clamp is continuous.
-            const float fwd = v.x * gd.x + v.y * gd.y + v.z * gd.z;
-            if (fwd < 0.4f) { v.x += (0.4f - fwd) * gd.x; v.y += (0.4f - fwd) * gd.y; v.z += (0.4f - fwd) * gd.z; }
-            const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z) + 1e-6f;
-            p = {p.x + v.x / l * h, p.y + v.y / l * h, p.z + v.z / l * h};
-            pts_[static_cast<size_t>(steps + dir * k)] = p;
         }
+        Rgb c = lerpC(c0, c1, u);
+        const float cool = (1.0f - fog) * 0.45f;
+        c = lerpC(c, {0.36f, 0.36f, 0.78f}, cool);
+        c = shade(c);
+        const float w = (!fineCore && dd < kCamDist - 0.25f && gain > 0.9f) ? 2.0f : 1.0f;
+        if (x == px && y == py) g = 0.0f;  // parked end of a finished strand: keeps the count, draws nothing
+        if (std::isfinite(x + y + px + py)) segs_.push_back({px, py, x, y, c.r * g, c.g * g, c.b * g, w});
+        px = x;
+        py = y;
+        pd = d;
     }
+}
 
-    // colour: instance identity; sparks lean pale; depth fog dims and cools the far side
-    Rgb col = inst.colour;
-    if (s.kind == 2) col = {col.r * 0.45f + 0.52f, col.g * 0.45f + 0.49f, col.b * 0.45f + 0.55f};
-    const float kindGain = (s.kind == 0 ? 0.034f : (s.kind == 1 ? 0.022f : (s.kind == 2 ? 0.11f : 0.009f))) * kGain;
-    const float base = kindGain * s.gain * inst.presence * (0.72f + 0.65f * bright);
-    const int np = 2 * steps + 1;
-    // veils: the same traced curve emitted as a few near-parallel copies across the sheet (a translucent
-    // smoky band); every other kind is a single filament
-    const int copies = s.kind == 3 ? 6 : 1;
-    for (int cpy = 0; cpy < copies; ++cpy) {
-        const float sh = copies > 1 ? (static_cast<float>(cpy) - 2.5f) * 0.016f * e : 0.0f;
-        const V3 d{B.x * sh, B.y * sh, B.z * sh};
-        float px0 = 0, py0 = 0, d0 = 0;
-        project({pts_[0].x + d.x, pts_[0].y + d.y, pts_[0].z + d.z}, px0, py0, d0);
-        for (int j = 1; j < np; ++j) {
-            const V3& q = pts_[static_cast<size_t>(j)];
-            float px1, py1, d1;
-            project({q.x + d.x, q.y + d.y, q.z + d.z}, px1, py1, d1);
-            const float sm = (static_cast<float>(j) - 0.5f) / static_cast<float>(np - 1) * 2.0f - 1.0f;  // -1..1 along the strand
-            const float taper = std::pow(std::max(0.0f, 1.0f - sm * sm), 1.3f);
-            const float bead = 0.78f + 0.22f * std::sin(6.5f * sm + s.phase + 0.21f * t);
-            const float depth = 0.5f * (d0 + d1);
-            const float fog = std::clamp(1.3f - 0.42f * (depth - kCamDist), 0.4f, 1.7f);
-            const float a = base * taper * bead * fog;
-            // always emitted (stable segment order frame to frame); the renderer clips to the field
-            const float cool = std::clamp((depth - kCamDist) * 0.25f, 0.0f, 0.35f);  // far: toward indigo
-            segs_.push_back({px0, py0, px1, py1, a * (col.r * (1 - cool) + 0.30f * cool), a * (col.g * (1 - cool) + 0.32f * cool), a * (col.b * (1 - cool) + 0.85f * cool)});
-            px0 = px1; py0 = py1; d0 = d1;
+void Formation::emitStrand(Inst& inst, int ni, int si, float lengthFrac, float dt) {
+    if (lengthFrac <= 0.001f) return;
+    const Strand& s = inst.strands[static_cast<size_t>(si)];
+    const Node& node = nodes_[static_cast<size_t>(ni)];
+    const int nn = static_cast<int>(nodes_.size());
+    const int steps = std::max(2, static_cast<int>(static_cast<float>(s.steps) * lengthFrac));
+    const float sway = 0.03f * std::sin(time_ * 0.21f + s.phase);
+    pts_.clear();
+    float gain = kGain * s.gain * inst.presence * (0.55f + 0.55f * energy_ + 0.75f * inst.bright);
+    Rgb c0 = inst.colour, c1 = inst.colour;
+    const Inst* pulses = nullptr;
+    if (s.kind == 0) {
+        // arc: a field line leaving the node near a pole, bending around the energy centre
+        // leave near the pole the strand belongs to (continuous in the axis: no switch as the axis precesses)
+        const V3 dir = norm(add(s.start, mul(node.axis, 1.1f * static_cast<float>(s.dir))));
+        V3 p = add(node.p, mul(dir, node.radius * (1.4f + 1.4f * std::fabs(s.start.y)) + sway));
+        const float h = 0.034f * s.lenScale;
+        bool alive = true;  // fixed point count per strand: a finished strand parks at its end
+        for (int k = 0; k <= steps; ++k) {
+            pts_.push_back(p);
+            if (!alive) continue;
+            // soft normalisation: near the field's null points the step shrinks smoothly instead of flipping
+            // direction, which keeps field lines from jumping between branches from frame to frame
+            auto soft = [](V3 f) { return mul(f, 1.0f / (len(f) + 0.9f)); };
+            const V3 v1 = mul(soft(field(p, time_)), static_cast<float>(s.dir));
+            const V3 mid = add(p, mul(v1, 0.5f * h));
+            const V3 v2 = mul(soft(field(mid, time_)), static_cast<float>(s.dir));
+            const V3 q = add(p, mul(v2, h));
+            if (!finite3(q) || len(sub(q, node.p)) > 2.2f) alive = false;
+            else p = q;
+        }
+        pulses = &inst;
+    } else if (s.kind == 1) {
+        // transmission towards the next node (or the one after); input strands only on the first node
+        int target = s.target == 2 ? ni + 2 : ni + 1;
+        if (s.target == 3 && ni != 0) return;
+        if (s.target == 2 && target >= nn) target = ni + 1;
+        V3 goal;
+        bool toOutput = false, fromInput = s.target == 3;
+        // every strand aims at its own point on the target's shell: bundles spread and arrive from many
+        // directions instead of converging into one hard junction / straight spine
+        const V3 aim = mul(norm({s.start.z, s.start.x, s.start.y}), 1.0f);
+        if (fromInput) {
+            goal = add(node.p, mul(aim, node.radius * 2.2f));
+        } else if (target < nn) {
+            goal = add(nodes_[static_cast<size_t>(target)].p, mul(aim, nodes_[static_cast<size_t>(target)].radius * (1.8f + 1.6f * std::fabs(s.start.x))));
+            const auto& other = insts_.find(order_[static_cast<size_t>(target)]);
+            if (other != insts_.end()) c1 = other->second.colour;
+        } else {
+            toOutput = true;  // last node: an understated output path towards the top-right
+            goal = add(node.p, mul(pathTangent(), 0.9f));
+        }
+        V3 p = fromInput ? add(mul(kIn, std::max(0.6f, extent_)), mul(s.start, 0.35f)) : add(node.p, mul(s.start, node.radius * 1.4f));
+        const float h = 0.046f;
+        bool alive = true;
+        for (int k = 0; k <= steps * 2; ++k) {
+            pts_.push_back(p);
+            if (!alive) continue;
+            const V3 toGoal = sub(goal, p);
+            const float dist = len(toGoal);
+            if (dist < 0.09f) { alive = false; continue; }
+            // attraction + the field's bending + a little curl: the strand finds a coherent path, not a line
+            const V3 f = norm(field(p, time_));
+            const V3 cn = curl(add(p, mul(s.start, 0.6f)), time_ + s.phase);
+            const float pull = std::clamp(0.35f + 0.35f / std::max(0.2f, dist), 0.35f, 1.8f);
+            const V3 v = norm(add(mul(norm(toGoal), pull), add(mul(f, 0.85f), mul(cn, 0.6f))));
+            const V3 q = add(p, mul(v, h));
+            if (!finite3(q)) alive = false;
+            else p = q;
+        }
+        if (toOutput) gain *= 0.45f;
+        if (fromInput) gain *= 0.4f;
+        pulses = fromInput ? nullptr : &inst;
+    } else {
+        // wisp: a short, faint curl streamline in the node's neighbourhood; the high band lights it
+        V3 p = add(node.p, mul(s.start, node.radius * (2.0f + 3.0f * std::fabs(s.start.z))));
+        const float h = 0.03f;
+        for (int k = 0; k <= steps; ++k) {
+            pts_.push_back(p);
+            const V3 q = add(p, mul(norm(add(curl(p, time_ + s.phase), mul(norm(field(p, time_)), 0.3f))), h));
+            if (finite3(q)) p = q;
+        }
+        gain *= 0.55f + 1.4f * high_;
+    }
+    // Temporal smoothing in world space. Field lines are sensitive near the field's null points: a strand
+    // can switch to a neighbouring branch from one frame to the next. Easing every point towards its newly
+    // traced position turns such a switch into a ~0.5 s glide instead of a pop.
+    if (inst.trail.size() != inst.strands.size()) inst.trail.resize(inst.strands.size());
+    auto& tr = inst.trail[static_cast<size_t>(si)];
+    if (tr.size() != pts_.size()) {
+        tr = pts_;
+    } else {
+        const float a = 1.0f - std::exp(-std::max(0.0f, dt) / 0.5f);
+        for (size_t k = 0; k < pts_.size(); ++k) {
+            tr[k] = add(tr[k], mul(sub(pts_[k], tr[k]), a));
+            pts_[k] = tr[k];
         }
     }
+    // hotspot: brighter near the node's energy centre (intersections and cores read as highlights)
+    if (!pts_.empty()) {
+        const float d0 = len(sub(pts_[0], node.p));
+        gain *= 1.0f + 0.25f * std::exp(-d0 * d0 / 0.03f);
+    }
+    emitPolyline(pts_, c0, c1, gain, pulses, s.kind == 2);
 }
 
 void Formation::emitTransfer(const Inst& inst) {
-    // Packet: the FX's colour gathers at the left edge of the field, travels along a gentle arc into its new
-    // region, then disperses as a short burst while the region's strands grow out of it.
-    float ex, ey, ed;
-    project(inst.anchor, ex, ey, ed);
-    const float sx = 0.012f, sy = inst.originY;
-    const float cx = 0.5f * (sx + ex), cy = std::min(sy, ey) - 0.10f;
-    auto bez = [&](float u, float& x, float& y) {
-        const float a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
-        x = a * sx + b * cx + c * ex;
-        y = a * sy + b * cy + c * ey;
-    };
+    // a packet of the FX's own field lines travels from the workflow column into its node
     const float tt = inst.tTransfer;
+    if (tt > kTransferDur + 0.25f) return;
+    const float u = easeInOut(tt / kTransferDur);
+    const V3 a = inst.origin, b = inst.anchor;
+    const V3 ctrl = add(mul(add(a, b), 0.5f), {0.0f, 0.45f, 0.35f});
+    auto bez = [&](float t) { return add(add(mul(a, (1 - t) * (1 - t)), mul(ctrl, 2 * (1 - t) * t)), mul(b, t * t)); };
+    const V3 q = bez(std::min(u, 1.0f));
+    const V3 q2 = bez(std::min(1.0f, u + 0.02f));
+    const V3 axis = norm(sub(q2, q));
+    const float env = smooth01(tt / 0.12f) * (1.0f - smooth01((tt - kTransferDur) / 0.25f));
+    const float radius = 0.26f - 0.16f * u;
     const Rgb col = inst.colour;
-    const Rgb hot{col.r * 0.55f + 0.45f, col.g * 0.55f + 0.42f, col.b * 0.55f + 0.48f};
-    if (tt < kTransferDur + 0.05f) {
-        const float env = smooth01(tt / 0.08f) * (1.0f - smooth01((tt - kTransferDur + 0.12f) / 0.17f));
-        const int tail = 18, lanes = 7;
-        for (int lane = 0; lane < lanes; ++lane) {
-            const float ang = static_cast<float>(lane) / lanes * 2.0f * kPi + tt * 5.0f;
-            float lx = 0, ly = 0;
-            for (int j = 0; j <= tail; ++j) {
-                const float u = easeInOut((tt - static_cast<float>(j) * 0.016f) / kTransferDur);
-                float x, y;
-                bez(u, x, y);
-                // compressed bundle: a few parallel strands twisting around the path, tightening in flight
-                const float rad = 0.004f + 0.012f * (1.0f - u) * (1.0f - u);
-                x += std::cos(ang + static_cast<float>(j) * 0.35f) * rad;
-                y += std::sin(ang + static_cast<float>(j) * 0.35f) * rad;
-                if (j > 0) {
-                    const float w = std::pow(1.0f - static_cast<float>(j) / tail, 2.0f) * env * (lane == 0 ? 0.34f : 0.13f);
-                    segs_.push_back({lx, ly, x, y, hot.r * w, hot.g * w, hot.b * w});
-                }
-                lx = x; ly = y;
-            }
+    Rng r(mix64(inst.seed ^ 0x7A4Eull));
+    // the packet: dipole loops around the travelling centre (the same field language as the nodes)
+    for (int k = 0; k < 22; ++k) {
+        V3 dir = r.sphere();
+        const float sgn = dot(dir, axis) >= 0.0f ? 1.0f : -1.0f;
+        dir = norm(add(dir, mul(axis, 0.8f * sgn)));
+        V3 p = add(q, mul(dir, radius * 0.35f));
+        pts_.clear();
+        for (int s = 0; s < 26; ++s) {
+            pts_.push_back(p);
+            const V3 rr = sub(p, q);
+            const float r2 = dot(rr, rr) + radius * radius * 0.08f;
+            const V3 bf = sub(mul(rr, 3.0f * dot(axis, rr) / r2), axis);
+            const V3 v = norm(add(mul(norm(bf), sgn), mul(curl(p, time_ + static_cast<float>(k)), 0.25f)));
+            p = add(p, mul(v, radius * 0.11f));
+            if (len(sub(p, q)) > radius * 1.6f) break;
         }
+        emitPolyline(pts_, col, col, kGain * 1.25f * env * (0.4f + r.next()), nullptr, false);
     }
-    // dispersal burst at arrival
-    const float u = (tt - kTransferDur * 0.92f) / 0.45f;
-    if (u > 0.0f && u < 1.0f) {
-        const int rays = 22;
-        for (int k = 0; k < rays; ++k) {
-            Rng r(mix64(inst.seed ^ static_cast<uint64_t>(k * 7919)));
-            const float a = r.next() * 2.0f * kPi;
-            const float len = 0.03f + 0.06f * r.next();
-            const float r0 = len * smooth01(u) * 0.6f, r1 = len * smooth01(u);
-            const float w = (1.0f - u) * (1.0f - u) * 0.10f * (0.5f + r.next());
-            segs_.push_back({ex + std::cos(a) * r0, ey + std::sin(a) * r0 * 0.8f, ex + std::cos(a) * r1, ey + std::sin(a) * r1 * 0.8f, col.r * w, col.g * w, col.b * w});
-        }
-    }
+    // a faint comet trail along the path behind it
+    pts_.clear();
+    for (int s = 0; s <= 24; ++s) pts_.push_back(bez(std::max(0.0f, u - 0.28f * (1.0f - static_cast<float>(s) / 24.0f))));
+    emitPolyline(pts_, col, col, kGain * 0.6f * env, nullptr, true);
 }
 
 void Formation::update(const FrameInput& in) {
-    const float dt = std::isfinite(in.dt) ? std::clamp(in.dt, 0.001f, 0.1f) : 1.0f / 60.0f;
+    const float dt = std::isfinite(in.dt) ? std::clamp(in.dt, 0.0f, 0.1f) : 1.0f / 60.0f;
     time_ += dt;
-    aspect_ = std::isfinite(in.aspect) ? std::clamp(in.aspect, 0.3f, 6.0f) : 1.6f;
+    aspect_ = std::isfinite(in.aspect) ? std::clamp(in.aspect, 0.25f, 8.0f) : 1.6f;
+    for (auto& p : pending_) p.age += dt;
     layout(in);
-    first_ = false;
+    extent_ += (extentTarget_ - extent_) * (1.0f - std::exp(-dt / 1.2f));
+    yaw_ = 0.05f * std::sin(time_ * 2.0f * kPi / 90.0f);
+    pitch_ = 0.035f * std::sin(time_ * 2.0f * kPi / 76.0f + 1.0f);
+    mono_ += (safe(in.monochrome, 0.0f, 1.0f) - mono_) * (1.0f - std::exp(-dt / 0.15f));
 
-    auto follow = [dt](float& s, float x, float att, float rel) { s += (1.0f - std::exp(-dt / (x > s ? att : rel))) * (x - s); };
-    float maxLevel = 0.0f;
-    for (const auto& ii : in.chain) maxLevel = std::max(maxLevel, safeLevel(ii.level));
-    follow(energy_, maxLevel, 0.25f, 1.2f);
-    extent_ += (1.0f - std::exp(-dt / 1.4f)) * (extentTarget_ - extent_);
+    // ---- audio analysis snapshot: attack / release smoothing, bounded mappings (no flicker) ----
+    follow(energy_, safe(in.audio.energy, 0.0f, 1.5f), dt, 0.08f, 0.6f);
+    follow(low_, safe(in.audio.low, 0.0f, 1.5f), dt, 0.25f, 1.2f);
+    follow(high_, safe(in.audio.high, 0.0f, 1.5f), dt, 0.05f, 0.4f);
+    follow(balance_, safe(in.audio.balance, -1.0f, 1.0f), dt, 0.4f, 0.8f);
+    const float tr = safe(in.audio.transient, 0.0f, 1.0f);
+    const bool onset = tr > 0.3f && transient_ < 0.15f;
+    transient_ = std::max(tr, transient_ - dt * 4.0f);
 
-    // camera: very slow parallax (< 4 degrees), stable framing
-    yaw_ = 0.38f + 0.06f * std::sin(time_ * 2.0f * kPi / 75.0f);
-    pitch_ = 0.15f + 0.025f * std::sin(time_ * 2.0f * kPi / 92.0f + 1.3f);
-
-    const int n = static_cast<int>(in.chain.size());
-    const int budget = quality_ == Quality::Low ? 800 : (quality_ == Quality::High ? 3000 : 2000);
-    perInstTarget_ = n > 0 ? std::clamp(budget / n, 28, kMaxStrandsPerInst) : 0;
-
-    const float kGlide = 1.0f - std::exp(-dt / 1.1f);  // reorder: anchors glide, nothing resets
-    for (auto& kv : insts_) {
-        Inst& c = kv.second;
-        c.anchor.x += kGlide * (c.target.x - c.anchor.x);
-        c.anchor.y += kGlide * (c.target.y - c.anchor.y);
-        c.anchor.z += kGlide * (c.target.z - c.anchor.z);
-        c.tangent.x += kGlide * (c.tangentTarget.x - c.tangent.x);
-        c.tangent.y += kGlide * (c.tangentTarget.y - c.tangent.y);
-        c.tangent.z += kGlide * (c.tangentTarget.z - c.tangent.z);
-        const float tl = std::sqrt(c.tangent.x * c.tangent.x + c.tangent.y * c.tangent.y + c.tangent.z * c.tangent.z) + 1e-6f;
-        c.tangent = {c.tangent.x / tl, c.tangent.y / tl, c.tangent.z / tl};
-        c.plume += kGlide * (c.plumeTarget - c.plume);
-        follow(c.presence, c.inChain ? 1.0f : 0.0f, 0.8f, 0.5f);
-        if (c.hold > 0.0f) c.hold -= dt;
-        else if (c.inChain) c.grow = std::min(1.0f, c.grow + dt / 1.4f);
+    // ---- instances ----
+    for (auto it = insts_.begin(); it != insts_.end();) {
+        Inst& c = it->second;
+        if (!c.inChain) {
+            c.presence -= dt / 0.6f;
+            c.pulses.clear();
+            if (c.presence <= 0.0f) { it = insts_.erase(it); continue; }
+        } else {
+            if (!c.transfer) c.presence = std::min(1.0f, c.presence + dt / 0.9f);
+            if (c.hold > 0.0f) c.hold -= dt;
+            else c.grow = std::min(1.0f, c.grow + dt / 1.2f);
+        }
+        const float k = 1.0f - std::exp(-dt / 1.1f);  // reorders glide
+        c.anchor = add(c.anchor, mul(sub(c.target, c.anchor), k));
+        const float br = 0.035f * (1.0f + 1.5f * low_);
+        c.anchor = add(c.anchor, {br * std::sin(time_ * 0.19f + c.breathe) * dt, br * std::cos(time_ * 0.16f + c.breathe) * dt, 0.0f});
+        const V3 prec{0.16f * std::sin(time_ * 0.07f + c.axisPhase), 0.16f * std::cos(time_ * 0.05f + c.axisPhase), 0.16f * std::sin(time_ * 0.06f + 2.0f * c.axisPhase)};
+        c.axis = norm(add(c.axisBase, prec));
         if (c.transfer) {
             c.tTransfer += dt;
-            if (c.tTransfer > kTransferDur + 0.5f) c.transfer = false;
+            if (c.tTransfer >= kTransferDur && c.tTransfer - dt < kTransferDur && c.pulses.size() < 4) c.pulses.push_back({0.0f, 1.0f, true});
+            if (c.tTransfer > kTransferDur + 0.3f) c.transfer = false;
         }
-        float lv = 0.0f;
-        for (const auto& ii : in.chain) if (ii.id == kv.first) lv = safeLevel(ii.level);
-        follow(c.bright, lv, 0.12f, 0.9f);
+        it = std::next(it);
     }
-    for (auto it = insts_.begin(); it != insts_.end();) {
-        if (!it->second.inChain && it->second.presence < 0.01f) it = insts_.erase(it);
-        else ++it;
+    // per-node levels and onsets
+    for (const auto& ii : in.chain) {
+        auto f = insts_.find(ii.id);
+        if (f == insts_.end()) continue;
+        Inst& c = f->second;
+        const float lv = levelMap(ii.level);
+        follow(c.bright, lv, dt, 0.05f, 0.35f);
+        follow(c.levelSlow, lv, dt, 0.4f, 0.4f);
+        if (c.bright - c.levelSlow > 0.22f && c.pulses.size() < 3 && (c.pulses.empty() || c.pulses.back().age > 0.25f))
+            c.pulses.push_back({0.0f, std::clamp((c.bright - c.levelSlow) * 2.5f, 0.3f, 1.0f), true});
+    }
+    if (onset && !order_.empty()) {
+        Inst& c = insts_[order_.front()];
+        if (c.pulses.size() < 4) c.pulses.push_back({0.0f, std::clamp(tr, 0.4f, 1.0f), true});
+    }
+    // advance pulses; a pulse that reaches the next node continues there, weaker (A -> B transmission)
+    for (size_t i = 0; i < order_.size(); ++i) {
+        Inst& c = insts_[order_[i]];
+        for (auto& p : c.pulses) p.age += dt;
+        for (auto& p : c.pulses) {
+            if (p.cascade && p.age >= kPulseTravel && i + 1 < order_.size() && p.strength > 0.25f) {
+                Inst& nxt = insts_[order_[i + 1]];
+                if (nxt.pulses.size() < 4) nxt.pulses.push_back({0.0f, p.strength * 0.72f, true});
+                p.cascade = false;
+            }
+        }
+        c.pulses.erase(std::remove_if(c.pulses.begin(), c.pulses.end(), [](const Pulse& p) { return p.age > kPulseTravel * 1.3f; }), c.pulses.end());
     }
 
-    // emit
+    // ---- nodes for this frame (chain order) ----
+    nodes_.clear();
+    for (size_t i = 0; i < order_.size(); ++i) {
+        const Inst& c = insts_[order_[i]];
+        const float strength = (0.35f + 0.65f * c.presence) * (1.0f + 0.25f * energy_ + 0.3f * c.bright);
+        nodes_.push_back({c.anchor, c.axis, strength, 0.16f + 0.05f * c.bright, static_cast<int>(i)});
+    }
+
+    // ---- emit ----
     segs_.clear();
+    glows_.clear();
     strands_ = 0;
-    for (auto& kv : insts_) {
-        Inst& c = kv.second;
-        const float lengthFrac = smooth01(c.grow);
-        // the vertical plume carries the mass; the receding arm stays finer
-        const int count = c.inChain ? static_cast<int>(static_cast<float>(perInstTarget_) * (0.6f + 0.5f * c.plume)) : static_cast<int>(c.strands.size());
-        const int lim = std::min(count, static_cast<int>(c.strands.size()));
-        for (int k = 0; k < lim; ++k) {
-            const Strand& st = c.strands[static_cast<size_t>(k)];
-            emitStrand(c, st, lengthFrac, c.bright);
-            ++strands_;
+    const int budget = quality_ == Quality::Low ? 800 : (quality_ == Quality::High ? 2600 : 1500);
+    const int nn = std::max(1, static_cast<int>(nodes_.size()));
+    const int perNode = std::clamp(budget / nn, 40, kMaxStrandsPerInst);
+    for (size_t i = 0; i < order_.size(); ++i) {
+        Inst& c = insts_[order_[i]];
+        const float frac = smooth01(c.grow);
+        if (frac > 0.0f) {
+            const int count = std::min(perNode, static_cast<int>(c.strands.size()));
+            for (int k = 0; k < count; ++k) {
+                emitStrand(c, static_cast<int>(i), k, frac, dt);
+                ++strands_;
+            }
         }
         if (c.transfer) emitTransfer(c);
+        // the field's influence on empty space: a faint deep-violet response around each node
+        float gx, gy, gd;
+        project(c.anchor, gx, gy, gd);
+        const float k = kCamDist / gd;
+        // normalised by chain length so a long chain never becomes a broad purple wall
+        const float inten = c.presence * (0.55f + 0.5f * energy_ + 0.45f * c.bright) / (1.0f + 0.18f * static_cast<float>(order_.size() - 1));
+        const Rgb violet{0.030f, 0.014f, 0.068f};
+        const Rgb tint = lerpC(violet, c.colour, 0.18f);
+        const Rgb g = shade(tint);
+        glows_.push_back({gx, gy, (0.22f + 0.05f * c.bright) * k, g.r * inten, g.g * inten, g.b * inten});
+        if (i + 1 < order_.size()) {
+            const Inst& d = insts_[order_[i + 1]];
+            float hx, hy, hd;
+            project(mul(add(c.anchor, d.anchor), 0.5f), hx, hy, hd);
+            const float in2 = 0.5f * std::min(c.presence, d.presence) * (0.5f + 0.5f * energy_);
+            glows_.push_back({hx, hy, 0.13f * kCamDist / hd, g.r * in2, g.g * in2, g.b * in2});
+        }
     }
+    // dying instances (deleted / cleared) fade out without ghosts: their strands are simply not drawn once
+    // they leave the chain, and the record is erased when the fade completes.
+    first_ = false;
 }
+
 
 }  // namespace ih1::visual

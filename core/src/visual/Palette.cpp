@@ -1,5 +1,7 @@
 #include "ih1/visual/Palette.h"
 
+#include "ih1/fx/FxProcessor.h"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -34,48 +36,24 @@ void rgbToHsv(const Rgb& c, float& h, float& s, float& v) {
 }
 
 namespace {
-struct RoleDef { const char* name; float h, s, v; };
-// Tuned against frames of the reference: the dominant body is indigo-violet (250-275 deg), with blue-indigo
-// secondaries, a violet/orchid luminous family, sparse rose and icy-blue strands, and pale lavender-white
-// highlights. Saturation is held moderate so additive overlap does not neon out.
-constexpr RoleDef kRoles[kNumRoles] = {
-    {"Indigo", 234.0f, 0.66f, 0.95f},
-    {"Periwinkle", 222.0f, 0.42f, 1.00f},
-    {"Violet", 264.0f, 0.66f, 1.00f},
-    {"Lavender", 274.0f, 0.32f, 1.00f},
-    {"Orchid", 292.0f, 0.56f, 1.00f},
-    {"Rose", 328.0f, 0.50f, 0.98f},
-    {"Ice", 196.0f, 0.44f, 1.00f},
-    {"Pearl", 262.0f, 0.11f, 1.00f},
+struct FamilyDef { const char* name; float h, s, v; };
+// index = FxCategory: TimeSpace, PitchVocal, Modulation, GranularTime, Spectral, RhythmGlitch, Dynamics,
+// ToneCharacter, Experimental. Fitted to the measured reference envelope (see the header).
+constexpr FamilyDef kFamilies[kNumCategories] = {
+    {"Indigo", 236.0f, 0.44f, 0.96f},
+    {"Pale lavender", 281.0f, 0.17f, 1.00f},
+    {"Violet", 262.0f, 0.46f, 1.00f},
+    {"Ice blue", 208.0f, 0.36f, 1.00f},
+    {"Mauve", 296.0f, 0.34f, 0.98f},
+    {"Rose orchid", 322.0f, 0.40f, 0.96f},
+    {"Slate", 248.0f, 0.20f, 0.82f},
+    {"Dusty rose", 340.0f, 0.26f, 0.90f},
+    {"Pearl", 222.0f, 0.14f, 1.00f},
 };
-
-// type id -> (role, tier). Families are deliberately spread across roles.
-const std::pair<const char*, FxIdentity> kTable[] = {
-    // Time & Space
-    {"delay", {PaletteRole::Ice, 0}},        {"tape_echo", {PaletteRole::Periwinkle, 0}}, {"reverb", {PaletteRole::Indigo, 0}},
-    {"reverse", {PaletteRole::Rose, 0}},     {"shimmer", {PaletteRole::Pearl, 0}},        {"convolution", {PaletteRole::Violet, 0}},
-    {"doppler", {PaletteRole::Orchid, 0}},
-    // Pitch & Voice
-    {"harmony", {PaletteRole::Lavender, 0}}, {"pitch_shift", {PaletteRole::Orchid, 1}},   {"formant", {PaletteRole::Rose, 1}},
-    {"doubler", {PaletteRole::Periwinkle, 1}}, {"pitch_correct", {PaletteRole::Ice, 1}}, {"vocoder", {PaletteRole::Violet, 1}},
-    // Modulation
-    {"chorus", {PaletteRole::Periwinkle, 2}}, {"flanger", {PaletteRole::Orchid, 2}},     {"phaser", {PaletteRole::Rose, 2}},
-    {"vibrato", {PaletteRole::Lavender, 1}}, {"tremolo", {PaletteRole::Indigo, 1}},      {"filter", {PaletteRole::Ice, 2}},
-    {"ring_mod", {PaletteRole::Pearl, 1}},   {"rotary", {PaletteRole::Violet, 2}},       {"freq_shift", {PaletteRole::Indigo, 2}},
-    // Texture & Spectral
-    {"granular", {PaletteRole::Lavender, 2}}, {"spectral", {PaletteRole::Pearl, 2}},     {"stutter", {PaletteRole::Rose, 3}},
-    {"looper", {PaletteRole::Ice, 3}},       {"resonator", {PaletteRole::Orchid, 3}},
-    // Tone & Dynamics
-    {"eq", {PaletteRole::Periwinkle, 3}},    {"saturation", {PaletteRole::Rose, 4}},     {"width", {PaletteRole::Ice, 4}},
-    {"compressor", {PaletteRole::Indigo, 3}}, {"gate", {PaletteRole::Lavender, 3}},      {"deesser", {PaletteRole::Periwinkle, 4}},
-    {"transient", {PaletteRole::Violet, 3}}, {"tape_colour", {PaletteRole::Orchid, 4}},  {"bitcrush", {PaletteRole::Pearl, 3}},
-    {"exciter", {PaletteRole::Lavender, 4}}, {"amp", {PaletteRole::Indigo, 4}},
-};
-
-// tier -> (hue offset, saturation scale, value scale)
-constexpr float kTierHue[5] = {0.0f, 6.0f, -6.0f, 10.0f, -10.0f};
-constexpr float kTierSat[5] = {1.0f, 0.88f, 1.1f, 0.8f, 1.15f};
-constexpr float kTierVal[5] = {1.0f, 0.97f, 0.93f, 1.0f, 0.9f};
+// tier (position of the type inside its family) -> small hue / saturation / value steps
+constexpr float kTierHue[6] = {0.0f, 6.0f, -6.0f, 3.0f, -3.0f, 8.0f};
+constexpr float kTierSat[6] = {1.0f, 0.86f, 1.10f, 0.94f, 1.05f, 0.80f};
+constexpr float kTierVal[6] = {1.0f, 0.94f, 0.97f, 0.90f, 1.0f, 0.92f};
 
 float srgbToLinear(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
 void toLab(const Rgb& c, float& L, float& a, float& b) {
@@ -90,43 +68,40 @@ void toLab(const Rgb& c, float& L, float& a, float& b) {
 }
 }  // namespace
 
-const char* roleName(PaletteRole r) {
-    const int i = static_cast<int>(r);
-    return i >= 0 && i < kNumRoles ? kRoles[i].name : "?";
+Rgb familyColour(int c) {
+    const auto& f = kFamilies[std::clamp(c, 0, kNumCategories - 1)];
+    return hsvToRgb(f.h, f.s, f.v);
 }
 
-Rgb roleColour(PaletteRole r) {
-    const int i = std::clamp(static_cast<int>(r), 0, kNumRoles - 1);
-    return hsvToRgb(kRoles[i].h, kRoles[i].s, kRoles[i].v);
-}
-
-FxIdentity fxIdentity(const std::string& id) {
-    for (const auto& kv : kTable) if (id == kv.first) return kv.second;
-    uint32_t h = 2166136261u;
-    for (char c : id) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
-    return {static_cast<PaletteRole>(h % static_cast<uint32_t>(kNumRoles)), static_cast<int>((h >> 8) % 5u)};
-}
+const char* familyColourName(int c) { return kFamilies[std::clamp(c, 0, kNumCategories - 1)].name; }
 
 Rgb fxColour(const std::string& typeId, int shade) {
-    const auto id = fxIdentity(typeId);
-    const auto& r = kRoles[static_cast<int>(id.role)];
-    const int t = std::clamp(id.tier, 0, 4);
-    float h = r.h + kTierHue[t];
-    float s = std::clamp(r.s * kTierSat[t], 0.0f, 0.95f);
-    float v = std::clamp(r.v * kTierVal[t], 0.0f, 1.0f);
-    // duplicates: same hue family, alternating deeper / lighter with growing steps. Near-neutral colours
-    // (pearl, lavender) gain saturation instead of losing it, so their shades stay distinguishable.
+    const auto& reg = fxRegistry();
+    int cat = static_cast<int>(FxCategory::Experimental), tier = 0;
+    const int t = fxTypeIndex(typeId);
+    if (t >= 0) {
+        cat = static_cast<int>(reg[static_cast<size_t>(t)].category);
+        for (int i = 0; i < t; ++i)
+            if (static_cast<int>(reg[static_cast<size_t>(i)].category) == cat && !reg[static_cast<size_t>(i)].experimental) ++tier;
+    }
+    cat = std::clamp(cat, 0, kNumCategories - 1);
+    tier %= 6;
+    const auto& f = kFamilies[cat];
+    float h = f.h + kTierHue[tier];
+    float s = std::clamp(f.s * kTierSat[tier], 0.0f, 0.5f);
+    float v = std::clamp(f.v * kTierVal[tier], 0.0f, 1.0f);
+    // duplicates: same hue, alternating deeper / lighter in growing steps. Pale families gain saturation
+    // instead of losing it so their shades stay distinguishable.
     if (shade > 0) {
         const int step = (shade + 1) / 2;  // 1,1,2,2,3,3...
-        const float k = std::min(1.0f, 0.5f * static_cast<float>(step));
+        const float k = std::min(1.0f, 0.45f * static_cast<float>(step));
         if (shade % 2 == 1) {  // deeper
-            s = std::min(0.95f, s * (1.0f + 0.5f * k) + 0.06f * k);
-            v *= 1.0f - 0.36f * k;
-            h -= 4.0f * static_cast<float>(step);
+            s = std::min(0.55f, s * (1.0f + 0.35f * k) + 0.05f * k);
+            v *= 1.0f - 0.32f * k;
         } else {               // lighter
-            s = s < 0.36f ? std::min(0.95f, s + 0.16f * k) : s * (1.0f - 0.5f * k);
+            s = s < 0.3f ? std::min(0.5f, s + 0.12f * k) : s * (1.0f - 0.4f * k);
             v = std::min(1.0f, v + 0.05f * k);
-            h += 7.0f * static_cast<float>(step);
+            h += 4.0f * static_cast<float>(step);
         }
     }
     return hsvToRgb(h, s, v);

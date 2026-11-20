@@ -30,7 +30,9 @@ int main(int argc, char** argv) {
     const int W = argc > 4 ? std::atoi(argv[4]) : 1280, H = argc > 5 ? std::atoi(argv[5]) : 800;
     const int fps = argc > 6 ? std::atoi(argv[6]) : 30;
     const float every = argc > 7 ? static_cast<float>(std::atof(argv[7])) : 0.5f;
-    const float exposure = std::getenv("IH1_EXPOSURE") ? static_cast<float>(std::atof(std::getenv("IH1_EXPOSURE"))) : 1.6f;
+    const float exposure = std::getenv("IH1_EXPOSURE") ? static_cast<float>(std::atof(std::getenv("IH1_EXPOSURE"))) : 2.2f;
+    const float bloom = std::getenv("IH1_BLOOM") ? static_cast<float>(std::atof(std::getenv("IH1_BLOOM"))) : 0.45f;
+    const float mono = std::getenv("IH1_MONO") ? static_cast<float>(std::atof(std::getenv("IH1_MONO"))) : 0.0f;
     const int q = std::getenv("IH1_QUALITY") ? std::atoi(std::getenv("IH1_QUALITY")) : 1;
 
     bool commitLast = false;
@@ -76,13 +78,18 @@ int main(int argc, char** argv) {
         // synthetic music: phrase swells
         const float lv = 0.04f + 0.03f * std::sin(t * 1.3f) + 0.02f * std::sin(t * 4.1f);
         for (size_t i = 0; i < in.chain.size(); ++i) in.chain[i].level = lv * (0.8f + 0.4f * std::sin(t * 0.7f + static_cast<float>(i)));
+        in.audio.energy = 0.25f + 0.2f * std::sin(t * 1.3f);
+        in.audio.low = 0.3f + 0.2f * std::sin(t * 0.5f);
+        in.audio.high = 0.2f + 0.15f * std::sin(t * 2.3f);
+        in.audio.transient = std::fmod(t, 1.0f) < 1.0f / static_cast<float>(fps) ? 0.8f : 0.0f;  // a beat per second
+        in.monochrome = mono;
         const auto t0 = std::chrono::steady_clock::now();
         form.update(in);
         simMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         canvas.decay(form.decay(in.dt));
-        canvas.draw(form.segments(), static_cast<float>(H));
+        canvas.draw(form.segments(), static_cast<float>(H), std::sqrt(std::clamp(860.0f / static_cast<float>(H), 0.36f, 2.6f)));
         if (fr % saveEvery == saveEvery - 1) {
-            canvas.composite(rgb, exposure);
+            canvas.composite(rgb, exposure, bloom, &form.glows(), static_cast<float>(H));
             char name[64];
             std::snprintf(name, sizeof name, "/f%03d.ppm", saved++);
             if (FILE* f = std::fopen((out + name).c_str(), "wb")) {

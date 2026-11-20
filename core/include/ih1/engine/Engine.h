@@ -30,6 +30,7 @@ struct Program {
 struct Telemetry {
     std::atomic<float> inRms{0}, outRms{0}, outPeak{0};
     std::atomic<float> outLow{0}, outMid{0}, outHigh{0};  // coarse band RMS of the output
+    std::atomic<float> outBalance{0};                     // (R - L) / (R + L) of the output RMS, -1..1
     std::atomic<float> stagedRms{0};
     std::array<std::atomic<float>, kMaxChain> slotRms{};  // output RMS after each committed slot
     std::array<std::atomic<uint64_t>, kMaxChain> slotIds{};
