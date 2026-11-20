@@ -31,8 +31,33 @@ static double besselI0(double x) {
     return sum;
 }
 
-void Oversampler2x::prepare(int maxBlock, int taps, float beta, bool passthrough) {
-    passthrough_ = passthrough;
+namespace {
+// 10th-order elliptic low-pass, normalised to the 2x rate (Nyquist = 1): passband 0.42 (0.05 dB ripple),
+// stopband 0.5 (-90 dB). scipy.signal.ellip(10, 0.05, 90, 0.42, output='sos'); rows: b0 b1 b2 a1 a2 (a0 = 1).
+constexpr double kEllipSos[5][5] = {
+    {0.002715656414411564, 0.0050151654666023924, 0.002715656414411564, -1.0563714178389387, 0.31940113174758},
+    {1, 1.0630632813045857, 0.99999999999999978, -0.87451945560380528, 0.48304587105026014},
+    {1, 0.43163106929526884, 0.99999999999999978, -0.66012167310777947, 0.68291511772221591},
+    {1, 0.10604257171214751, 0.99999999999999978, -0.51290525588709313, 0.83902858263197611},
+    {1, -0.024093111399637299, 0.99999999999999989, -0.45087388529507622, 0.9509078139419912},
+};
+// transposed direct form II, double precision state
+inline double sosRun(double x, double (*z)[2]) {
+    for (int k = 0; k < 5; ++k) {
+        const double* c = kEllipSos[k];
+        const double y = c[0] * x + z[k][0];
+        z[k][0] = c[1] * x - c[3] * y + z[k][1];
+        z[k][1] = c[2] * x - c[4] * y;
+        x = y;
+    }
+    return x;
+}
+}  // namespace
+
+void Oversampler2x::prepareVariant(int maxBlock, Variant v, int taps, float beta) {
+    variant_ = v;
+    for (auto& z : upZ_) z[0] = z[1] = 0.0;
+    for (auto& z : downZ_) z[0] = z[1] = 0.0;
     if (taps % 2 == 0) ++taps;
     h_.assign(static_cast<size_t>(taps), 0.0f);
     const int M = taps - 1;
@@ -53,35 +78,61 @@ void Oversampler2x::prepare(int maxBlock, int taps, float beta, bool passthrough
 }
 
 void Oversampler2x::reset() {
+    for (auto& z : upZ_) z[0] = z[1] = 0.0;
+    for (auto& z : downZ_) z[0] = z[1] = 0.0;
     std::fill(upHist_.begin(), upHist_.end(), 0.0f);
     std::fill(downHist_.begin(), downHist_.end(), 0.0f);
     upPos_ = downPos_ = 0;
 }
 
 float* Oversampler2x::up(const float* in, int n) {
-    if (passthrough_) {
+    if (variant_ == Variant::Bypass) {
         std::copy(in, in + n, hi_.begin());
         return hi_.data();
     }
-    const int T = static_cast<int>(h_.size());
-    for (int i = 0; i < n; ++i) {
-        for (int ph = 0; ph < 2; ++ph) {
-            const float x = ph == 0 ? 2.0f * in[i] : 0.0f;  // zero-stuff, gain 2 to keep level
-            upHist_[static_cast<size_t>(upPos_)] = x;
-            upHist_[static_cast<size_t>(upPos_ + T)] = x;
-            float acc = 0.0f;
-            const float* hp = &upHist_[static_cast<size_t>(upPos_ + 1)];
-            for (int k = 0; k < T; ++k) acc += h_[static_cast<size_t>(T - 1 - k)] * hp[k];
-            upPos_ = (upPos_ + 1) % T;
-            hi_[static_cast<size_t>(2 * i + ph)] = acc;
+    if (variant_ == Variant::MinPhaseIir) {
+        for (int i = 0; i < n; ++i) {
+            hi_[static_cast<size_t>(2 * i)] = static_cast<float>(sosRun(2.0 * in[i], upZ_));
+            hi_[static_cast<size_t>(2 * i + 1)] = static_cast<float>(sosRun(0.0, upZ_));
         }
+        for (auto& z : upZ_) { if (std::fabs(z[0]) < 1e-30) z[0] = 0.0; if (std::fabs(z[1]) < 1e-30) z[1] = 0.0; }
+        return hi_.data();
+    }
+    // Polyphase (V2.1). For the zero-stuffed input s[2i] = 2 x[i], s[2i + 1] = 0 the direct form
+    //   y[m] = sum_j h[j] s[m - j]
+    // reduces to y[2i] = sum_q h[2q] 2x[i - q] and y[2i + 1] = sum_q h[2q + 1] 2x[i - q]: both output phases
+    // use the same current inputs, each with every other tap. Identical output and latency, half the work.
+    const int T = static_cast<int>(h_.size());
+    const int H = (T + 1) / 2;
+    for (int i = 0; i < n; ++i) {
+        const float x = 2.0f * in[i];
+        upHist_[static_cast<size_t>(upPos_)] = x;
+        upHist_[static_cast<size_t>(upPos_ + H)] = x;  // written twice: hp[0 .. H-1] is contiguous
+        const float* hp = &upHist_[static_cast<size_t>(upPos_)];  // hp[q] = 2 x[i - q]
+        float a0 = 0.0f, a1 = 0.0f;
+        for (int q = 0; q < H; ++q) {
+            a0 += h_[static_cast<size_t>(2 * q)] * hp[q];
+            if (2 * q + 1 < T) a1 += h_[static_cast<size_t>(2 * q + 1)] * hp[q];
+        }
+        upPos_ = (upPos_ - 1 + H) % H;
+        hi_[static_cast<size_t>(2 * i)] = a0;
+        hi_[static_cast<size_t>(2 * i + 1)] = a1;
     }
     return hi_.data();
 }
 
 void Oversampler2x::down(const float* hi, float* out, int n) {
-    if (passthrough_) {
+    if (variant_ == Variant::Bypass) {
         if (hi != out) std::copy(hi, hi + n, out);
+        return;
+    }
+    if (variant_ == Variant::MinPhaseIir) {
+        for (int i = 0; i < n; ++i) {
+            const double y = sosRun(hi[2 * i], downZ_);
+            sosRun(hi[2 * i + 1], downZ_);
+            out[i] = static_cast<float>(y);
+        }
+        for (auto& z : downZ_) { if (std::fabs(z[0]) < 1e-30) z[0] = 0.0; if (std::fabs(z[1]) < 1e-30) z[1] = 0.0; }
         return;
     }
     const int T = static_cast<int>(h_.size());

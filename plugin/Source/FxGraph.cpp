@@ -13,7 +13,7 @@
 namespace ih1::plugin {
 
 namespace {
-enum class Kind { None, Taps, TapeTaps, Decay, Response, Transfer, Shaper, Lfo, Voices, Loop, Grains };
+enum class Kind { None, Taps, TapeTaps, Decay, Response, Transfer, Shaper, Lfo, Voices, Loop, Grains, GrainEngine };
 
 Kind kindOf(const std::string& id) {
     if (id == "delay") return Kind::Taps;
@@ -26,6 +26,7 @@ Kind kindOf(const std::string& id) {
     if (id == "harmony" || id == "pitch_shift") return Kind::Voices;
     if (id == "looper") return Kind::Loop;
     if (id == "granular") return Kind::Grains;
+    if (id == "grain_engine") return Kind::GrainEngine;
     return Kind::None;
 }
 
@@ -115,6 +116,7 @@ void FxGraph::paint(juce::Graphics& g) {
         case Kind::Voices: drawVoices(g, plot); break;
         case Kind::Loop: drawLoop(g, plot); break;
         case Kind::Grains: drawGrains(g, plot); break;
+        case Kind::GrainEngine: drawGrainEngine(g, plot); break;
         case Kind::None: break;
     }
 }
@@ -494,6 +496,66 @@ void FxGraph::drawGrains(juce::Graphics& g, juce::Rectangle<float> p) {
     g.fillRect(p.getRight() - 1.0f, p.getY(), 1.0f, p.getHeight());
     caption(g, p.withHeight(p.getHeight() + 16.0f), freeze ? juce::String("buffer frozen") : juce::String("grains read from the last 2 s"),
             juce::String(density, 0) + " grains/s, " + juce::String(size, 0) + " ms");
+}
+
+// ------------------------------------------------------------------------------------------- grain engine
+void FxGraph::drawGrainEngine(juce::Graphics& g, juce::Rectangle<float> p) {
+    // Live, from the audio thread (lock-free): the capture buffer (now = right edge), each sounding grain at
+    // its real read position drawn with the selected window shape, and the playhead. Inset: the window.
+    const auto& d = display_;
+    const int mode = static_cast<int>(val("mode"));
+    const int win = static_cast<int>(val("window"));
+    const bool frozen = hasDisplay_ && d.state == 1;
+    auto window = [win](float x) {
+        x = std::clamp(x, 0.0f, 1.0f);
+        switch (win) {
+            case 1: { const float e = std::exp(-0.5f * 9.766f), gg = std::exp(-0.5f * (x - 0.5f) * (x - 0.5f) / 0.0256f); return (gg - e) / (1.0f - e); }
+            case 2: return x < 0.125f ? 0.5f - 0.5f * std::cos(3.14159265f * x / 0.125f) : (x > 0.875f ? 0.5f - 0.5f * std::cos(3.14159265f * (1.0f - x) / 0.125f) : 1.0f);
+            case 3: return (x < 0.03f ? 0.5f - 0.5f * std::cos(3.14159265f * x / 0.03f) : std::exp(-4.0f * (x - 0.03f)));
+            case 4: { const float y = 1.0f - x; return (y < 0.03f ? 0.5f - 0.5f * std::cos(3.14159265f * y / 0.03f) : std::exp(-4.0f * (y - 0.03f))); }
+            default: return 0.5f - 0.5f * std::cos(6.2831853f * x);
+        }
+    };
+    if (frozen) {  // held material: a faint tint over the whole buffer
+        g.setColour(colour_.withAlpha(0.06f));
+        g.fillRect(p);
+    }
+    if (hasDisplay_) {
+        const int n = FxDisplay::kPeaks;
+        const float w = p.getWidth() / static_cast<float>(n);
+        g.setColour(colour_.withAlpha(0.45f));
+        for (int i = 0; i < n; ++i) {
+            const float a = std::min(1.0f, d.peaks[static_cast<size_t>((d.peakHead + i) % n)] * 1.6f);
+            const float h = std::max(0.5f, a * p.getHeight() * 0.42f);
+            g.fillRect(p.getX() + w * static_cast<float>(i) + 0.5f, p.getCentreY() - h, std::max(1.0f, w - 1.0f), h * 2.0f);
+        }
+        // grains: window shapes at their read positions (width = grain size on the display's time scale)
+        const float span = std::max(0.5f, d.seconds);
+        const float gw = std::clamp(val("size_ms", 120.0f) * 0.001f / span * p.getWidth(), 4.0f, p.getWidth() * 0.5f);
+        for (float gx : d.grains) {
+            if (gx < 0.0f) continue;
+            juce::Path env;
+            const float x0 = p.getX() + gx * p.getWidth();
+            for (int k = 0; k <= 16; ++k) {
+                const float u = static_cast<float>(k) / 16.0f;
+                const float y = p.getBottom() - window(u) * p.getHeight() * 0.9f;
+                if (k == 0) env.startNewSubPath(x0, y); else env.lineTo(x0 + u * gw, y);
+            }
+            g.setColour(colour_.withAlpha(0.8f));
+            g.strokePath(env, juce::PathStrokeType(1.0f));
+        }
+        if (d.playhead >= 0.0f) {
+            g.setColour(Colours::text.withAlpha(0.9f));
+            g.fillRect(p.getX() + d.playhead * p.getWidth() - 0.75f, p.getY(), 1.5f, p.getHeight());
+        }
+    }
+    g.setColour(Colours::textDim);
+    g.fillRect(p.getRight() - 1.0f, p.getY(), 1.0f, p.getHeight());  // now
+    const char* modes[3] = {"cloud", "stretch", "loop"};
+    juce::String left = juce::String(modes[std::clamp(mode, 0, 2)]) + (frozen ? ", held" : "");
+    if (mode != 0) left << ", " << juce::String(val("speed", 0.5f), 2) << "x" << (val("varispeed") >= 0.5f ? " varispeed" : "");
+    const juce::String right = hasDisplay_ ? juce::String(d.activeGrains) + " grains sounding, last " + juce::String(d.seconds, 1) + " s" : juce::String();
+    caption(g, p.withHeight(p.getHeight() + 16.0f), left, right);
 }
 
 }  // namespace ih1::plugin

@@ -1,3 +1,83 @@
+# QA and regression results
+
+## V2.1 pass
+
+Every result below was run and observed in this pass, on the same Linux container as the V1 pass:
+4 vCPU, GCC 13.3, JUCE 9.0.5, Xvfb and Mesa 25.2.8 llvmpipe. FL Studio, Windows, macOS, GPUs and DPI scaling
+were **not available**. The FL Studio acceptance list is `docs/FL_STUDIO_TEST_CHECKLIST.md`.
+
+| Suite | Baseline (before V2.1) | V2.1 final | Notes |
+|---|---|---|---|
+| `ih1_tests` | 78 / 78 | **@UNIT@** | 23 new cases (below) |
+| `ih1_hosttest` (real VST3 through JUCE's VST3 host) | 48 / 48 | **@HOST@** | New: latency modes through the VST3 state path. Host-reported == impulse-measured in every mode; the zero-capable chain's processed impulse arrives at +1. |
+| `ih1_uitest` (real editor, native-peer events, OpenGL attached) | pass (44) | **@UI@** | New: nested menu, 120-click preset-arrow stress, Clear FX Chain paths, latency menu, Sync-disabled controls, Advanced visible, MUTE greying, GL formation active |
+| pluginval v1.0.4 | not run locally | **SUCCESS at strictness 8 and 10** | Linux, Xvfb (`--validate IH1.vst3`) |
+| ASan + UBSan (`ih1_tests`, leak detection on) | — | **@ASAN@** | No memory error, no UB, no leak |
+| TSan (threaded stress with clear / latency switches, clear-chain, session-latency) | — | **3 / 3, 0 warnings** | |
+| TSan soak (`ih1_soak` 180 s, audio + message threads) | — | **@TSANSOAK@** | |
+| 30-minute soak (`ih1_soak 1800 12`) | — | **@SOAK@** | |
+| CPU per block (thread CPU time, 80,000 × 256-sample blocks, random ops, chains up to 12 heavy FX) | — | median 0.12 ms, p99 1.3 ms, p99.9 2.0 ms, max 4.7 ms (budget 5.33 ms) | No operation causes a pathological spike. Wall-clock outliers in the soak come from CPU contention with parallel builds (see Notes). |
+
+### New unit cases (`tests/test_v21.cpp` and additions)
+
+- **Grain Engine (6):**
+  - level within ±6 dB across 15–800 ms × 4–120 /s;
+  - Stretch keeps 440 Hz, and Varispeed halves it;
+  - Freeze sustains;
+  - Octave quantisation;
+  - maximum settings in all modes with 100 % feedback stay bounded and decay;
+  - random automation every 64 samples stays finite.
+- **Latency (6):**
+  - every production FX resolves Zero / Low honestly;
+  - oversampled FX: reported == measured broadband delay in all three variants;
+  - Zero: impulse sample-aligned through the shapers;
+  - Zero convolution == Full advanced by 256 (error < -60 dB);
+  - session: contributors and state, with old states loading as Full Quality;
+  - engine chain impulse aligned.
+- **Tempo sync (2):** every Sync FX has exactly one data-driven dependency and Division stays live; the dormant time has no audible effect and is kept.
+- **Clear chain (1):** duplicates, staged kept, telemetry empty, state empty, preset after clear.
+- **Formation (5):** bottom-left → top-right with no T; a transfer before its instance is not lost; SOLO monochrome and colour return; audio light bounded and transient pulses; glow only with FX.
+- **Presets (2):** at least 50 with no near-duplicates; the factory audit (198 renders: level, peak, mono, determinism).
+- **DSP (2):** polyphase upsampler == direct form; delay diffusion (off = bit-identical, on = more than 4x denser, bounded).
+- **Threaded stress:** now includes Clear FX Chain and latency-mode switches.
+
+### Measurements
+
+- **Latency and aliasing:** `docs/V2_1_IMPLEMENTATION.md` §3. On Saturation at +24 dB drive with a 5 kHz tone, the largest alias component is:
+
+  | Style | Full | Low | Zero |
+  |---|---|---|---|
+  | Tube | -53.9 dBc | -54.0 dBc | -30.0 dBc |
+  | Fold | -94.3 dBc | -94.3 dBc | -5.3 dBc |
+- **Polyphase upsampler:** identical to the V2.0 direct form within 3.6e-7, and 2.22x faster (479 → 216 ms for 20,000 × 512-sample blocks).
+- **Factory audit:** every preset on a drum loop, a pad chord and vocal-like formant pulses at -18 dBFS RMS.
+  - Level relative to the source: -15 to +8 dB.
+  - All peaks below +6 dBFS.
+  - L/R correlation > -0.3.
+  - Repeat renders bit-identical.
+- **Formation motion (60 fps):**
+  - 99th percentile 0.25 % of the field height per frame;
+  - max 2 % (a smoothed branch-switch glide, not a pop);
+  - simulation 6–8 ms per frame for 6 FX and about 13 ms for 12 FX (Medium, this CPU).
+
+### Defects found by the V2.1 audit and fixed
+
+These are in addition to the feedback items; the full diagnosis is in `docs/V2_1_IMPLEMENTATION.md` §1.
+
+- **Destructive buttons never turned red.** A V1 bug in the look-and-feel; now red on the final destructive action only.
+- **The confirmation dialog only covered the field.** A click in the left column neither cancelled nor was blocked. It is now editor-modal.
+- **Left arrow did nothing on a hover-opened submenu.** Fixed.
+- **Loop / Freeze presets would loop silence.** Loading during silence captured the empty buffer. They now arm and latch once real signal arrives.
+- **Six presets failed the new audit** (a single-FX chain, level, a transient shaper reacting to grain onsets). Fixed.
+- **My own first Zero-mode shaper note understated the aliasing.** It was measured, the Low variant was added, and the note now states the numbers.
+
+### Notes
+
+- **The soak drives the engine as fast as possible** (dozens of times real time) on a 4-core container. Builds, pluginval and the TSan runs shared those cores, so its wall-clock "worst block" includes pre-emption. The CPU-time profile above is the meaningful real-time figure.
+- **Spectral FX compute an STFT frame inside the block where a hop completes.** A 1-sample host block can therefore exceed its 21 µs budget. This is listed in `docs/KNOWN_ISSUES.md`.
+
+---
+
 # QA and regression results: V1 feedback pass
 
 Every result below was run and observed in this pass. Anything not run is listed under *Not tested*.

@@ -91,6 +91,27 @@ TEST_CASE("ADAA + 2x oversampling suppresses aliasing (KADAL KNW-MCXD9ZQP83 cond
     CHECK(best < -60.0f);
 }
 
+TEST_CASE("oversampler: the polyphase upsampler equals the direct zero-stuffed convolution exactly") {
+    dsp::Oversampler2x ov;
+    ov.prepare(64);
+    // reference: zero-stuff, then convolve with the same taps (recovered from the impulse response)
+    std::vector<float> imp(64, 0.0f);
+    imp[0] = 0.5f;  // 2 * 0.5 = unit impulse after the gain of 2
+    const float* hi = ov.up(imp.data(), 64);
+    std::vector<float> h(hi, hi + 128);  // h[m] = response at high-rate index m
+    ov.reset();
+    dsp::Rng r(9);
+    std::vector<float> x(64), ref(128, 0.0f);
+    for (auto& v : x) v = r.bipolar();
+    for (int m = 0; m < 128; ++m)
+        for (int i = 0; i < 64; ++i)
+            if (m - 2 * i >= 0 && m - 2 * i < 128) ref[static_cast<size_t>(m)] += 2.0f * x[static_cast<size_t>(i)] * h[static_cast<size_t>(m - 2 * i)];
+    const float* y = ov.up(x.data(), 64);
+    double err = 0;
+    for (int m = 0; m < 128; ++m) err = std::max(err, static_cast<double>(std::fabs(y[m] - ref[static_cast<size_t>(m)])));
+    CHECK(err < 1e-5);
+}
+
 TEST_CASE("oversampler: unity passband, integer latency") {
     Oversampler2x ov;
     const int N = 4096;

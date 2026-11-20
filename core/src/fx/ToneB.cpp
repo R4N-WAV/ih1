@@ -59,7 +59,7 @@ class Bitcrusher final : public FxBase {
 enum { tcMode, tcDrive, tcBump, tcHfLoss, tcAuto, tcOut, tcMix };
 class TapeColour final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
+        for (auto& o : os_) o.prepareVariant(maxBlock_, latMode_ == LatencyMode::Quality ? dsp::Oversampler2x::Variant::Fir : (latMode_ == LatencyMode::Low ? dsp::Oversampler2x::Variant::MinPhaseIir : dsp::Oversampler2x::Variant::Bypass));
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         work_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         inPow_.assign(static_cast<size_t>(maxBlock_), 0.0f);
@@ -132,7 +132,7 @@ class TapeColour final : public FxBase {
 // =============================================================================================== Exciter
 enum { exFreq, exDrive, exAmount, exMode };
 class Exciter final : public FxBase {
-    void onPrepare() override { for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality); work_.assign(static_cast<size_t>(maxBlock_), 0.0f); band_.assign(static_cast<size_t>(maxBlock_) * 2, 0.0f); amt_.prepare(sr_, 30.0f); }
+    void onPrepare() override { for (auto& o : os_) o.prepareVariant(maxBlock_, latMode_ == LatencyMode::Quality ? dsp::Oversampler2x::Variant::Fir : (latMode_ == LatencyMode::Low ? dsp::Oversampler2x::Variant::MinPhaseIir : dsp::Oversampler2x::Variant::Bypass)); work_.assign(static_cast<size_t>(maxBlock_), 0.0f); band_.assign(static_cast<size_t>(maxBlock_) * 2, 0.0f); amt_.prepare(sr_, 30.0f); }
     int latencySamples() const override { return os_[0].latency(); }
     void reset() override {
         for (auto& o : os_) o.reset();

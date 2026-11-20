@@ -217,6 +217,7 @@ TEST_CASE("latency registry: every production FX resolves Zero / Low honestly") 
                 CHECK(p->latencySamples() > 0);  // the UI names this FX as the reason zero latency is unavailable
             }
             if (m == LatencyMode::Low && d.latency.analysisWindow) CHECK(p->latencySamples() == 512);
+            if (m == LatencyMode::Low && d.latency.oversampling) CHECK(p->latencySamples() == 5);
         }
     }
 }
@@ -240,6 +241,30 @@ TEST_CASE("zero latency: impulse through oversampled nonlinear FX is sample-alig
         CHECK(std::abs((pq - pz) - q->latencySamples()) <= 1);
         CHECK(onset >= 0);
         CHECK(onset <= 1);  // ADAA-1 is a half-sample average; nothing is buffered
+    }
+}
+
+TEST_CASE("oversampled nonlinear FX: reported latency == measured broadband delay in all three variants; Low keeps Full anti-aliasing") {
+    for (const char* id : {"saturation", "tape_colour"}) {
+        for (auto m : {LatencyMode::Quality, LatencyMode::Low, LatencyMode::Zero}) {
+            auto p = make(id, valuesFor(id, {{"drive", 0.0f}, {"mix", 100.0f}}), m);
+            std::vector<float> x(48000);
+            dsp::Rng r(21);
+            for (auto& v : x) v = 0.05f * r.bipolar();
+            const auto y = render(*p, x);
+            int best = 0;
+            double bv = -1e9;
+            for (int lag = 0; lag < 40; ++lag) {
+                double s2 = 0;
+                for (size_t i = 100; i + static_cast<size_t>(lag) < x.size(); ++i) s2 += static_cast<double>(x[i]) * y[i + static_cast<size_t>(lag)];
+                if (s2 > bv) { bv = s2; best = lag; }
+            }
+            INFO(std::string(id) << " mode " << static_cast<int>(m) << ": reported " << p->latencySamples() << ", measured " << best);
+            // Zero: nothing is buffered; ADAA's two-point average is half a sample and the effect's own
+            // minimum-phase tone shaping can move the broadband peak by one sample
+            if (m == LatencyMode::Zero) CHECK(std::abs(best - p->latencySamples()) <= 1);
+            else CHECK(best == p->latencySamples());
+        }
     }
 }
 
@@ -398,4 +423,33 @@ TEST_CASE("clear chain: removes every committed FX (incl. duplicates), keeps the
     REQUIRE(s.fromJson(R"({"format":"ih1-state","version":1,"chain":[{"type":"reverb"},{"type":"delay"}]})", false));
     CHECK(s.chain().size() == 2);
     CHECK(s.selected() == typeOf("granular"));
+}
+
+// =============================================================================================== DSP quality
+TEST_CASE("delay diffusion: off changes nothing; on turns discrete repeats into a denser bloom; bounded at max feedback") {
+    std::vector<float> in(static_cast<size_t>(3.0 * kSr), 0.0f);
+    in[1000] = 0.8f;
+    auto base = make("delay", valuesFor("delay", {{"sync", 0.0f}, {"time_ms", 250.0f}, {"feedback", 60.0f}, {"mix", 100.0f}, {"mod_depth", 0.0f}}));
+    auto off = make("delay", valuesFor("delay", {{"sync", 0.0f}, {"time_ms", 250.0f}, {"feedback", 60.0f}, {"mix", 100.0f}, {"mod_depth", 0.0f}, {"diffusion", 0.0f}}));
+    auto on = make("delay", valuesFor("delay", {{"sync", 0.0f}, {"time_ms", 250.0f}, {"feedback", 60.0f}, {"mix", 100.0f}, {"mod_depth", 0.0f}, {"diffusion", 100.0f}}));
+    const auto yb = render(*base, in), y0 = render(*off, in), y1 = render(*on, in);
+    double d = 0;
+    for (size_t i = 0; i < yb.size(); ++i) d = std::max(d, static_cast<double>(std::fabs(yb[i] - y0[i])));
+    CHECK(d == 0.0);  // diffusion 0 = the previous sound, bit for bit
+    // echo density in the tail: fraction of samples above -60 dBFS between 0.6 s and 2 s
+    auto density = [](const std::vector<float>& y) {
+        int n = 0, k = 0;
+        for (size_t i = static_cast<size_t>(0.6 * kSr); i < static_cast<size_t>(2.0 * kSr); ++i, ++k) n += std::fabs(y[i]) > 1e-3f;
+        return static_cast<double>(n) / k;
+    };
+    INFO("density off " << density(y0) << ", on " << density(y1));
+    CHECK(density(y1) > 4.0 * density(y0) + 0.05);
+    auto maxFb = make("delay", valuesFor("delay", {{"sync", 0.0f}, {"time_ms", 40.0f}, {"feedback", 100.0f}, {"diffusion", 100.0f}, {"drive", 100.0f}, {"mix", 100.0f}}));
+    std::vector<float> noise(static_cast<size_t>(10.0 * kSr));
+    dsp::Rng r(4);
+    for (auto& v : noise) v = 0.9f * r.bipolar();
+    const auto yn = render(*maxFb, noise);
+    float pk = 0.0f;
+    for (float v : yn) { REQUIRE(std::isfinite(v)); pk = std::max(pk, std::fabs(v)); }
+    CHECK(pk < 6.0f);
 }

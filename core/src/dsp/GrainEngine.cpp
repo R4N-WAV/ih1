@@ -400,6 +400,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             if (++binCount_ >= binLen_) {
                 disp_.peaks[static_cast<size_t>(binIndex_)].store(peakAcc, std::memory_order_relaxed);
                 binIndex_ = (binIndex_ + 1) % 96;
+                disp_.peakHead.store(binIndex_, std::memory_order_relaxed);
                 binCount_ = 0;
                 peakAcc = 0.0f;
             }

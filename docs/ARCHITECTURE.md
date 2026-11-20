@@ -54,12 +54,20 @@ in ─┬─► [committed 1] → … → [committed N] ─► c ─┐
 - **Staged type change:** a new staged processor is prepared on the message thread and swapped with the same fade-out/swap/fade-in on the staged stage (10 ms).
 - **Sample-rate / block-size change:** `prepareToPlay` re-prepares every owned processor while the audio thread is stopped (host contract), then republishes.
 
+## 3b. Latency modes (V2.1)
+
+- `LatencyMode { Quality, Low, Zero }` lives in the Session and is saved in DAW state (`session.latencyMode`). It is not part of presets.
+- Each `FxDescriptor` carries `LatencyCaps`: zero / low availability, analysis window, oversampling, CPU class and user-facing notes. These are annotated in one table in `core/src/fx/Registry.cpp`, together with the catalogue `FxCategory` and the tempo-sync dependencies.
+- `FxDescriptor::resolveLatency(requested)` picks the variant a type really builds. `Session::makeProcessor` calls `setLatencyMode(resolved)` before `prepare()`.
+- `Session::setLatencyMode` rebuilds every processor (chain and staged) on the message thread, with the same ids, values and seeds, and posts one program. Old processors are retired through the normal queue.
+- The processor reports `Session::latencySamples()` to the host via `setLatencySamples` on the message thread. `Session::latencyContributors()` names the effects that still add latency (the UI status and tooltip).
+
 ## 4. State (versioned JSON, written/parsed by `ih1_core`)
 
 ```json
 { "format": "ih1-state", "version": 1,
   "chain": [ { "id": "…", "type": "delay", "fxVersion": 1, "seed": 123, "params": { "time_ms": 375.0 } } ],
-  "session": { "drafts": { "delay": { … } }, "selected": "reverb", "solo": false, "mute": false } }
+  "session": { "drafts": { "delay": { … } }, "selected": "reverb", "solo": false, "mute": false, "latencyMode": 0 } }
 ```
 - **User preset** = same document without `session`.
 - Parameters are stored **by string id**: unknown ids are ignored, missing ids take defaults, values are clamped to range, unknown FX types are skipped with a warning, and duplicate instance ids are re-issued. Per-type `fxVersion` lets a module migrate old parameter sets.
@@ -70,4 +78,7 @@ in ─┬─► [committed 1] → … → [committed N] ─► c ─┐
 
 ## 6. Telemetry to UI
 
-Audio thread writes per-block RMS/peak (in/out) plus 4 coarse band energies per committed instance output into `std::atomic<float>` arrays sized `kMaxChain`. The UI smooths them (attack/release) for the formation.
+- **What the audio thread writes.** Per-block RMS and peak (in and out), coarse low / mid / high band RMS, output L/R balance (V2.1), the SOLO / MUTE ramp positions, and the RMS after each committed slot. All go into `std::atomic<float>` values sized `kMaxChain`.
+- **How the formation reads it.** `AudioAnalyser` (`plugin/Source/FormationView.h`) reads these atomics only, at frame rate. It derives smoothed energy, onsets, bands and balance. The formation applies its own attack / release smoothing.
+- **SOLO.** The formation's monochrome amount is the engine's solo ramp, so the picture always matches what is audible.
+- **Effect read-outs.** Effects with live state (Looper, Grain Engine) expose `FxProcessor::readDisplay` through lock-free atomics, for the settings graph.

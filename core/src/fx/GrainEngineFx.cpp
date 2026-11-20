@@ -81,6 +81,7 @@ class GrainEngineFx final : public FxBase {
         d.seconds = s.spanSeconds.load(std::memory_order_relaxed);
         d.playhead = s.playhead.load(std::memory_order_relaxed);
         d.activeGrains = s.active.load(std::memory_order_relaxed);
+        d.peakHead = s.peakHead.load(std::memory_order_relaxed);
         for (size_t i = 0; i < d.peaks.size() && i < s.peaks.size(); ++i) d.peaks[i] = s.peaks[i].load(std::memory_order_relaxed);
         for (size_t i = 0; i < d.grains.size() && i < s.grainPos.size(); ++i) d.grains[i] = s.grainPos[i].load(std::memory_order_relaxed);
         return true;

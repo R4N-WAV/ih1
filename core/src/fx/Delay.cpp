@@ -1,6 +1,9 @@
 // Delay — clean "length-type" digital delay (KADAL KNW-SA0JJFX4HE): time changes crossfade between two
 // read heads instead of bending pitch (that is Tape Echo's job). Multi-tap patterns, stereo/ping-pong,
 // filtered + optionally saturated feedback with a safety soft-clip, gentle modulation, ducking.
+// V2.1: Diffusion -- four all-passes inside the feedback loop (after the filters), so every repeat is smeared
+// a little more and the echoes bloom towards a reverb-like tail (research V2.1 Part I 3.1 type 5; FabFilter
+// Timeless documents the same placement of effects "after the delay, before feedback"). 0 % = the V2.0 sound.
 #include <array>
 
 #include "ih1/dsp/DelayLine.h"
@@ -11,7 +14,7 @@
 namespace ih1::fx {
 namespace {
 
-enum { kSync, kTime, kDiv, kStereo, kSpread, kFeedback, kLowCut, kHighCut, kModDepth, kModRate, kDrive, kDuck, kPattern, kMix };
+enum { kSync, kTime, kDiv, kStereo, kSpread, kFeedback, kLowCut, kHighCut, kModDepth, kModRate, kDrive, kDuck, kPattern, kMix, kDiffusion };
 
 struct Tap { float pos, gain; };
 constexpr std::array<std::array<Tap, 4>, 4> kPatterns = {{
@@ -31,11 +34,18 @@ class Delay final : public FxBase {
         duckEnv_.prepare(sr_, 5.0f, 250.0f);
         mix_.prepare(sr_, maxBlock_, 0, MixLaw::Flat);
         fbS_.prepare(sr_, 30.0f);
+        diffS_.prepare(sr_, 40.0f);
+        static const float msL[4] = {4.7f, 7.3f, 11.9f, 17.3f}, msR[4] = {5.3f, 8.1f, 12.7f, 18.9f};  // incommensurate
+        for (int k = 0; k < 4; ++k) {
+            ap_[0][k].prepare(std::max(1, static_cast<int>(msL[k] * 0.001f * srf())));
+            ap_[1][k].prepare(std::max(1, static_cast<int>(msR[k] * 0.001f * srf())));
+        }
     }
     void reset() override {
         for (auto& l : line_) l.reset();
         for (auto& f : lc_) f.reset();
         for (auto& f : hc_) f.reset();
+        for (auto& c : ap_) for (auto& a : c) a.reset();
         duckEnv_.reset();
         mix_.reset();
         for (auto& c : cur_) c.xf = 1.0f;
@@ -48,7 +58,9 @@ class Delay final : public FxBase {
         lfo_.setRate(fp(kModRate));
         mix_.setMix(pct(kMix), snap);
         fbS_.setTarget(std::min(pct(kFeedback), 1.0f));
+        diffS_.setTarget(pct(kDiffusion));
         if (snap) {
+            diffS_.snap(pct(kDiffusion));
             fbS_.snap(std::min(pct(kFeedback), 1.0f));
             for (auto& c : cur_) { c.a = c.b = -1.0f; c.xf = 1.0f; }
         }
@@ -74,6 +86,7 @@ class Delay final : public FxBase {
         for (int i = 0; i < n; ++i) {
             const float m = lfo_.next() * modAmt;
             const float fbg = fbS_.next();
+            const float dif = diffS_.next();
             float in[2] = {ch[0][i], ch[1][i]};
             if (mode != 1) { const float mono = 0.5f * (in[0] + in[1]); in[0] = mono; in[1] = mode == 2 ? 0.0f : mono; }
             const float env = duckEnv_.process(0.5f * (ch[0][i] + ch[1][i]));
@@ -98,6 +111,11 @@ class Delay final : public FxBase {
                 }
                 out[c] = acc;
                 float f = hc_[c].process(lc_[c].process(last));
+                if (dif > 1e-4f) {  // diffusion inside the loop: each repeat is smeared further
+                    float d = f;
+                    for (auto& a : ap_[c]) d = a.process(d, 0.45f + 0.25f * dif);
+                    f = (1.0f - dif) * f + dif * d;
+                }
                 if (drive > 0.0f) { const float k = 1.0f + 6.0f * drive; f = std::tanh(f * k) / k * (1.0f + drive); }
                 fbSig[c] = 2.0f * std::tanh(0.5f * f * fbg);  // safety soft-clip bounds runaway at 100 %
             }
@@ -121,7 +139,8 @@ class Delay final : public FxBase {
     dsp::Svf lc_[2], hc_[2];
     dsp::Lfo lfo_;
     dsp::EnvelopeFollower duckEnv_;
-    dsp::Smoother fbS_;
+    dsp::Smoother fbS_, diffS_;
+    dsp::Allpass ap_[2][4];
     Head cur_[2];
     MixStage mix_;
 };
@@ -149,8 +168,10 @@ FxDescriptor describeDelay() {
         P::pct("duck", "Duck", 0.0f, "Turns echoes down while you play and lets them bloom in the gaps."),
         P::choice("pattern", "Pattern", {"Single", "Dual", "Triplet", "Cascade"}, 0, "Rhythmic pattern of taps inside each echo period."),
         P::pct("mix", "Mix", 35.0f, "Balance of original and echoes. 50% keeps both at full level."),
+        // appended in V2.1 (state is keyed by id; older projects load it at 0 = the previous sound)
+        P::pct("diffusion", "Diffusion", 0.0f, "Smears every repeat a little more, so echoes bloom into a soft, reverb-like tail."),
     };
-    for (int i : {kSpread, kModRate, kDrive, kDuck}) d.params[static_cast<size_t>(i)].advanced = true;
+    for (int i : {kSpread, kModRate, kDrive, kDuck, kDiffusion}) d.params[static_cast<size_t>(i)].advanced = true;
     d.create = [] { return std::make_unique<Delay>(); };
     return d;
 }

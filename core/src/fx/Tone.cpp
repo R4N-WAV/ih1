@@ -187,7 +187,7 @@ constexpr dsp::Shape kStyleShape[6] = {dsp::Shape::Asym, dsp::Shape::SoftCubic, 
 
 class Saturation final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
+        for (auto& o : os_) o.prepareVariant(maxBlock_, latMode_ == LatencyMode::Quality ? dsp::Oversampler2x::Variant::Fir : (latMode_ == LatencyMode::Low ? dsp::Oversampler2x::Variant::MinPhaseIir : dsp::Oversampler2x::Variant::Bypass));
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         drive_.prepare(sr_, 30.0f);
         out_.prepare(sr_, 30.0f);

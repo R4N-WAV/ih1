@@ -469,7 +469,7 @@ class Convolution final : public FxBase {
 enum { amGain, amBass, amMid, amTreble, amPresence, amMaster, amCab, amOut, amMix };
 class Amp final : public FxBase {
     void onPrepare() override {
-        for (auto& o : os_) o.prepare(maxBlock_, 47, 7.8f, latMode_ != LatencyMode::Quality);
+        for (auto& o : os_) o.prepareVariant(maxBlock_, latMode_ == LatencyMode::Quality ? dsp::Oversampler2x::Variant::Fir : (latMode_ == LatencyMode::Low ? dsp::Oversampler2x::Variant::MinPhaseIir : dsp::Oversampler2x::Variant::Bypass));
         mix_.prepare(sr_, maxBlock_, os_[0].latency(), MixLaw::Linear);
         work_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         out_.prepare(sr_, 30.0f);

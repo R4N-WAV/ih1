@@ -1,32 +1,43 @@
 # IH1
 
-A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll to an effect, shape it while it plays after everything you've already committed, then **COMMIT** it into an immutable serial chain. Each committed effect can be reordered or deleted but never edited, and the chain grows into an audio-reactive, filament-like formation.
+A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll to an effect, shape it while it plays after everything you've already committed, then **COMMIT** it into an immutable serial chain. Each committed effect can be reordered or deleted but never edited, and the chain grows into an audio-reactive force field.
 
-![IH1 with the Supercluster preset (Linux, Mesa OpenGL)](docs/img/ui_v1_1_formation.jpg)
+![IH1 V2.1 with the Grain Engine staged over a six-effect chain (Linux, Mesa OpenGL)](docs/img/ui_v2_1_editor_gl.jpg)
 
 ## Status
 
-Version 0.1.0 (development), with the V1 feedback repair pass applied. Details are in `docs/PROJECT_STATUS.md`.
+Version 0.1.0 (development), with the V1 feedback pass and the **V2.1 pass** applied. V2.1 is documented in:
+- `docs/V2_1_IMPLEMENTATION.md`: diagnosis, changes, latency table, measurements, evidence, KADAL sources
+- `docs/FL_STUDIO_TEST_CHECKLIST.md`: the manual host acceptance list (FL Studio not tested here)
+- `docs/KNOWN_ISSUES.md` and `docs/FACTORY_PRESETS.md`
 
-The V1 feedback pass is documented in:
+The earlier V1 feedback pass is documented in:
 - `docs/V1_FEEDBACK_TRIAGE.md`
 - `docs/V1_FEEDBACK_IMPLEMENTATION.md`
 - `docs/QA_AND_REGRESSION_RESULTS.md`
 - `docs/KNOWN_ISSUES.md`
 - `docs/FACTORY_PRESETS.md`
 
-- **38 effects** — the full catalogue — are implemented and tested. Each one has a behaviour test as well as the shared contract suite. The list, algorithms and measurements are in `docs/FX_CATALOGUE.md`.
+- **39 effects** — the full catalogue, including the new **Grain Engine** (Cloud / Stretch / Loop, Freeze, varispeed, synced retrigger, scale quantise, Smooth Splice, grain feedback) — are implemented and tested. Each one has a behaviour test as well as the shared contract suite. The list, algorithms and measurements are in `docs/FX_CATALOGUE.md`.
   - **Time & space:** Delay, Tape Echo, Reverb (7 algorithms), Reverse (3 modes), Shimmer, Convolution, Doppler
   - **Pitch & voice:** Harmony (intervals / key & scale / MIDI), Pitch Shift, Formant Shift, Doubler, Pitch Correction, Vocoder
   - **Modulation:** Chorus, Flanger, Phaser, Vibrato, Tremolo/Pan, Filter/Wah, Ring Mod, Rotary, Frequency Shifter
-  - **Texture & spectral:** Granular Cloud, Spectral Freeze, Stutter, Looper, Resonator
+  - **Texture & spectral:** Grain Engine, Granular Cloud, Spectral Freeze, Stutter, Looper, Resonator
   - **Tone & dynamics:** EQ / Dynamic EQ, Saturation, Stereo Width, Compressor, Gate/Expander, De-Esser, Transient Shaper, Tape/Console, Bitcrusher, Exciter, Amp/Cabinet
-- **Workflow:** carousel, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation, 28 categorised factory presets plus user presets, and DAW state recall.
+- **Workflow:**
+  - carousel with a nested category menu, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation;
+  - **Clear FX Chain** with confirmation;
+  - **Full Quality / Low Latency / Zero Latency** modes;
+  - **66 factory presets** in 10 categories, plus user presets;
+  - DAW state recall.
 - **Tested on Linux:**
-  - 78 unit and behaviour test cases;
-  - a VST3 host-lifecycle suite, including 320 host-driven editor resizes under audio;
-  - `ih1_uitest`, 44 editor interaction checks driven through the native peer.
-- **Windows builds:** CI builds, tests and packages a setup wizard. pluginval at strictness 5 passes on Windows and Linux.
+  - 101 unit, behaviour and audit test cases;
+  - `ih1_hosttest`, 56 checks through the real VST3, including reported == measured latency;
+  - `ih1_uitest`, 72 editor checks;
+  - pluginval at strictness 8 and 10;
+  - ASan / UBSan / TSan;
+  - a 30-minute soak (`ih1_soak`).
+- **Windows builds:** CI builds, tests and packages a setup wizard. pluginval at strictness 5 passes on Windows (CI) and Linux.
 - **Not yet tested:** FL Studio 25 and Cubase 14. See *Known limitations*.
 
 ## Install (Windows)
@@ -77,28 +88,33 @@ Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching
 - **Carousel:**
   - It shows `None` until you choose an effect.
   - Choose by scrolling the wheel over the names, with the ▲▼ arrows or the arrow keys, or by typing a name.
-  - **Right-click** the carousel for the full list, grouped by family.
+  - **Right-click** the carousel for the catalogue: categories open submenus beside them (hover, click, or arrow keys).
   - Every name is shown in the effect's colour, which it keeps in the formation.
   - Each effect type remembers its own draft settings.
 - **Staged effect:** the selected effect plays *after* the committed chain. Its settings appear only while something is staged.
   - **S** (SOLO FX) plays only the staged effect.
-  - **M** (MUTE FX) silences only the staged effect.
+  - **M** (MUTE FX) silences only the staged effect and greys the whole staged column until you unmute.
   - The staged effect never appears in the formation.
 - **COMMIT** sends a frozen copy into the chain. A short transfer animation carries it into the formation, and the carousel returns to `None`.
 - **RESET** restores the staged effect's defaults and clears what it holds, such as a Looper's recording or delay and reverb tails.
 - **Settings:**
   - Graphs show the real response or state.
   - Double-click a knob to reset it, or double-click a value to type one.
-  - **More** shows advanced controls.
+  - Advanced controls are always visible under the *Advanced* label.
+  - With **Sync** on, the free time or rate knob is greyed out (its value is kept); Division sets the time.
 - **Chain strip** (under the formation):
   - Drag a name along the strip to reorder.
   - While dragging, a red **DELETE** appears at the upper-left of the field. Drop on it and confirm to remove that one instance. Escape, Cancel, or dropping anywhere else never deletes.
   - Hover a name for read-only details.
+  - **···** at the right end of the strip (or right-click the strip) opens the chain options:
+    - latency mode: Full Quality, Low Latency, or Zero Latency;
+    - **Clear FX Chain…**, which always asks first. It removes every committed effect and keeps the staged one.
+  - The quiet status next to it shows the latency reported to the host and, in Zero mode, which effect prevents strict zero.
 - **Presets:**
   - The box in the header shows the current preset. Click the name to browse by category or search; ‹ › step through every preset and wrap.
   - Presets hold the committed chain.
   - User presets are saved to `Documents/IH1/Presets/*.ih1chain` (Save As, Save with confirmation, Rename, Delete).
-  - Factory presets are read-only. The browser also has *Clear chain*.
+  - Factory presets are read-only.
   - DAW projects additionally restore the staged draft, the selection, SOLO/MUTE and the editor size.
 - **Host automation:** a fixed set of parameters — Bypass, SOLO, MUTE, Input / Output Gain, Global Mix, and Staged Control 1–8, which map to the staged effect's first eight controls. Committed effects are never automatable.
 - **Without a GPU:** set `IH1_NO_OPENGL=1` to use the software formation. IH1 also switches to it automatically if OpenGL 3.2 is unavailable or a render target fails.
@@ -126,9 +142,10 @@ See `installer/THIRD_PARTY_NOTICES.txt`. VST is a registered trademark of Steinb
 
 See `docs/KNOWN_ISSUES.md` for the complete list. In short:
 
-- **FL Studio is untested.** Neither the resize-crash fix nor the dropdown fix has been verified in FL Studio, and there is no DAW testing at all yet.
+- **FL Studio is untested.** No V1 or V2.1 fix has been verified in FL Studio, and there is no DAW testing at all yet. Use `docs/FL_STUDIO_TEST_CHECKLIST.md`.
 - **Display scaling is untested** at 125–200 %.
 - **The visual is close to the reference, not identical.**
-- **Spectral effects add latency.** Harmony, Pitch Shift, Formant Shift and Spectral Freeze add 2048 samples, which is reported to the host.
+- **Spectral effects have no zero-latency variant.** Harmony, Pitch Shift, Formant Shift and Spectral Freeze add 2048 samples in Full Quality and 512 in Low; Zero mode names them.
+- **Zero-mode saturation aliases more.** About 24 dB more at high drive, and Fold is very aliased. Low (5 samples) keeps full anti-aliasing.
 - **The chain is capped at 32 effects.**
 - **macOS is not built yet.**

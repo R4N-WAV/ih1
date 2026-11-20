@@ -97,6 +97,7 @@ public:
         std::atomic<int> active{0};
         std::atomic<bool> frozen{false};
         std::atomic<float> spanSeconds{4.0f};
+        std::atomic<int> peakHead{0};  // next bin to be written: peaks[peakHead] is the oldest
     };
     const Display& display() const { return disp_; }
     int activeVoices() const;

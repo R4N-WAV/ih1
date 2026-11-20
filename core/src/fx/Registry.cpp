@@ -114,10 +114,11 @@ void annotate(FxDescriptor& d) {
         L.zeroNote = "The first partition is convolved directly in the time domain (same sound, more CPU).";
         L.lowNote = L.zeroNote;
     } else if (t == "saturation" || t == "tape_colour" || t == "exciter" || t == "amp") {
+        // measured (docs/V2_1_IMPLEMENTATION.md, Saturation +24 dB drive, 5 kHz tone, 48 kHz)
         L.oversampling = true;
         L.cpuClass = 2;
-        L.zeroNote = "Runs at the host rate with antiderivative anti-aliasing instead of 2x linear-phase oversampling: no filter delay, slightly more aliasing at extreme drive.";
-        L.lowNote = L.zeroNote;
+        L.lowNote = "2x minimum-phase IIR oversampling: 5 samples instead of 23, same anti-aliasing as Full Quality (measured).";
+        L.zeroNote = "No oversampling, antiderivative anti-aliasing only: 0 samples, but about 24 dB more aliasing at high drive, and the Fold style aliases heavily. Use Low Latency (5 samples) when that matters.";
     } else if (t == "test_latency") {
         L.zero = L.low = false;
     } else if (t == "grain_engine" || t == "granular" || t == "reverb" || t == "shimmer" || t == "vocoder" || t == "pitch_correct") {

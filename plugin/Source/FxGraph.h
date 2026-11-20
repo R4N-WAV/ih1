@@ -31,6 +31,7 @@ private:
     void drawVoices(juce::Graphics&, juce::Rectangle<float>);
     void drawLoop(juce::Graphics&, juce::Rectangle<float>);
     void drawGrains(juce::Graphics&, juce::Rectangle<float>);
+    void drawGrainEngine(juce::Graphics&, juce::Rectangle<float>);
     void measureShaper();
     void caption(juce::Graphics&, juce::Rectangle<float>, const juce::String& left, const juce::String& right = {});
 

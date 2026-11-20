@@ -73,11 +73,23 @@ private:
 // Linear-phase half-band FIR 2x oversampler (Kaiser-windowed sinc). Latency (base rate) = (taps-1)/2.
 class Oversampler2x {
 public:
-    // passthrough = true: the Zero-latency variant. No filters run, factor() == 1 and latency() == 0;
-    // up() copies, down() copies. Callers process factor() * n samples at factor() * sampleRate.
-    void prepare(int maxBlock, int taps = 47, float beta = 7.8f, bool passthrough = false);
-    int latency() const { return passthrough_ ? 0 : (static_cast<int>(h_.size()) - 1) / 2; }
-    int factor() const { return passthrough_ ? 1 : 2; }
+    // Variants (V2.1 Phase 16):
+    //   Fir         : linear-phase half-band FIR (Full Quality). Latency (base rate) = (taps-1)/2 = 23.
+    //   MinPhaseIir : 10th-order elliptic low-pass (0.05 dB ripple to 0.42 x the 2x Nyquist, -90 dB from the
+    //                 base Nyquist) used for both interpolation and decimation. Minimum phase: no buffering;
+    //                 group delay ~3.9 base samples at low/mid frequencies, more near 20 kHz; the broadband
+    //                 (noise) cross-correlation peak is 5 samples, which is what it reports. Anti-aliasing is
+    //                 the same as the FIR's (measured). Low Latency variant.
+    //   Bypass      : no oversampling (factor 1, latency 0). Zero Latency variant; the shaper's ADAA is the
+    //                 only anti-aliasing left.
+    enum class Variant { Fir, MinPhaseIir, Bypass };
+    void prepare(int maxBlock, int taps = 47, float beta = 7.8f, bool passthrough = false) {
+        prepareVariant(maxBlock, passthrough ? Variant::Bypass : Variant::Fir, taps, beta);
+    }
+    void prepareVariant(int maxBlock, Variant v, int taps = 47, float beta = 7.8f);
+    int latency() const { return variant_ == Variant::Bypass ? 0 : (variant_ == Variant::MinPhaseIir ? 5 : (static_cast<int>(h_.size()) - 1) / 2); }
+    int factor() const { return variant_ == Variant::Bypass ? 1 : 2; }
+    Variant variant() const { return variant_; }
     // up: n input samples -> factor()*n samples in `hi` (internal buffer returned)
     float* up(const float* in, int n);
     // down: factor()*n samples in `hi` -> n output samples
@@ -87,7 +99,9 @@ public:
 private:
     std::vector<float> h_, upHist_, downHist_, hi_;
     int upPos_ = 0, downPos_ = 0;
-    bool passthrough_ = false;
+    Variant variant_ = Variant::Fir;
+    static constexpr int kSos = 5;
+    double upZ_[kSos][2]{}, downZ_[kSos][2]{};
 };
 
 }  // namespace ih1::dsp

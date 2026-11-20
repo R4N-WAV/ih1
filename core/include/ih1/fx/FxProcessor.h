@@ -48,6 +48,7 @@ struct FxDisplay {
     int kind = 0;  // 0 Looper, 1 Grain Engine
     float playhead = -1.0f;
     int activeGrains = 0;
+    int peakHead = 0;  // Grain Engine: peaks[] is a ring; this is the oldest bin
     std::array<float, 24> grains{};
 };
 
