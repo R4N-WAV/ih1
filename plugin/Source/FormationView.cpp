@@ -437,7 +437,7 @@ public:
         ok_.setButtonText(confirmText);
         cancel_.getProperties().set("quiet", true);
         ok_.getProperties().set("quiet", true);
-        ok_.setColour(juce::TextButton::textColourOffId, Colours::danger);
+        ok_.getProperties().set("danger", true);
         cancel_.onClick = [this] { finish(false); };
         ok_.onClick = [this] { finish(true); };
         addAndMakeVisible(cancel_);

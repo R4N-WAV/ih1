@@ -527,6 +527,57 @@ int main() {
         check(car.isEnabled() && ed->settings().controlFor(pTime)->isEnabled(), "unmuting restores the column");
     }
 
+    // ---- the OpenGL formation compiles its shaders (incl. the V2.1 glow pass) and keeps rendering ----
+    if (SystemStats::getEnvironmentVariable("IH1_NO_OPENGL", {}).isEmpty()) {
+        String msg;
+        proc->uiClearChain();
+        proc->loadPresetKey("f:gm.cascade", msg);
+        for (const char* extra : {"chorus", "delay", "harmony", "saturation", "reverb"}) { proc->uiSelect(fxTypeIndex(extra)); proc->uiCommit(); }
+        proc->uiSelect(fxTypeIndex("grain_engine"));
+        pump(3000);
+        check(!ed->usingSoftwareFormation(), "the OpenGL formation renders (shaders and targets OK, no software fallback)");
+        if (const int hold = SystemStats::getEnvironmentVariable("IH1_GL_HOLD_MS", "0").getIntValue(); hold > 0) {
+            std::printf("GL_HOLD_START\n");
+            std::fflush(stdout);
+            pump(hold);
+        }
+    }
+
+    // ---- optional: snapshots for visual review (IH1_SNAPSHOT_DIR=<dir>, best with IH1_NO_OPENGL=1) ----
+    if (const auto dir = SystemStats::getEnvironmentVariable("IH1_SNAPSHOT_DIR", {}); dir.isNotEmpty()) {
+        const File out(dir);
+        out.createDirectory();
+        auto snap = [&](const String& name) {
+            pump(100);
+            const auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            PNGImageFormat png;
+            FileOutputStream os(out.getChildFile(name + ".png"));
+            if (os.openedOk()) { os.setPosition(0); os.truncate(); png.writeImageToStream(img, os); }
+        };
+        String msg;
+        proc->uiClearChain();
+        proc->loadPresetKey("f:gm.particle_drift", msg);
+        for (const char* extra : {"chorus", "delay", "harmony", "saturation"}) { proc->uiSelect(fxTypeIndex(extra)); proc->uiCommit(); }
+        proc->uiSelect(fxTypeIndex("grain_engine"));
+        pump(4500);
+        snap("v21_editor_grain_engine");
+        d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);
+        d.move(menu.rowBounds(menu.indexOfText("Granular & Time")).getCentre().toFloat());
+        pump(200);
+        snap("v21_nested_menu");
+        d.key(KeyPress(KeyPress::escapeKey));
+        d.key(KeyPress(KeyPress::escapeKey));
+        proc->uiSelect(fxTypeIndex("delay"));
+        proc->uiSetMute(true);
+        pump(300);
+        snap("v21_muted_delay");
+        proc->uiSetMute(false);
+        ed->formation().openClearConfirm();
+        snap("v21_clear_dialog");
+        d.key(KeyPress(KeyPress::escapeKey));
+        pump(200);
+    }
+
     // ---- editor close with a menu open, reopen ----
     {
         d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);

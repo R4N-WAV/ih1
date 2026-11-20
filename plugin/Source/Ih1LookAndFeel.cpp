@@ -113,6 +113,7 @@ void LookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& b, bool ov
     const auto active = b.getProperties().contains("activeColour") ? juce::Colour::fromString(b.getProperties()["activeColour"].toString()) : Colours::accent;
     juce::Colour c = primary ? Colours::accent : Colours::text;
     if (on) c = active;
+    else if (b.getProperties()["danger"]) c = over ? Colours::danger.brighter(0.25f) : Colours::danger;  // destructive confirm only
     else if (b.getProperties()["quiet"]) c = over ? Colours::text : Colours::textDim;
     g.setColour(c.withAlpha(b.isEnabled() ? 1.0f : 0.3f));
     const float size = b.getProperties().contains("fontSize") ? static_cast<float>(static_cast<double>(b.getProperties()["fontSize"])) : 13.0f;

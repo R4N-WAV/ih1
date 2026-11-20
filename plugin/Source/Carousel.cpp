@@ -116,7 +116,7 @@ void Carousel::paint(juce::Graphics& g) {
         if (centre) {
             g.setColour(Colours::textDim.withAlpha(0.8f));
             g.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
-            g.drawText(juce::String(familyName(reg[static_cast<size_t>(idx)].family)).toUpperCase(),
+            g.drawText(juce::String(categoryName(reg[static_cast<size_t>(idx)].category)).toUpperCase(),
                        juce::Rectangle<float>(row.getX(), y + size * 0.62f, row.getWidth(), 14.0f), juce::Justification::centred, false);
         }
     }

@@ -107,7 +107,7 @@ PresetBrowser::PresetBrowser(Processor& p) : proc_(p) {
     nameEdit_.onEscapeKey = [this] { setMode(Mode::Browse); };
     nameEdit_.setInputRestrictions(60);
     for (auto* b : {&save_, &saveAs_, &rename_, &del_, &ok_, &cancel_}) { styleQuiet(*b); addChildComponent(*b); }
-    del_.setColour(juce::TextButton::textColourOffId, Colours::danger);
+    // idle Delete stays neutral; only the final confirmation is red (V2.1 principle)
     save_.setTooltip("Save the current chain over the selected user preset (asks first).");
     saveAs_.setTooltip("Save the current committed chain as a new user preset.");
     rename_.setTooltip("Rename the selected user preset.");
@@ -209,7 +209,7 @@ void PresetBrowser::setMode(Mode m) {
     cancel_.setVisible(!browse);
     ok_.setButtonText(m == Mode::ConfirmDelete ? "Delete" : (m == Mode::ConfirmOverwrite ? "Overwrite" : "Save"));
     if (m == Mode::Rename) ok_.setButtonText("Rename");
-    ok_.setColour(juce::TextButton::textColourOffId, m == Mode::ConfirmDelete ? Colours::danger : Colours::text);
+    ok_.getProperties().set("danger", m == Mode::ConfirmDelete);
     if (m == Mode::SaveAs) { nameEdit_.setText(proc_.currentPresetName().isNotEmpty() ? proc_.currentPresetName() : "My Chain", false); nameEdit_.grabKeyboardFocus(); }
     if (m == Mode::Rename && e) { nameEdit_.setText(e->name, false); nameEdit_.grabKeyboardFocus(); }
     resized();
