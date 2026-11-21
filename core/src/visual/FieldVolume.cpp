@@ -107,8 +107,9 @@ Medium medium(const PackedScene& P, V q, float t) {
     const float en = P.audio[0], hi = P.audio[1], lo = P.audio[2], mi = P.audio[3];
     const float bal = P.audio2[0], turb = P.audio2[1], R0 = P.audio2[2];
     q.x -= bal * 0.12f;  // stereo lean
-    // the whole medium lives in warped space: its outline follows the flow (organic, never a straight tube)
-    const V p = warp(q, t, lo, turb);
+    // the outline follows a cheap, smooth warp (sine terms only); the full warp (with noise) is evaluated only where
+    // the material can be visible (V4 performance: most of the bound is empty halo)
+    const V pc = add(q, mul(V{std::sin(1.3f * q.y + 0.07f * t + 1.1f), std::sin(1.1f * q.z + 0.05f * t + 2.3f), std::sin(1.2f * q.x + 0.06f * t + 0.4f)}, 0.16f + 0.12f * lo));
     // ---- spine query on the warped position: envelope (max over segments: joints never brighten), coordinate, tangent
     float best = 0.0f, broad = 0.0f, sS = 0.0f, sW = 0.0f;
     V tan{0, 0, 0};
@@ -118,15 +119,15 @@ Medium medium(const PackedScene& P, V q, float t) {
         const V a = ld(&P.spine[static_cast<size_t>(4 * j)]), b = ld(&P.spine[static_cast<size_t>(4 * j + 4)]);
         const V ab = sub(b, a);
         const float L2 = std::max(dot(ab, ab), 1e-6f);
-        const float u = std::clamp(dot(sub(p, a), ab) / L2, 0.0f, 1.0f);
-        const V w = sub(p, add(a, mul(ab, u)));
+        const float u = std::clamp(dot(sub(pc, a), ab) / L2, 0.0f, 1.0f);
+        const V w = sub(pc, add(a, mul(ab, u)));
         const float d2 = dot(w, w);
         const float sj0 = P.spine[static_cast<size_t>(4 * j + 3)], sj1b = P.spine[static_cast<size_t>(4 * j + 7)];
         const float sm = sj0 + u * (sj1b - sj0) - 0.78f;
         const float swell = 1.0f + 0.65f * std::exp(-sm * sm / 0.08f);  // the body is fuller around the hot mass
         const float e = std::exp(-d2 * inv / (swell * swell));
         best = std::max(best, e);
-        const float eb = std::exp(-d2 * inv * 0.14f / (swell * swell));
+        const float eb = std::exp(-d2 * inv * 0.30f / (swell * swell));
         broad = std::max(broad, eb);
         const float sj = P.spine[static_cast<size_t>(4 * j + 3)], sj1 = P.spine[static_cast<size_t>(4 * j + 7)];
         sS += eb * (sj + u * (sj1 - sj));
@@ -144,6 +145,8 @@ Medium medium(const PackedScene& P, V q, float t) {
     if (broad < 2e-3f) return m;
     const V plum{0.42f, 0.30f, 0.62f};
     m.emit = mul(plum, broad * kHalo * (0.45f + 0.8f * en));  // (the halo is part of the void's atmosphere)
+    if (best < 0.01f && broad < 0.25f) return m;  // nothing but faint halo here: skip the material
+    const V p = warp(q, t, lo, turb);
     const float s = sW > 1e-6f ? sS / sW : 0.5f;
     const V T = normv(tan);
     // ---- material: flow-aligned multi-scale structure
@@ -163,7 +166,10 @@ Medium medium(const PackedScene& P, V q, float t) {
     const float r2s = r2 * r2, r2q = r2s * r2s;                           // r2^4
     const float r5 = 1.0f - std::fabs(2.0f * n5 - 1.0f), r6 = 1.0f - std::fabs(2.0f * n6 - 1.0f);
     const float r5s = r5 * r5, r5q = r5s * r5s, r6s = r6 * r6, r6q = r6s * r6s;
-    const float fil = r1e * r1s * r2q * r2s + 0.8f * r5q * r5q * r5s * r6q * r6s;  // two families of thin crossing lines
+    float fil = r1e * r1s * r2q * r2s + 0.8f * r5q * r5q * r5s * r6q * r6s;  // two families of thin crossing lines
+    // low detail (few ray steps): thin lines would be sampled as sparkle; blend towards a softer, wider version
+    const float detail = P.audio2[3];
+    if (detail < 1.0f) fil = fil * detail + (1.0f - detail) * 0.35f * (r1q * r2s + 0.8f * r5q * r6s);
     const float r3s = r3 * r3, r3q = r3s * r3s;
     const float rib = r3q * r3s;                                          // r3^6: folded translucent sheets
     const float tendril = r3q * r3q * r3q * r3q * r1q;                    // r3^16 * r1^4: long thin threads into space
@@ -263,7 +269,7 @@ void FieldScene::computeBound() {
         r = std::max(r, std::sqrt(dx * dx + dy * dy + dz * dz) + reach);
     };
     // the medium (and its faint halo) reaches ~3 radii from the spine, + the domain warp
-    for (const auto& nd : nodes) grow(nd.p, 5.5f * radius + 0.6f);
+    for (const auto& nd : nodes) grow(nd.p, 4.4f * radius + 0.45f);
     for (const auto& pk : packets) grow(pk.p, pk.radius * 4.5f + 0.25f);
     bound[0] = c[0];
     bound[1] = c[1];
@@ -369,6 +375,7 @@ PackedScene packScene(const FieldScene& s) {
     P.audio2[0] = s.balance;
     P.audio2[1] = s.turbulence;
     P.audio2[2] = s.radius;
+    P.audio2[3] = std::clamp(s.detail, 0.0f, 1.0f);
     for (int k = 0; k < 2; ++k) { P.pulse[2 * k] = s.pulseS[k]; P.pulse[2 * k + 1] = s.pulseA[k]; }
     for (int j = 0; j < 4; ++j) P.bound[j] = s.bound[j];
     return P;
@@ -495,7 +502,7 @@ vec4 medium(vec3 q, float t) {
   float en = uAudio.x, hi = uAudio.y, lo = uAudio.z, mi = uAudio.w;
   float bal = uAudio2.x, turb = uAudio2.y, R0 = uAudio2.z;
   q.x -= bal * 0.12;
-  vec3 p = warpF(q, t, lo, turb);
+  vec3 pc = q + vec3(sin(1.3 * q.y + 0.07 * t + 1.1), sin(1.1 * q.z + 0.05 * t + 2.3), sin(1.2 * q.x + 0.06 * t + 0.4)) * (0.16 + 0.12 * lo);
   float best = 0.0, broad = 0.0, sS = 0.0, sW = 0.0; vec3 tan = vec3(0.0);
   float R = R0 * (0.55 + 1.0 * noise3(q * 0.42 + vec3(0.0, 0.0, 0.01 * t)));
   float inv = 1.0 / (R * R);
@@ -503,13 +510,13 @@ vec4 medium(vec3 q, float t) {
     if (j + 1 >= uSpineN) break;
     vec3 a = uSpine[j].xyz, b = uSpine[j + 1].xyz; vec3 ab = b - a;
     float L2 = max(dot(ab, ab), 1e-6);
-    float u = clamp(dot(p - a, ab) / L2, 0.0, 1.0);
-    vec3 w = p - (a + ab * u); float d2 = dot(w, w);
+    float u = clamp(dot(pc - a, ab) / L2, 0.0, 1.0);
+    vec3 w = pc - (a + ab * u); float d2 = dot(w, w);
     float sm = mix(uSpine[j].w, uSpine[j + 1].w, u) - 0.78;
     float swell = 1.0 + 0.65 * exp(-sm * sm / 0.08);
     float e = exp(-d2 * inv / (swell * swell));
     best = max(best, e);
-    float eb = exp(-d2 * inv * 0.14 / (swell * swell));
+    float eb = exp(-d2 * inv * 0.30 / (swell * swell));
     broad = max(broad, eb);
     sS += eb * mix(uSpine[j].w, uSpine[j + 1].w, u);
     sW += eb;
@@ -520,6 +527,8 @@ vec4 medium(vec3 q, float t) {
   best *= fadeB; broad *= fadeB;
   if (broad < 2e-3) return vec4(0.0);
   vec3 emit = vec3(0.42, 0.30, 0.62) * (broad * HALO * (0.45 + 0.8 * en));
+  if (best < 0.01 && broad < 0.25) return vec4(emit, 0.0);
+  vec3 p = warpF(q, t, lo, turb);
   float s = sW > 1e-6 ? sS / sW : 0.5;
   vec3 T = length(tan) > 1e-6 ? normalize(tan) : vec3(1.0, 0.0, 0.0);
   float along = dot(p, T);
@@ -535,6 +544,8 @@ vec4 medium(vec3 q, float t) {
   float r5s = r5 * r5, r5q = r5s * r5s, r6s = r6 * r6, r6q = r6s * r6s;
   float r1s = r1 * r1, r1q = r1s * r1s, r1e = r1q * r1q, r2s = r2 * r2, r2q = r2s * r2s, r3s = r3 * r3, r3q = r3s * r3s;
   float fil = r1e * r1s * r2q * r2s + 0.8 * r5q * r5q * r5s * r6q * r6s;
+  float detail = uAudio2.w;
+  if (detail < 1.0) fil = fil * detail + (1.0 - detail) * 0.35 * (r1q * r2s + 0.8 * r5q * r6s);
   float rib = r3q * r3s;
   float tendril = r3q * r3q * r3q * r3q * r1q;
   float veil = smoothF(0.50, 0.90, n4);

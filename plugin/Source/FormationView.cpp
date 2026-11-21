@@ -342,7 +342,9 @@ void FormationRenderer::renderOpenGL() {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     {
-        const auto P = visual::packScene(formation_.scene());
+        auto P = visual::packScene(formation_.scene());
+        // detail follows the adaptive step count (fewer steps: softer filaments rather than sparkle)
+        P.audio2[3] = std::clamp(static_cast<float>(kVolStepsAt[std::clamp(volLevel_, 0, kVolLevels - 1)]) / 64.0f, 0.45f, 1.0f);
         glBindFramebuffer(GL_FRAMEBUFFER, volA_.fbo);
         glViewport(0, 0, rw, rh);
         volProg_->use();
@@ -600,7 +602,9 @@ public:
             }
             if (!have) { wait(50); continue; }
             form_.update(in);
-            visual::renderVolume(form_.scene(), w, h, lin, 24, 1, jitter_++);  // single thread, low priority; jittered per frame
+            visual::FieldScene sc = form_.scene();
+            sc.detail = 0.35f;  // few steps at a quarter resolution: soft filaments, no sparkle
+            visual::renderVolume(sc, w, h, lin, 18, 1, jitter_++);  // single thread, low priority; jittered per frame
             const juce::SpinLock::ScopedLockType sl(lock_);
             done_.swap(lin);
             dw_ = w;
@@ -653,8 +657,8 @@ void FormationView::renderSoftware() {
     // frame is temporally averaged, tone mapped and blitted; the image is scaled up when painted.
     if (!softThread_) return;
     const auto art = artworkArea();
-    // V4: a third of the artwork (was a fifth), per-frame jitter + history, high-quality upscaling when painted
-    const int w = std::clamp(art.getWidth() / 3, 1, 640), h = std::clamp(art.getHeight() / 3, 1, 400);
+    // V4: a quarter of the artwork (was a fifth), per-frame jitter + history, high-quality upscaling when painted
+    const int w = std::clamp(art.getWidth() / 4, 1, 480), h = std::clamp(art.getHeight() / 4, 1, 300);
     visual::FrameInput in;
     in.chain = chain_;
     fillLevels(proc_, in.chain);
@@ -1163,6 +1167,21 @@ juce::String FormationView::describe(uint64_t id) {
         if (d.params[k].advanced) continue;
         s << d.params[k].name << ": " << d.params[k].format(ci.values()[k]) << "\n";
         ++shown;
+    }
+    // V4 Phase 7.3: stage analysis of this instance's output (telemetry snapshots, never audio buffers)
+    {
+        auto& t = proc_.telemetry();
+        const int n = std::clamp(t.chainSize.load(std::memory_order_relaxed), 0, kMaxChain);
+        for (int k = 0; k < n; ++k) {
+            if (t.slotIds[static_cast<size_t>(k)].load(std::memory_order_relaxed) != id) continue;
+            const float rms = t.slotRms[static_cast<size_t>(k)].load(std::memory_order_relaxed);
+            const float pk = t.slotPeak[static_cast<size_t>(k)].load(std::memory_order_relaxed);
+            auto db = [](float x) { return x > 1e-6f ? 20.0f * std::log10(x) : -120.0f; };
+            if (pk > 1e-6f)
+                s << "Output after this stage: peak " << juce::String(db(pk), 1) << " dBFS, RMS " << juce::String(db(rms), 1) << " dBFS, crest "
+                  << juce::String(db(pk) - db(rms), 1) << " dB\n";
+            break;
+        }
     }
     s << "Drag along the strip to reorder, or onto DELETE to remove.";
     return s;

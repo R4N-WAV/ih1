@@ -53,3 +53,20 @@ CPU is per instance at 48 kHz with 256-sample blocks, from `ih1_bench` on the CI
 | 36 | Convolution / IR | C | done | Uniform partitioned overlap-save (P=256); 6 built-in generated IRs precomputed; crossfaded IR switching | decaying tail; click-free switching | 256 | 8.4% |
 | 37 | Exciter | C | done | High-pass band, ADAA shaper at 2x, generated harmonics added level-matched | +30 dB at the 2nd harmonic | 23 | 1.5% |
 | 38 | Amp / Cabinet (`amp`) | C | done | Two ADAA preamp stages at 2x, tone stack, power sag, 3 cabinet models | 3rd harmonic present; cabinet rolls off 9 kHz by more than 15 dB | 23 | 5.1% |
+
+## V4 additions (0.4.0)
+
+Details, distinctness and measurements: `docs/V4_IMPLEMENTATION.md` section 3. Behaviour tests: `tests/test_v4.cpp`.
+
+| # | Effect (id) | Batch | Status | Algorithm | Behaviour test | Latency (48 kHz, Full) |
+|---|---|---|---|---|---|---|
+| 46 | Slice Shuffler (`slice_shuffle`) | V4 | done | previous-bar capture, deterministic slice permutation, per-slice reverse / pitch / gate / swing, 2-voice crossfades | replays the previous beat in reverse slice order, deterministic | 0 |
+| 47 | Attack / Body (`transient_split`) | V4 | done | exact transient / body split; attack delay + repeats; body reversed / held / smeared | neutral = input (-60 dB error); attacks removable | 0 |
+| 48 | Echo Matrix (`echo_matrix`) | V4 | done | 8-tap step grid, per-tap level / pan / darkening / rotating-head pitch, filtered + driven cycle feedback | taps on the grid; climbing pitch raises the centroid | 0 |
+| 49 | Reverse Pitch Echo (`reverse_echo`) | V4 | done | overlapping reversed grains at a pitch ratio inside bounded feedback | rising ramp returns falling; +12 st lands near 600 Hz | 0 |
+| 50 | Dispersion (`dispersion`) | V4 | done | up to 64 TPT 2nd-order all-passes, curve, motion, bounded feedback | level within 1 dB; a pulse is spread in time | 0 |
+| 51 | Modal Resonator (`modal`) | V4 | done | 24 two-pole modes with material ratio sets, damping, inharmonicity, resonance guard | rings at the material's 2nd-mode ratio | 0 |
+| 52 | Texture Imprint (`texture`) | V4 | done | source-following dust / crackle / static / friction / grit, seeded, presence-gated | deterministic per seed; follows the source | 0 |
+| 53 | Spectral Shatter (`spectral_shatter`) | V4 | done | STFT shard translation with N/4-hop phase rotation, freeze / gate, crossfaded maps | a tone is relocated between bands | 1024 (Low 512) |
+| 54 | Partial Recomposer (`partial_recompose`) | V4 | done | peak / region partials moved by individual ratios, identity phase locking, sustain, residual | stretch raises the centroid > 25 % | 2048 (Low 512) |
+| 55 | Spectral Graft (`spectral_graft`) | V4 | done | one-input envelope transfer from a held moment / echo / opposite channel | a dark snapshot darkens a bright input | 1024 (Low 512) |

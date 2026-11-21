@@ -1,5 +1,45 @@
 # Known issues and unverified items
 
+## V4 (this pass, 0.4.0 test round 4)
+
+### Not verified in the target host
+- **FL Studio, Windows and real GPUs were not tested by the developer.** Everything ran on Linux (Mesa llvmpipe).
+  In particular: the new formation's GPU cost (the shader is heavier than V3's; the adaptive step control lowers the
+  step count first and never goes below a third of the resolution), host behaviour of the four new Preset Macro
+  parameters, and the dark installer wizard (`WizardStyle=modern dark`, Inno Setup 6.6+).
+- **KADAL was not searched in this session** (attaching the repository was refused by the session policy). Research
+  relied on the supplement, earlier rounds' recorded KADAL paths and the code.
+
+### Audio
+- **Moving-parameter clicks remain in a few effects at extreme random jumps** (all continuous controls jumping at
+  once, every 0.35-0.9 s): see the table in `docs/V4_IMPLEMENTATION.md` section 4. Static settings are clean except
+  2 marginal cases. Known contributors: SVF shelf gain steps during a fast glide (Tape Echo Bass), Echo Matrix with
+  many simultaneous changes, Attack / Body Held mode.
+- **Bitcrush / Degrade at very low bit depths** produce staircase steps on slow, pure tones: that is the effect.
+- **Grain Engine Feedback Rate** (sample-and-hold inside the feedback) is intentionally stepped (V3 note).
+- **Parameter glide** applies to the staged effect and to macros; MIDI-driven effects (Harmony in MIDI mode) step
+  per block instead of per 32 samples while MIDI events are present.
+- **Bypassed Time & Space effects keep running until their tail decays** (then they are parked), so bypass does not
+  save CPU immediately for those.
+- **No FX-to-FX envelope links.** Stage analysis exists (tooltips); link editing is deferred to an owner decision on
+  how links interact with commit-time immutability. Preset macros are the shipped form of cross-FX modulation.
+- **Macros are preset-defined only.** Users cannot create or edit macros in this build; a user preset saved from a
+  factory preset keeps its macros.
+
+### Visual
+- The formation is more compact than in some intermediate V4 renders (the halo reach was tightened for cost and to
+  keep the ray bound small). The reference's broadest wisps reaching far into the void are only partly matched.
+- **Software fallback** (no OpenGL 3.2) renders at a quarter resolution with 18 steps, about 0.4 s of one core per frame
+  for six effects on this container; it updates slowly and looks softer than the GL path. Real GPUs use the GL path.
+- Single offline frames (`formation_preview`) show sampling grain; the GL path removes it with jittered accumulation.
+
+### Presets
+- 41 of 130 creative presets measure as not transformative on the synthetic audition loops (several are rhythmic
+  rebuilds whose effect the near-periodic test sources hide). Listening on real material is the owner's call.
+
+---
+
+
 ## V3 (this pass, 0.3.0 test round 3)
 
 ### Not verified in the target host

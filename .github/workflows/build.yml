@@ -88,13 +88,13 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(IH1 VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-          & $iscc "/DAppVersion=$ver" "/DTestRound=3" "/DSourceDir=$PWD\stage" installer\IH1.iss
+          & $iscc "/DAppVersion=$ver" "/DTestRound=4" "/DSourceDir=$PWD\stage" installer\IH1.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package the test build ZIP (installer + install README)
         shell: pwsh
         run: |
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(IH1 VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-          $name = "IH1_${ver}_Windows_TestBuild_Round-3"
+          $name = "IH1_${ver}_Windows_Installer_Round-4"
           New-Item -ItemType Directory -Force "zip\$name" | Out-Null
           Copy-Item -Force "dist\IH1-Setup-$ver.exe" "zip\$name\"
           (Get-Content installer\README_TESTBUILD.txt -Raw).Replace('{VERSION}', $ver).Replace('{COMMIT}', "${env:GITHUB_SHA}".Substring(0, 7)) | Set-Content -Encoding utf8 "zip\$name\README.txt"

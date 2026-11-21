@@ -2,26 +2,31 @@
 
 A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll to an effect, shape it while it plays after everything you've already committed, then **COMMIT** it into an immutable serial chain. Each committed effect can be reordered or deleted but never edited, and the chain grows into an audio-reactive force field.
 
-![IH1 V2.1 with the Grain Engine staged over a six-effect chain (Linux, Mesa OpenGL)](docs/img/ui_v2_1_editor_gl.jpg)
+![IH1 0.4.0: a V4 preset with its macros, one committed effect bypassed, nothing staged](docs/img/ui_v4_editor.jpg)
 
 ## Status
 
-Version 0.3.0 (test build, feedback round 3). V3 is documented in `docs/V3_IMPLEMENTATION.md`; open items are in
-`docs/KNOWN_ISSUES.md`.
+Version 0.4.0 (test build, feedback round 4). V4 is documented in `docs/V4_IMPLEMENTATION.md`; open items are in
+`docs/KNOWN_ISSUES.md` (V4 section). Earlier rounds: `docs/V3_IMPLEMENTATION.md`, `docs/V2_1_IMPLEMENTATION.md`.
 
-- **44 effects**, including six new V3 modules: Degrade, Fold & Crush, Spectral Smear, Spectral Delay, Time Warp
-  (varispeed, tape stop, half-time, scrub, backspin) and Glitch Scatter, plus a shared sample-rate reducer used inside
-  Delay repeats and Grain Engine feedback. Catalogue: `docs/FX_CATALOGUE.md` (V2.1) and `docs/V3_IMPLEMENTATION.md`.
-- **67 factory presets**: Init, 5 utility presets and 61 creative presets in ten categories, 56 of them measured as
-  transformative (level-matched). `docs/FACTORY_PRESETS.md`, `docs/V3_PRESET_AUDIT_TABLE.md`, renders in `docs/audio_v3/`.
-- **Workflow:** every preset recall lands the FX wheel on None; None is the first right-click row; Init is a true
-  empty state; commit transfers integrate into the formation only when they arrive.
+![The V4 formation: one continuous field for a six-effect chain](docs/img/v4_formation_6fx.jpg)
+
+- **55 effects**, including ten new in V4: Slice Shuffler, Attack / Body, Echo Matrix, Reverse Pitch Echo,
+  Dispersion, Modal Resonator, Texture Imprint, Spectral Shatter, Partial Recomposer and Spectral Graft.
+- **148 factory presets** in ten sound-led categories, searchable by sound, source (vocals, drums, ...), intensity
+  and style inspiration. Every preset except Init has 2-4 **performance macros** (host parameters Preset Macro 1-4)
+  that move several of the chain's settings together at runtime; the committed settings themselves never change.
+- **Click-free chopping:** a registry-wide click audit drove fixes in Glitch Scatter, Stutter, Time Warp, Reverse,
+  Gate, Tremolo and the Grain Engine; continuous parameter changes now glide and discrete switches are crossfaded.
+- **Workflow:** None is an ordinary entry of the effect carousel; click a committed effect's name to bypass / enable
+  it (its settings are kept, Time & Space tails ring out); every recall lands on None; Init is a true empty state.
+- **Formation:** one continuous, audio-reactive force-field medium (no per-effect centres) of filaments, ribbons and
+  veils in the accepted palette, on a plum void; square artefacts removed (resolution floor, jittered accumulation,
+  bicubic reconstruction, dither).
 - **Output Safety:** Off / Guard (zero latency, default) / True Peak (lookahead, reported latency). No plug-in can
   guarantee speaker or hearing safety.
-- **Formation:** a ray-marched 3-D force-field volume in the accepted palette (no line strands, no blur fog).
-- **Tested on Linux:** 130 unit / behaviour / audit tests (also under ASan + UBSan), 56 VST3 host-lifecycle checks,
-  editor tests in GL and software modes, pluginval strictness 8, a 2-minute soak. Windows CI builds, tests, runs
-  pluginval and packages the setup wizard and the test-build ZIP.
+- **Tested on Linux:** unit / behaviour / audit tests, VST3 host-lifecycle checks, editor tests (GL and software),
+  click audit. Windows CI builds, tests, runs pluginval and packages the setup wizard and the installer ZIP.
 - **Not tested:** FL Studio and real GPUs. See `docs/FL_STUDIO_TEST_CHECKLIST.md`.
 
 ## Install (Windows)
@@ -63,7 +68,7 @@ The build produces:
 - `ih1_uitest`, the editor interaction test (needs a display: `xvfb-run` on Linux)
 - `fx_dump`, which prints the FX parameter schema
 
-To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.3.0 /DTestRound=3 /DSourceDir=<stage> installer\IH1.iss`.
+To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.4.0 /DTestRound=4 /DSourceDir=<stage> installer\IH1.iss`.
 
 Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching it.
 

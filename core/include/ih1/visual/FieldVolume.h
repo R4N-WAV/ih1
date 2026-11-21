@@ -65,6 +65,7 @@ struct FieldScene {
     // V4 multi-dimensional audio response: bands, stereo lean, onset density (fine turbulence), travelling pulses
     float low = 0.0f, mid = 0.0f, balance = 0.0f, turbulence = 0.0f;
     float pulseS[2] = {-1.0f, -1.0f}, pulseA[2] = {0.0f, 0.0f};
+    float detail = 1.0f;  // V4: 1 = full filament sharpness; lower for few ray steps (softer lines instead of sparkle)
     float radius = 0.3f;  // V4: base radius of the continuous medium around the spine (grows with the chain)
     float bound[4] = {0, 0, 0, 0};  // bounding sphere centre xyz + radius (radius 0 = nothing to draw)
     void computeBound();
@@ -84,7 +85,7 @@ struct PackedScene {
     int nodes = 0, links = 0, packets = 0, spineN = 0;
     float cam[4] = {0, 0, 1.6f, 0};    // yaw, pitch, aspect, time
     float audio[4] = {0, 0, 0, 0};     // energy, high, low, mid
-    float audio2[4] = {0, 0, 0.3f, 0}; // balance, turbulence, radius, -
+    float audio2[4] = {0, 0, 0.3f, 1}; // balance, turbulence, radius, detail
     float pulse[4] = {-1, 0, -1, 0};   // s0, a0, s1, a1
     float bound[4] = {0, 0, 0, 0};
 };

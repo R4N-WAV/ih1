@@ -119,3 +119,23 @@ GPU and driver, audio device and buffer size.
 - [ ] 30 minutes of playback with a demanding chain (Grain Engine, Harmony, Convolution, Reverb, Saturation, Delay) and the editor open. Note CPU, RAM in Task Manager, and any glitches.
 
 Report anything unexpected with the steps, so it can be reproduced in `ih1_hosttest` or `ih1_uitest`.
+
+## V4 (0.4.0) additions to check in FL Studio
+
+1. **Version**: the text under the IH1 wordmark reads `v0.4.0 <build>`; the installer wizard is dark with the new art.
+2. **None in the carousel**: scroll the effect list with the wheel from any effect up past the top: `NONE / NOTHING
+   STAGED` appears as a normal entry, the next step continues to the last effect; scroll back down through None.
+   The settings panel hides on None and the sound is the committed chain alone.
+3. **Bypass by name**: commit 3-4 effects (one Delay or Reverb). Click each name under the field while audio plays:
+   no click, the name greys with a hollow mark, its part of the field greys / dims; the Delay / Reverb tail rings out.
+   Click again: the exact same sound returns. Save the project, reopen: bypass states are restored.
+4. **Clicks**: stage Glitch Scatter, Stutter, Slice Shuffler, Time Warp (Tape Stop, Backspin, Half-Time with Keep Pitch),
+   Reverse and Gate (Pump) on a sustained synth pad and on drums: no unexplained ticks; drag knobs quickly; switch
+   modes and patterns while playing.
+5. **Presets**: open the browser, search "IDM", "vocals", "Extreme", "ambient". Load presets with the arrows while
+   playing. Turn the macro knobs (beside IN / MIX / OUT); automate *Preset Macro 1-4* from FL's automation clips.
+6. **New effects**: stage each of the ten new effects (Slice Shuffler, Attack / Body, Echo Matrix, Reverse Pitch
+   Echo, Dispersion, Modal Resonator, Texture Imprint, Spectral Shatter, Partial Recomposer, Spectral Graft) on voice,
+   drums and a pad; check latency compensation for the three spectral ones (Shatter, Recomposer, Graft).
+7. **Formation**: compare with the reference video / still at several window sizes and while resizing: one continuous
+   field, no per-effect orbs, no square patches, plum background (not pure black). Note the GPU and the frame rate.

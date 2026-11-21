@@ -686,6 +686,12 @@ int main() {
             if (os.openedOk()) { os.setPosition(0); os.truncate(); png.writeImageToStream(img, os); }
         };
         String msg;
+        // V4: a V4 preset (macros shown beside IN / MIX / OUT), one committed FX bypassed (greyed name and field)
+        proc->loadPresetKey("f:v4.signal_collapse", msg);
+        for (const char* extra : {"reverb", "chorus", "modal"}) { proc->uiSelect(fxTypeIndex(extra)); proc->uiCommit(); }
+        { uint64_t id1; { const ScopedLock sl(proc->sessionLock()); id1 = proc->session().chain()[1].id(); } proc->uiToggleEnabled(id1); }
+        pump(5000);
+        snap("v4_editor");
         proc->uiClearChain();
         proc->loadPresetKey("f:gm.particle_drift", msg);
         for (const char* extra : {"chorus", "delay", "harmony", "saturation"}) { proc->uiSelect(fxTypeIndex(extra)); proc->uiCommit(); }
