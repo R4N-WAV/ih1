@@ -12,8 +12,8 @@
 
 ### Audio
 - **Moving-parameter clicks remain in a few effects at extreme random jumps** (all continuous controls jumping at
-  once, every 0.35-0.9 s): see the table in `docs/V4_IMPLEMENTATION.md` section 4. Static settings are clean except
-  2 marginal cases. Known contributors: SVF shelf gain steps during a fast glide (Tape Echo Bass), Echo Matrix with
+  once, every 0.35-0.9 s): see the table in `docs/V4_IMPLEMENTATION.md` section 4. With static settings, 7 of 270 chopping-effect cases
+  still flag (Glitch 2, Time Warp 2, Grain Engine 2 with its intended feedback sample-and-hold, Granular 1), down from 47. Known contributors: SVF shelf gain steps during a fast glide (Tape Echo Bass), Echo Matrix with
   many simultaneous changes, Attack / Body Held mode.
 - **Bitcrush / Degrade at very low bit depths** produce staircase steps on slow, pure tones: that is the effect.
 - **Grain Engine Feedback Rate** (sample-and-hold inside the feedback) is intentionally stepped (V3 note).

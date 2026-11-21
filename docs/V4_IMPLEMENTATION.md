@@ -36,7 +36,7 @@ Version **0.4.0** (test build, round 4). This pass implements `IH1_V4_FEEDBACK_M
 
 | Feedback | Symptom | Root cause found | Fix | Proof |
 |---|---|---|---|---|
-| 4 (P0) | Clicks in chopping FX | Measured with the new registry-wide `tools/ih1_click_audit` (section 4). **Glitch Scatter**: leaving a Gate step crossfaded from a signal at full level that had been silent; the lo-fi stage switched per block and its reducer restarted cold. **Stutter**: pitched repeats `fmod`-wrapped the read inside a slice; a new trigger replaced an audible repeat mid-level; linear slice corners. **Time Warp**: a stale "old source = live" flag made a Backspin / Tape Stop release swap instantly; Keep Pitch switched hard at 1x; the scrub head read the empty ring before the first sample. **Reverse**: chunk length / pitch changes moved the read point mid-chunk; the host-grid snap could land inside the fade-in. **Gate / Tremolo**: instant gain edges (Pump drop, Square / Ramp shapes, 0.05 ms attack). **Grain Engine**: the grain-delay tap jumped with its control. | Per-effect fixes (section 4), a generic **parameter glide** and an engine **discrete-switch dip** | Static settings, 30 random cases per FX: **59 clicking cases -> 2** (V3 vs V4, identical detector) |
+| 4 (P0) | Clicks in chopping FX | Measured with the new registry-wide `tools/ih1_click_audit` (section 4). **Glitch Scatter**: leaving a Gate step crossfaded from a signal at full level that had been silent; the lo-fi stage switched per block and its reducer restarted cold. **Stutter**: pitched repeats `fmod`-wrapped the read inside a slice; a new trigger replaced an audible repeat mid-level; linear slice corners. **Time Warp**: a stale "old source = live" flag made a Backspin / Tape Stop release swap instantly; Keep Pitch switched hard at 1x; the scrub head read the empty ring before the first sample. **Reverse**: chunk length / pitch changes moved the read point mid-chunk; the host-grid snap could land inside the fade-in. **Gate / Tremolo**: instant gain edges (Pump drop, Square / Ramp shapes, 0.05 ms attack). **Grain Engine**: the grain-delay tap jumped with its control. | Per-effect fixes (section 4), a generic **parameter glide** and an engine **discrete-switch dip** | Static settings, 30 random cases per FX, the nine chopping / gating effects: **47 clicking cases -> 7** (V3 vs V4, identical detector) |
 | 3 | None vanishes when scrolling | `None` was not in the carousel's item list: an overlay drawn over a skipped centre row; stepping from it jumped to a remembered position | `None` is logical position 0 of the same ring (wheel, arrows, keys, clicks, menu) | `test_v4` ring test; `ih1_uitest` wheel through None both ways, 12/12 rapid steps |
 | 5 | FX tree: centres per FX, few strands, fog, dull, squares, black | The V3 volume lit a **dipole per FX** with a defined core (`kCoreGain`) and joined neighbours with link sheets. Squares: adaptive quality dropped the march to **a quarter resolution** with per-texel jitter, magnified 4x by bilinear filtering; the software fallback ran at a fifth. Background: rays outside the bound were exactly black by design. | New continuous-medium model (section 5); GL reconstruction fixes | Renders `docs/img/v4_*`; `test_field_volume` (V4) |
 | 6 | Clicking a committed name should bypass | No per-instance enable state existed | `CommittedInstance::enabled` + per-slot engine ramp | `test_v4`, `ih1_uitest` |
@@ -104,7 +104,29 @@ sustained elevations are counted as texture (a lo-fi step, a scrub), not clicks.
 
 **Results** (30 cases x 4 s per FX). V3 = the unmodified 0.3.0 tip built in a worktree, same detector.
 
-RESULTS_TABLE_PLACEHOLDER
+| Effect | V3 static | V4 static | V4 moving parameters |
+|---|---|---|---|
+| Stutter | 8 | **0** | 0 |
+| Glitch Scatter | 17 | **2** | 1 |
+| Time Warp | 5 | **2** | 2 |
+| Looper | 0 | 0 | 0 |
+| Reverse | 1 | **0** | 1 |
+| Granular Cloud | 1 | 1 | 5 |
+| Grain Engine | 2 | 2 | 7 |
+| Gate / Pump | 8 | **0** | 0 |
+| Tremolo | 5 | **0** | 0 |
+| **Chopping total** | **47** | **7** | 16 |
+| Delay / Tape Echo / Spectral FX | 0 | 0 | 0 / 6 / 0 |
+| Fold & Crush | 0 | 0 | 3 |
+| Bitcrush / Degrade (intended staircase) | 5 / 1 | 5 / 1 | 16 / 3 |
+| New: Slice Shuffler, Attack / Body, Echo Matrix | - | 0, 0, 0 | 2, 4, 7 |
+| New: Reverse Pitch Echo, Modal Resonator | - | 1, 0 | 1, 7 |
+| New: Shatter, Graft, Recomposer, Dispersion | - | 0 | 0 |
+| Texture Imprint (adds impulses by design: not a pass / fail item) | - | 30 | 30 |
+
+Moving-parameter V3 numbers (before the glide) for comparison: Delay 30, Tape Echo 27, Granular 28, Reverse 21, Grain
+Engine 21, Stutter 14, Time Warp 13. The moving test jumps half of all continuous controls to random values every
+0.35-0.9 s, a worst case far beyond knob drags or automation.
 
 Bitcrush / Degrade flags are the deliberate staircase of very low bit depths on a slow sine (the effect's sound,
 not a splice); Grain Engine's remaining flags have its deliberate Feedback Rate sample-and-hold active (V3 note).
@@ -186,11 +208,37 @@ verdict). Genre names are inspiration only; no commercial preset was copied or i
 
 ## 8. Latency, CPU
 
-LATENCY_PLACEHOLDER
+`tools/ih1_bench 48000 256 2` (one core of this container, % of real time per instance):
+
+| New FX | CPU | Reported latency |
+|---|---|---|
+| Slice Shuffler | 0.09 % | 0 |
+| Attack / Body | 0.23 % | 0 |
+| Echo Matrix | 0.58 % | 0 |
+| Reverse Pitch Echo | 0.28 % | 0 |
+| Dispersion | 2.31 % | 0 |
+| Modal Resonator | 0.28 % | 0 |
+| Texture Imprint | 0.19 % | 0 |
+| Spectral Shatter | 1.18 % | 1024 (Low / Zero mode 512) |
+| Partial Recomposer | 2.02 % | 2048 (Low / Zero mode 512) |
+| Spectral Graft | 1.11 % | 1024 (Low / Zero mode 512) |
+
+Existing FX are unchanged within noise (e.g. Delay 0.65 %, Reverb 1.72 %, Harmony 4.4 %). Reported latency equals the
+impulse-measured latency in every mode (`ih1_hosttest`). Memory: Slice Shuffler 2 x 17 s ring, Attack / Body
+2 x (0.9 + 4.5) s, Echo Matrix / Reverse Pitch Echo 2 x 9 s (rounded up to powers of two), engine per-slot bypass
+delay 4 MB. The per-slot bypass path adds one buffer copy per committed slot per block.
 
 ## 9. Evidence: what was run (Linux container, 4 cores, Mesa llvmpipe, no GPU, no Windows)
 
-VERIFY_PLACEHOLDER
+| Check | Result |
+|---|---|
+| `ih1_tests` (unit, behaviour, contract, preset and macro audits) | **148 / 148**, 16.8 M assertions (V3 baseline 130) |
+| `ih1_uitest` (real editor, events through the peer, Mesa OpenGL, `IH1_REQUIRE_GL`) | **pass**, 94 checks incl. V4: None ring both ways, 12/12 rapid wheel steps, click-to-bypass and re-enable with identical values; the V4 GL formation shader compiles and renders |
+| `ih1_hosttest` (built VST3 through JUCE's VST3 host) | **56 / 56** (latency reported == measured in every mode, +24 dB held at the ceiling, resize / reopen stress, state null test) |
+| `ih1_click_audit` static / moving | table in section 4 |
+| Formation renders | `formation_preview` 2 / 6 / 12 FX, bypass comparison, software-path reproduction |
+| pluginval, ASan / UBSan, soak | **not re-run in this pass** (CI runs pluginval on Linux and Windows) |
+| FL Studio, Windows, real GPUs, installer run | **not tested** (not available here) |
 
 ## 10. KADAL sources reused (paths from earlier rounds; not re-searched)
 
