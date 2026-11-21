@@ -93,6 +93,19 @@ public:
     int instanceCount() const { return static_cast<int>(insts_.size()); }
     bool transferActive() const;
     int pendingTransfers() const { return static_cast<int>(pending_.size()); }
+    // V3 Phase 3: explicit per-instance visual lifecycle.
+    //   Probation    : a new instance just appeared in the chain; for up to kProbation it is invisible while a
+    //                  COMMIT transfer for it may still arrive (UI/GL ordering). Without one (preset load) it then
+    //                  fades in as Integrated.
+    //   Transferring : COMMIT accepted: only the travelling packet is visible. The instance contributes nothing
+    //                  to the stable formation (no node field, no strands, no glow, no bundles towards it).
+    //   Integrated   : the packet arrived (or no transfer): its stable contribution and light fade in.
+    // Audio correctness never depends on any of this; an editor reopened mid-transfer starts Integrated.
+    enum class Life : uint8_t { Integrated = 0, Probation = 1, Transferring = 2 };
+    static constexpr float kProbation = 0.25f;
+    int lifeOf(uint64_t id) const;            // Life as int, -1 if unknown
+    float stablePresence(uint64_t id) const;  // 0..1 contribution to the stable formation (0 unless Integrated)
+    int integratedByTransfer() const { return integratedCount_; }  // transfers that completed and integrated
     float time() const { return time_; }
     float monochrome() const { return mono_; }
 
@@ -130,6 +143,8 @@ private:
         std::vector<Strand> strands;
         std::vector<std::vector<V3>> trail;  // per strand: last displayed points (temporal smoothing)
         std::vector<Pulse> pulses;
+        Life life = Life::Integrated;
+        float probation = 0.0f;
         // transfer packet
         bool transfer = false;
         float tTransfer = 0.0f;
@@ -155,6 +170,7 @@ private:
     std::vector<uint64_t> order_;  // chain order (ids)
     std::vector<Node> nodes_;      // per frame, chain order
     std::vector<Pending> pending_;
+    int integratedCount_ = 0;
     std::vector<Segment> segs_;
     std::vector<Glow> glows_;
     std::vector<V3> pts_;          // scratch

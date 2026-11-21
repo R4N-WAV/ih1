@@ -360,3 +360,110 @@ TEST_CASE("formation is robust to hostile input") {
     f.update(in);
     CHECK(f.instanceCount() == 3);
 }
+
+// ============================================================================================ V3 Phase 3
+namespace {
+// how much light the stable formation emits for one instance: its strands are counted through the instance's
+// presence; the formation as a whole is measured through segments (sum of intensity)
+float totalLight(const Formation& f) {
+    float s = 0.0f;
+    for (const auto& g : f.segments()) s += g.r + g.g + g.b;
+    for (const auto& g : f.glows()) s += g.r + g.g + g.b;
+    return s;
+}
+}  // namespace
+
+TEST_CASE("V3: a committed FX joins the stable formation only when its transfer completes") {
+    Formation f;
+    auto three = chainOf(3);
+    settle(f, three, 200);
+    auto four = chainOf(4);
+    const uint64_t id = four.chain.back().id;
+    four.transfers.push_back({id, 0.3f});
+    f.update(four);
+    four.transfers.clear();
+    CHECK(f.lifeOf(id) == static_cast<int>(Formation::Life::Transferring));
+    // during the whole flight: no stable contribution at all
+    float maxPresence = 0.0f;
+    int frames = 0;
+    while (f.lifeOf(id) == static_cast<int>(Formation::Life::Transferring) && frames < 200) {
+        maxPresence = std::max(maxPresence, f.stablePresence(id));
+        f.update(four);
+        ++frames;
+    }
+    CHECK(maxPresence == 0.0f);
+    CHECK(frames >= 50);  // ~0.95 s at 60 fps
+    CHECK(f.lifeOf(id) == static_cast<int>(Formation::Life::Integrated));
+    CHECK(f.integratedByTransfer() == 1);
+    for (int i = 0; i < 60; ++i) f.update(four);
+    CHECK(f.stablePresence(id) > 0.9f);
+}
+
+TEST_CASE("V3: without a transfer (preset load) a new instance fades in after a short probation") {
+    Formation f;
+    settle(f, chainOf(2), 100);
+    auto three = chainOf(3);
+    const uint64_t id = three.chain.back().id;
+    f.update(three);
+    CHECK(f.lifeOf(id) == static_cast<int>(Formation::Life::Probation));
+    CHECK(f.stablePresence(id) == 0.0f);
+    for (int i = 0; i < 30; ++i) f.update(three);  // 0.5 s > probation
+    CHECK(f.lifeOf(id) == static_cast<int>(Formation::Life::Integrated));
+    for (int i = 0; i < 90; ++i) f.update(three);
+    CHECK(f.stablePresence(id) > 0.9f);
+    CHECK(f.integratedByTransfer() == 0);
+}
+
+TEST_CASE("V3: duplicate / repeated transfer requests create exactly one packet; late requests never replay") {
+    Formation f;
+    settle(f, chainOf(1), 100);
+    auto two = chainOf(2);
+    const uint64_t id = two.chain.back().id;
+    two.transfers = {{id, 0.3f}, {id, 0.3f}, {id, 0.5f}};
+    f.update(two);
+    two.transfers = {{id, 0.3f}};  // the double click's second request arrives next frame
+    f.update(two);
+    two.transfers.clear();
+    for (int i = 0; i < 200; ++i) f.update(two);
+    CHECK(f.integratedByTransfer() == 1);
+    // a request for an instance that is already integrated is ignored (no phantom animation)
+    two.transfers = {{id, 0.3f}};
+    f.update(two);
+    two.transfers.clear();
+    CHECK_FALSE(f.transferActive());
+    CHECK(f.lifeOf(id) == static_cast<int>(Formation::Life::Integrated));
+}
+
+TEST_CASE("V3: many quick commits each integrate on their own arrival; preset load mid-transfer leaves no ghost") {
+    Formation f;
+    settle(f, chainOf(1), 60);
+    for (int k = 2; k <= 7; ++k) {
+        auto in = chainOf(k);
+        in.transfers.push_back({in.chain.back().id, 0.3f});
+        f.update(in);
+        for (int i = 0; i < 6; ++i) { in.transfers.clear(); f.update(in); }  // 0.1 s between commits
+    }
+    auto seven = chainOf(7);
+    for (int i = 0; i < 200; ++i) f.update(seven);
+    CHECK(f.integratedByTransfer() == 6);
+    // commit, then a different preset replaces the chain straight away
+    auto eight = chainOf(8);
+    eight.transfers.push_back({eight.chain.back().id, 0.3f});
+    f.update(eight);
+    FrameInput other;
+    other.chain = {{9001, {0.6f, 0.5f, 0.9f}, 77, 0.1f}, {9002, {0.5f, 0.5f, 0.9f}, 78, 0.1f}};
+    for (int i = 0; i < 200; ++i) f.update(other);
+    CHECK(f.instanceCount() == 2);
+    CHECK_FALSE(f.transferActive());
+    CHECK(f.pendingTransfers() == 0);
+}
+
+TEST_CASE("V3: an editor reopened during a transfer shows the committed chain integrated (no replay, nothing missing)") {
+    Formation reopened;  // a fresh Formation = a reopened editor / reset GL context
+    auto four = chainOf(4);
+    reopened.update(four);
+    for (const auto& c : four.chain) CHECK(reopened.lifeOf(c.id) == static_cast<int>(Formation::Life::Integrated));
+    CHECK_FALSE(reopened.transferActive());
+    for (int i = 0; i < 30; ++i) reopened.update(four);
+    CHECK(totalLight(reopened) > 0.0f);
+}

@@ -124,6 +124,17 @@ Formation::Formation(Quality q) : quality_(q) {
 // Light temporal smoothing only: most of the previous frame is gone after two frames, so filaments stay crisp.
 float Formation::decay(float dt) const { return std::pow(0.3f, std::clamp(dt, 0.0f, 0.2f) * 60.0f); }
 
+int Formation::lifeOf(uint64_t id) const {
+    auto f = insts_.find(id);
+    return f == insts_.end() ? -1 : static_cast<int>(f->second.life);
+}
+
+float Formation::stablePresence(uint64_t id) const {
+    auto f = insts_.find(id);
+    if (f == insts_.end() || f->second.life != Life::Integrated) return 0.0f;
+    return f->second.presence;
+}
+
 bool Formation::transferActive() const {
     for (const auto& kv : insts_) if (kv.second.transfer) return true;
     return !pending_.empty();
@@ -262,21 +273,31 @@ void Formation::layout(const FrameInput& in) {
             c.anchor = c.target;
             c.presence = first_ ? 1.0f : 0.0f;
             c.grow = first_ ? 1.0f : 0.0f;
+            // the first frame (editor opened / reopened) shows the committed chain as it is; afterwards a new
+            // instance waits invisibly for a possible COMMIT transfer
+            c.life = first_ ? Life::Integrated : Life::Probation;
+            c.probation = first_ ? 0.0f : kProbation;
         }
     }
     // transfer requests: wait for their instance (up to 2 s) instead of being dropped
-    for (const auto& tr : in.transfers) if (tr.id != 0 && pending_.size() < 64) pending_.push_back({tr, 0.0f});
+    // (one request per id: a double click or a repeated request can never create a second packet)
+    for (const auto& tr : in.transfers)
+        if (tr.id != 0 && pending_.size() < 64 && std::none_of(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.req.id == tr.id; }))
+            pending_.push_back({tr, 0.0f});
     for (auto it = pending_.begin(); it != pending_.end();) {
         auto f = insts_.find(it->req.id);
-        if (f != insts_.end() && f->second.inChain) {
+        if (f != insts_.end() && f->second.inChain && f->second.life == Life::Integrated) {
+            it = pending_.erase(it);  // already part of the stable formation (late or repeated request): no phantom
+        } else if (f != insts_.end() && f->second.inChain) {
             Inst& c = f->second;
+            c.life = Life::Transferring;
             c.transfer = true;
             c.tTransfer = 0.0f;
             c.originY = std::isfinite(it->req.originY) ? std::clamp(it->req.originY, 0.02f, 0.98f) : 0.35f;
             c.origin = unproject(0.0f, c.originY, 0.6f);
-            c.hold = kTransferDur;
+            c.hold = 0.0f;
             c.grow = 0.0f;
-            c.presence = 1.0f;
+            c.presence = 0.0f;  // V3: nothing of the stable formation until the packet has arrived
             it = pending_.erase(it);
         } else if (it->age > 2.0f) {
             it = pending_.erase(it);
@@ -369,6 +390,8 @@ void Formation::emitStrand(Inst& inst, int ni, int si, float lengthFrac, float d
         const V3 aim = mul(norm({s.start.z, s.start.x, s.start.y}), 1.0f);
         if (fromInput) {
             goal = add(node.p, mul(aim, node.radius * 2.2f));
+        } else if (target < nn && nodes_[static_cast<size_t>(target)].strength <= 0.0f) {
+            return;  // V3: no bundle reaches an instance that has not integrated yet
         } else if (target < nn) {
             goal = add(nodes_[static_cast<size_t>(target)].p, mul(aim, nodes_[static_cast<size_t>(target)].radius * (1.8f + 1.6f * std::fabs(s.start.x))));
             const auto& other = insts_.find(order_[static_cast<size_t>(target)]);
@@ -497,8 +520,16 @@ void Formation::update(const FrameInput& in) {
             c.presence -= dt / 0.6f;
             c.pulses.clear();
             if (c.presence <= 0.0f) { it = insts_.erase(it); continue; }
+        } else if (c.life == Life::Probation) {
+            c.presence = 0.0f;
+            c.grow = 0.0f;
+            c.probation -= dt;
+            if (c.probation <= 0.0f) c.life = Life::Integrated;  // no transfer came: a plain fade-in (preset load)
+        } else if (c.life == Life::Transferring) {
+            c.presence = 0.0f;
+            c.grow = 0.0f;
         } else {
-            if (!c.transfer) c.presence = std::min(1.0f, c.presence + dt / 0.9f);
+            c.presence = std::min(1.0f, c.presence + dt / (c.transfer ? 0.35f : 0.9f));
             if (c.hold > 0.0f) c.hold -= dt;
             else c.grow = std::min(1.0f, c.grow + dt / 1.2f);
         }
@@ -510,8 +541,13 @@ void Formation::update(const FrameInput& in) {
         c.axis = norm(add(c.axisBase, prec));
         if (c.transfer) {
             c.tTransfer += dt;
-            if (c.tTransfer >= kTransferDur && c.tTransfer - dt < kTransferDur && c.pulses.size() < 4) c.pulses.push_back({0.0f, 1.0f, true});
-            if (c.tTransfer > kTransferDur + 0.3f) c.transfer = false;
+            if (c.life == Life::Transferring && c.tTransfer >= kTransferDur) {
+                // arrival: the completion event. Only now does the instance join the stable formation.
+                c.life = Life::Integrated;
+                ++integratedCount_;
+                if (c.pulses.size() < 4) c.pulses.push_back({0.0f, 1.0f, true});
+            }
+            if (c.tTransfer > kTransferDur + 0.3f) c.transfer = false;  // the packet's tail has faded
         }
         it = std::next(it);
     }
@@ -548,7 +584,8 @@ void Formation::update(const FrameInput& in) {
     nodes_.clear();
     for (size_t i = 0; i < order_.size(); ++i) {
         const Inst& c = insts_[order_[i]];
-        const float strength = (0.35f + 0.65f * c.presence) * (1.0f + 0.25f * energy_ + 0.3f * c.bright);
+        // a node that is not integrated has no field at all (it must not bend other nodes' field lines either)
+        const float strength = c.life != Life::Integrated ? 0.0f : (0.35f + 0.65f * c.presence) * (1.0f + 0.25f * energy_ + 0.3f * c.bright);
         nodes_.push_back({c.anchor, c.axis, strength, 0.16f + 0.05f * c.bright, static_cast<int>(i)});
     }
 
