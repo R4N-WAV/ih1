@@ -358,6 +358,7 @@ class SpectralSmear final : public FxBase {
             ownPh_[c].assign(B, 0.0f);
         }
         alive_.assign(B, 1.0f);
+        jit_.assign(B, 0.0f);
         aliveT_.assign(B, 1);
         gateOpen_.assign(B, 0);
         mix_.prepare(sr_, maxBlock_, n_, MixLaw::Linear);
@@ -468,9 +469,11 @@ class SpectralSmear final : public FxBase {
                     if (ownPh_[c][kk] > 1000.0f) ownPh_[c][kk] = std::fmod(ownPh_[c][kk], dsp::kTwoPi);
                     const float own = an.mag[kk];
                     const float borrow = mag > 1e-12f ? std::clamp(1.0f - own / mag, 0.0f, 1.0f) : 0.0f;
-                    const float jit = scatter * rng_.bipolar();
+                    // stereo-coherent scatter: one random phase per bin and frame, shared by both channels (mono-safe)
+                    if (c == 0) jit_[kk] = rng_.bipolar();
+                    const float jit = scatter * jit_[kk];
                     cfloat y = std::polar(mag * (1.0f - borrow), an.phase[kk] + jit) + std::polar(mag * borrow, ownPh_[c][kk] + jit);
-                    if (ha > 0.0f) y = (1.0f - ha) * y + ha * std::polar(held_[c][kk], outPh_[c][kk] + scatter * rng_.bipolar());
+                    if (ha > 0.0f) y = (1.0f - ha) * y + ha * std::polar(held_[c][kk], outPh_[c][kk] + jit);
                     float g = alive_[kk];
                     if (gateOn && !gateOpen_[kk]) g *= 0.02f;
                     if (k > cutBin) g *= std::max(0.0f, 1.0f - static_cast<float>(k - cutBin) / (0.15f * static_cast<float>(B)));
@@ -494,7 +497,7 @@ class SpectralSmear final : public FxBase {
     int n_ = 2048, hop_ = 512;
     dsp::Stft stft_[2];
     dsp::SpectralAnalysis ana_[2];
-    std::vector<float> mem_[2], held_[2], heldW_[2], outPh_[2], up_[2], dn_[2], ownPh_[2], alive_;
+    std::vector<float> mem_[2], held_[2], heldW_[2], outPh_[2], up_[2], dn_[2], ownPh_[2], alive_, jit_;
     std::vector<uint8_t> aliveT_, gateOpen_;
     dsp::Rng rng_{0x55AAu};
     float holdAmt_ = 0.0f;

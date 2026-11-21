@@ -12,8 +12,9 @@ namespace ih1 {
 
 const std::vector<std::string>& presetCategories() {
     // V2.1 categories (feedback 7). The last one, "User", holds user presets.
-    static const std::vector<std::string> c = {"Init / Utility", "Essentials", "Granular Motion", "Stretch & Smear", "Glitch & Rhythm", "Vocal Transformations",
-                                               "Atmospheres", "Harmonic & Tonal", "Movement & Width", "Character & Dirt", "Experimental", "User"};
+    // V3 categories (Phase 7.2). The last one, "User", holds user presets.
+    static const std::vector<std::string> c = {"Init / Utility", "Grime & Dirt", "Stretch & Smear", "Pitch Mutation", "Rhythmic Damage", "Granular Worlds",
+                                               "Spectral Objects", "Feedback Machines", "Vocal Transformations", "Cinematic / Spatial", "Hybrid / Experimental", "User"};
     return c;
 }
 
@@ -21,309 +22,217 @@ namespace {
 using P = std::vector<std::pair<std::string, float>>;
 
 std::vector<FactoryPreset> build() {
+    // V3 factory bank (Phase 7.2 / 7.3): Init + utility presets, then ten creative categories. The creative presets
+    // are designed wet-forward: the dry signal is not kept "for safety"; each one has a deliberate signal path and is
+    // audited for its transformation (tools/ih1_preset_audit, docs/V3_PRESET_AUDIT.md). Ids of V2.1 presets whose
+    // concept continues are kept (projects store "f:<id>"), with revised, bolder values.
     std::vector<FactoryPreset> v;
-    auto add = [&](const char* id, const char* name, const char* cat, const char* desc, std::vector<PresetFx> chain) {
-        v.push_back({id, name, cat, desc, 1, std::move(chain), ""});
+    auto add = [&](const char* id, const char* name, const char* cat, const char* tags, const char* desc, std::vector<PresetFx> chain) {
+        v.push_back({id, name, cat, desc, 2, std::move(chain), tags});
     };
-    // V2.1: category + source tags in one call
-    auto addT = [&](const char* id, const char* name, const char* cat, const char* tags, const char* desc, std::vector<PresetFx> chain) {
-        v.push_back({id, name, cat, desc, 1, std::move(chain), tags});
-    };
+    const char* U = "Init / Utility";
+    const char* G = "Grime & Dirt";
+    const char* S = "Stretch & Smear";
+    const char* PM = "Pitch Mutation";
+    const char* R = "Rhythmic Damage";
+    const char* GW = "Granular Worlds";
+    const char* SO = "Spectral Objects";
+    const char* FM = "Feedback Machines";
+    const char* VT = "Vocal Transformations";
+    const char* CS = "Cinematic / Spatial";
+    const char* HX = "Hybrid / Experimental";
 
-    addT(kInitPresetId, "Init", "Init / Utility", "any source", "The clean starting state: no committed FX, nothing staged, every setting at its default.", {});
+    // ================================================================== Init / Utility (enhancement, not creative)
+    v.push_back({kInitPresetId, "Init", U, "The clean starting state: no committed FX, nothing staged, every setting at its default.", 2, {}, "any source"});
+    add("ess.mix_glue", "Mix Glue", U, "full mix, drums, bass", "Gentle bus compression into soft tape: glue and weight, nothing more.",
+        {{"compressor", P{{"threshold", -18}, {"ratio", 2}, {"attack", 20}, {"release", 200}}}, {"tape_colour", P{{"drive", 4}}}});
+    add("ess.plate_vocal", "Velvet Plate", U, "vocals", "A vocal chain: de-ess, presence, levelling and a short plate.",
+        {{"deesser", P{{"threshold", -10}}}, {"eq", P{{"hp", 90}, {"b2_freq", 3200}, {"b2_gain", 2}}}, {"compressor", P{{"threshold", -22}, {"ratio", 3}}},
+         {"reverb", P{{"mode", 2}, {"decay", 1.6f}, {"mix", 18}}}});
+    add("ess.clean_slap", "Clean Slap", U, "vocals, guitars, drums", "A tight slapback and a small room: depth without blur.",
+        {{"delay", P{{"sync", 0}, {"time_ms", 95}, {"feedback", 12}, {"mix", 22}}}, {"reverb", P{{"mode", 0}, {"decay", 0.7f}, {"mix", 14}}}});
+    add("ess.quarter_throw", "Quarter Throw", U, "vocals, keys, synths", "Tempo echoes on the quarter note, filtered to sit behind the source.",
+        {{"delay", P{{"sync", 1}, {"division", 10}, {"stereo", 2}, {"feedback", 30}, {"high_cut", 4500}, {"mix", 25}}}, {"reverb", P{{"mode", 1}, {"decay", 2.0f}, {"mix", 12}}}});
+    add("ton.warm_console", "Warm Console", U, "full mix, drums, bass, keys", "Console warmth, a firmer attack and a lifted top.",
+        {{"transient", P{{"attack", 12}}}, {"tape_colour", P{{"mode", 1}, {"drive", 5}, {"out", -2}}}, {"exciter", P{{"amount", 15}}}});
 
-    // ------------------------------------------------------------------ Atmospheres
-    add("atm.slow_horizon", "Slow Horizon", "Atmospheres", "A vast, darkened cathedral that blooms slowly behind the source and opens wide.",
-        {{"eq", P{{"hp", 120}, {"hs_freq", 7000}, {"hs_gain", -3}}},
-         {"reverb", P{{"mode", 4}, {"decay", 9}, {"size", 85}, {"predelay", 60}, {"damping", 55}, {"mix", 38}}},
-         {"width", P{{"width", 140}, {"mono_below", 150}}}});
-    add("atm.glass_cathedral", "Glass Cathedral", "Atmospheres", "Octave and fifth shimmer rising out of a long tail, gently chorused.",
-        {{"shimmer", P{{"decay", 12}, {"size", 75}, {"shift1", 12}, {"shift2", 19}, {"regen", 45}, {"tone", 6500}, {"mix", 35}}},
-         {"chorus", P{{"rate", 0.2f}, {"depth", 30}, {"mix", 30}}}});
-    add("atm.under_ice", "Under Ice", "Atmospheres", "Muffled and submerged: low-passed, bloomed through a strange space, edges blurred.",
-        {{"filter", P{{"type", 0}, {"cutoff", 2400}, {"resonance", 15}}},
-         {"convolution", P{{"ir", 4}, {"length", 90}, {"mix", 45}}},
-         {"spectral", P{{"blur", 60}, {"smear", 30}, {"mix", 30}}}});
-    add("atm.afterglow", "Afterglow", "Atmospheres", "Worn tape repeats with a slow wobble, fading into a soft plate.",
-        {{"vibrato", P{{"depth", 12}, {"rate", 0.6f}}},
-         {"tape_echo", P{{"time_ms", 420}, {"intensity", 55}, {"wow", 30}, {"age", 50}, {"mix", 30}}},
-         {"reverb", P{{"mode", 2}, {"decay", 4}, {"mix", 30}}},
-         {"tape_colour", P{{"drive", 4}}}});
+    // ================================================================== Grime & Dirt
+    add("cd.lofi_sampler", "Sampler Ghost", G, "drums, keys, loops, vocals", "A vintage 12-bit sampler at 26 kHz: rounded highs, held-sample grain, a little hiss and drift.",
+        {{"degrade", P{{"rate", 26000}, {"bits", 12}, {"anti_alias", 1}, {"reconstruct", 1}, {"bandwidth", 15}, {"drive", 3}, {"wobble", 8}, {"noise", 12}}},
+         {"tape_colour", P{{"drive", 5}, {"hf_loss", 3}}}});
+    add("g3.alias_grinder", "Alias Grinder", G, "drums, synths, bass, full mix", "Raw 3.2 kHz sample-and-hold with no anti-alias filter: highs fold back as metallic, inharmonic grit.",
+        {{"degrade", P{{"rate", 3200}, {"bits", 7}, {"anti_alias", 0}, {"reconstruct", 0}, {"bandwidth", 0}, {"drive", 9}, {"jitter", 25}, {"noise", 0}, {"mix", 100}}},
+         {"eq", P{{"hp", 60}, {"lp", 14000}}}});
+    add("cd.cassette", "Bin Cassette", G, "vocals, keys, guitars, loops", "A chewed tape found in a skip: narrow band, warped speed, crushed dynamics.",
+        {{"degrade", P{{"rate", 16000}, {"bits", 10}, {"bandwidth", 55}, {"wobble", 45}, {"noise", 30}, {"drive", 8}}},
+         {"vibrato", P{{"depth", 28}, {"rate", 0.7f}}}, {"compressor", P{{"mode", 2}, {"threshold", -30}, {"ratio", 6}, {"auto_makeup", 0}, {"makeup", 4}}}});
+    add("ton.fold_space", "Folded Steel", G, "synths, bass, drums, guitars", "Hard wavefolding that bites harder the louder you play, darkened afterwards: a metallic, ringing distortion.",
+        {{"fold_crush", P{{"drive", 20}, {"fold", 90}, {"bias", 25}, {"dynamics", 60}, {"crush", 0}, {"tone", 7000}}}, {"filter", P{{"type", 0}, {"cutoff", 6000}, {"resonance", 20}}}});
+    add("g3.splinter_hits", "Splinter Hits", G, "drums, percussion, loops", "Only the transients are crushed into splinters; the body stays thick and folded.",
+        {{"fold_crush", P{{"drive", 14}, {"fold", 40}, {"crush", 90}, {"target", 0}, {"tone", 15000}}}, {"compressor", P{{"mode", 1}, {"threshold", -24}, {"ratio", 8}, {"attack", 1}}}});
+    add("cd.blown_speaker", "Blown Radio", G, "vocals, guitars, drums", "A transistor radio pushed into a torn speaker: boxy band, fizz and rattle.",
+        {{"degrade", P{{"rate", 11000}, {"bits", 9}, {"bandwidth", 85}, {"drive", 16}, {"noise", 15}}}, {"amp", P{{"gain", 26}, {"cab", 1}, {"mid", 6}, {"out", -14}}},
+         {"saturation", P{{"style", 3}, {"drive", 12}}}});
+    add("g3.bitrot_echo", "Bitrot Echo", G, "vocals, synths, guitars, drums", "Every repeat comes back at a lower sample rate and bit depth, rotting a little more each time.",
+        {{"delay", P{{"sync", 1}, {"division", 8}, {"stereo", 2}, {"feedback", 72}, {"high_cut", 9000}, {"mix", 55}, {"lofi_rate", 5000}, {"lofi_bits", 8}}},
+         {"bitcrush", P{{"bits", 10}, {"rate", 22050}, {"mix", 60}}}});
 
-    // ------------------------------------------------------------------ Voices
-    add("voc.choir_of_one", "Choir of One", "Voices", "Three in-key harmonies, doubled and placed in a modest hall.",
-        {{"harmony", P{{"mode", 1}, {"voices", 2}, {"detune", 8}, {"wet", -3}}},
-         {"doubler", P{{"mix", 40}}},
-         {"reverb", P{{"mode", 1}, {"decay", 2.8f}, {"mix", 22}}}});
-    add("voc.wide_double", "Wide Double", "Voices", "A natural four-voice double, a lifted presence band, gently levelled.",
-        {{"doubler", P{{"detune", 12}, {"delay_ms", 22}, {"width", 100}, {"voices", 1}, {"mix", 55}}},
-         {"eq", P{{"b2_freq", 3500}, {"b2_gain", 2}}},
-         {"compressor", P{{"threshold", -22}, {"ratio", 3}}}});
-    add("voc.octave_ghost", "Octave Ghost", "Voices", "Octaves above and below, darker formants, with backwards echoes trailing behind.",
-        {{"pitch_shift", P{{"shift_a", 12}, {"shift_b", -12}, {"level_b", -10}, {"mix", 35}}},
-         {"formant", P{{"shift", -3}, {"mix", 60}}},
-         {"reverse", P{{"mode", 1}, {"mix", 25}}},
-         {"reverb", P{{"mode", 3}, {"mix", 25}}}});
-    add("voc.tuned_glide", "Tuned Glide", "Voices", "Firm pitch correction in A minor, doubled, with a quiet quarter-note echo.",
-        {{"pitch_correct", P{{"key", 9}, {"scale", 1}, {"speed", 20}}},
-         {"doubler", P{{"mix", 35}}},
-         {"delay", P{{"sync", 1}, {"division", 10}, {"feedback", 25}, {"mix", 18}}}});
+    // ================================================================== Stretch & Smear
+    add("ss.glacier", "Glacier", S, "pads, vocals, keys, field", "Frozen into a slowly melting spectrum: seconds of spectral memory, smeared across pitch.",
+        {{"spectral_smear", P{{"smear", 85}, {"time", 92}, {"scatter", 65}, {"out", 4}, {"mix", 100}}}, {"reverb", P{{"mode", 4}, {"decay", 10}, {"mix", 40}}}});
+    add("ss.half_time_haze", "Molasses", S, "drums, vocals, loops, keys", "Half-time playback with the pitch kept, then smeared: everything drags and blurs.",
+        {{"time_warp", P{{"mode", 2}, {"division", 13}, {"keep_pitch", 1}, {"mix", 100}}}, {"spectral_smear", P{{"smear", 35}, {"time", 55}, {"scatter", 20}, {"mix", 100}}}});
+    add("ss.tape_slow", "Taffy Pull", S, "vocals, guitars, keys, pads", "A granular quarter-speed stretch that pulls phrases out like taffy, pitch intact.",
+        {{"grain_engine", P{{"mode", 1}, {"speed", 0.25f}, {"size_ms", 160}, {"density", 30}, {"spray_ms", 40}, {"align", 1}, {"gain", -3}, {"mix", 100}}},
+         {"spectral_smear", P{{"smear", 25}, {"time", 30}, {"scatter", 10}, {"mix", 70}}}});
+    add("ss.smear_field", "Smear Field", S, "field, pads, vocals, full mix", "No pitch, no attack: a dense cloud of the source's colours with the phase scattered away.",
+        {{"spectral_smear", P{{"smear", 95}, {"bias", 30}, {"time", 70}, {"scatter", 90}, {"out", 6}, {"mix", 100}}}, {"width", P{{"width", 140}}}});
+    add("ss.quarter_drift", "Varispeed Sink", S, "vocals, drums, guitars, loops", "Tape playback at 0.6x: everything sinks a fifth and a half and slows, with wow.",
+        {{"time_warp", P{{"mode", 0}, {"speed", 0.6f}, {"mix", 100}}}, {"tape_colour", P{{"drive", 8}, {"hf_loss", 5}}}, {"vibrato", P{{"depth", 18}, {"rate", 0.5f}}}});
+    add("s3.frozen_bloom", "Frozen Bloom", S, "pads, keys, vocals, guitars", "A spectral hold blooms out of the source and hangs, with grains glittering through it.",
+        {{"spectral", P{{"freeze", 1}, {"fade_ms", 1500}, {"blur", 70}, {"smear", 30}, {"shimmer", 40}, {"mix", 100}}},
+         {"grain_engine", P{{"mode", 0}, {"density", 14}, {"pitch_jit", 12}, {"scale", 1}, {"spray_ms", 900}, {"mix", 45}}}});
 
-    // ------------------------------------------------------------------ Fragments
-    add("frg.glass_grains", "Glass Grains", "Fragments", "Octave-up grains scattered forwards and backwards into a long hall.",
-        {{"granular", P{{"size_ms", 60}, {"density", 30}, {"spray_ms", 600}, {"pitch", 12}, {"reverse", 30}, {"mix", 55}}},
-         {"reverb", P{{"mode", 1}, {"decay", 5}, {"mix", 30}}}});
-    add("frg.backwards_letters", "Backwards Letters", "Fragments", "Phrases played back in reverse, smeared, then bounced across the stereo field.",
-        {{"reverse", P{{"mode", 0}, {"sync", 1}, {"division", 11}, {"mix", 60}}},
-         {"spectral", P{{"blur", 30}, {"mix", 25}}},
-         {"delay", P{{"stereo", 2}, {"feedback", 30}, {"mix", 20}}}});
-    add("frg.frozen_breath", "Frozen Breath", "Fragments", "A smeared spectral haze with sparse grains drifting through it, very wide.",
-        {{"spectral", P{{"blur", 70}, {"smear", 50}, {"shimmer", 30}, {"mix", 55}}},
-         {"granular", P{{"density", 12}, {"spray_ms", 900}, {"mix", 30}}},
-         {"width", P{{"width", 150}}}});
-    add("frg.loop_ghost", "Loop Ghost", "Fragments", "Captures two bars, then lets them dissolve an octave down into a small space.",
-        {{"looper", P{{"length", 3}, {"overdub", 20}, {"mix", 50}}},
-         {"granular", P{{"density", 8}, {"pitch", -12}, {"mix", 35}}},
-         {"reverb", P{{"mode", 3}, {"mix", 25}}}});
+    // ================================================================== Pitch Mutation
+    add("gm.octave_dust", "Octave Fracture", PM, "vocals, keys, guitars, synths", "Every grain lands on a different octave, two below to two above: the melody shatters across the register.",
+        {{"grain_engine", P{{"mode", 0}, {"size_ms", 90}, {"density", 45}, {"pitch_jit", 24}, {"scale", 1}, {"spray_ms", 200}, {"spread", 90}, {"mix", 100}}},
+         {"reverb", P{{"mode", 1}, {"decay", 3.5f}, {"mix", 25}}}});
+    add("vt.giant", "Sub Mutant", PM, "vocals, drums, synths, bass", "Down two octaves with darker formants, folded into a growling mass.",
+        {{"pitch_shift", P{{"shift_a", -24}, {"shift_b", -12}, {"level_b", -6}, {"preserve", 0}, {"mix", 100}}}, {"fold_crush", P{{"drive", 10}, {"fold", 30}, {"crush", 0}, {"tone", 5000}}}});
+    add("p3.reverse_fifths", "Reverse Fifths", PM, "keys, guitars, pads, vocals", "Backwards grains stacked in fifths and octaves: an inside-out chord of the source.",
+        {{"grain_engine", P{{"mode", 0}, {"size_ms", 240}, {"density", 22}, {"pitch_jit", 19}, {"scale", 2}, {"reverse", 85}, {"spray_ms", 500}, {"mix", 100}}},
+         {"reverb", P{{"mode", 6}, {"decay", 3}, {"mix", 30}}}});
+    add("gm.minor_scatter", "Minor Swarm", PM, "keys, synths, guitars, vocals", "A swarm of short grains snapped to a minor scale over three octaves.",
+        {{"grain_engine", P{{"size_ms", 45}, {"density", 90}, {"pitch_jit", 14}, {"scale", 4}, {"spray_ms", 300}, {"stereo", 1}, {"mix", 100}}},
+         {"chorus", P{{"depth", 30}, {"mix", 30}}}});
+    add("p3.ring_mutant", "Ring Mutant", PM, "vocals, drums, synths", "A drifting ring modulator into an octave-up shift: pitch becomes inharmonic metal.",
+        {{"ring_mod", P{{"freq", 310}, {"mod_depth", 60}, {"mod_rate", 0.3f}, {"mix", 85}}}, {"pitch_shift", P{{"shift_a", 12}, {"shift_b", 7}, {"level_b", -8}, {"mix", 100}}}});
+    add("p3.glide_bend", "Tape Bend", PM, "vocals, guitars, keys, loops", "The playhead bends up and down behind the input: a seasick, pitch-swinging scrub.",
+        {{"time_warp", P{{"mode", 3}, {"scrub_rate", 0.4f}, {"scrub_depth", 260}, {"mix", 100}}}, {"tape_colour", P{{"drive", 6}}}});
 
-    // ------------------------------------------------------------------ Motion
-    add("mot.tidal_chorus", "Tidal Chorus", "Motion", "A slow, deep four-voice chorus that drifts from side to side on the half note.",
-        {{"chorus", P{{"voices", 3}, {"rate", 0.25f}, {"depth", 60}, {"vintage", 40}, {"mix", 50}}},
-         {"tremolo", P{{"mode", 1}, {"sync", 1}, {"division", 13}, {"depth", 50}}}});
-    add("mot.jet_wash", "Jet Wash", "Motion", "A slow, resonant through-zero sweep in a tight room.",
-        {{"flanger", P{{"rate", 0.08f}, {"feedback", 70}, {"depth", 4}}},
-         {"reverb", P{{"mode", 0}, {"decay", 1.2f}, {"mix", 18}}}});
-    add("mot.spiral_stairs", "Spiral Stairs", "Motion", "Ten-stage phasing into a frequency-shifted feedback loop that endlessly climbs.",
-        {{"phaser", P{{"stages", 4}, {"rate", 0.15f}, {"feedback", 60}, {"range", 4}}},
-         {"freq_shift", P{{"shift", 3}, {"feedback", 40}, {"delay_ms", 200}, {"mix", 40}}},
-         {"width", P{{"width", 130}}}});
-    add("mot.leslie_room", "Leslie Room", "Motion", "Slow rotary speaker with a little drive, warmed on tape, in a small room.",
-        {{"rotary", P{{"speed", 0}, {"drive", 30}}},
-         {"tape_colour", P{{"drive", 6}}},
-         {"reverb", P{{"mode", 0}, {"decay", 0.9f}, {"mix", 15}}}});
+    // ================================================================== Rhythmic Damage
+    add("gr.slice_retrigger", "Scatter Grid", R, "drums, loops, vocals, full mix", "Sixteenth steps become micro-loops, reversed pieces and jumps back in time: a different break every bar, the same every playback.",
+        {{"glitch", P{{"division", 4}, {"repeat", 40}, {"ratchet", 4}, {"reverse", 20}, {"jump", 25}, {"pitch", 10}, {"gate", 10}, {"lofi", 30}, {"mix", 100}}},
+         {"compressor", P{{"mode", 1}, {"threshold", -20}, {"ratio", 4}}}});
+    add("r3.tape_stop_bars", "Brake Every Two", R, "drums, loops, full mix, bass", "The tape winds down to a stop at the end of every second bar and snaps back on the one.",
+        {{"time_warp", P{{"mode", 1}, {"trigger", 3}, {"division", 13}, {"stop_ms", 900}, {"curve", 40}, {"mix", 100}}}, {"saturation", P{{"style", 1}, {"drive", 6}}}});
+    add("gr.backspin", "Backspin Bars", R, "drums, vocals, loops", "A fast reverse spin-out at the end of every bar.",
+        {{"time_warp", P{{"mode", 4}, {"trigger", 2}, {"division", 10}, {"stop_ms", 400}, {"mix", 100}}}, {"filter", P{{"type", 2}, {"cutoff", 80}}}});
+    add("gr.buffer_roll", "Ratchet Rolls", R, "drums, loops, percussion", "Eighth-note steps that roll into eight-fold ratchets, crushed on the glitched steps.",
+        {{"glitch", P{{"division", 7}, {"repeat", 70}, {"ratchet", 8}, {"reverse", 5}, {"jump", 5}, {"pitch", 5}, {"gate", 5}, {"lofi", 60}, {"seed", 21}, {"mix", 100}}},
+         {"delay", P{{"sync", 1}, {"division", 4}, {"feedback", 20}, {"mix", 15}}}});
+    add("gr.halftime_chop", "Halftime Chop", R, "drums, loops, vocals", "Quarter-note slices played at half speed (an octave down), gated on the eighths.",
+        {{"time_warp", P{{"mode", 2}, {"division", 10}, {"mix", 100}}}, {"gate", P{{"mode", 2}, {"division", 7}, {"curve", 70}}}});
+    add("rhy.stutter_bloom", "Stutter Bloom", R, "vocals, drums, synths", "Bar-wise stutters that step down in pitch and bloom into a reversed space.",
+        {{"stutter", P{{"interval", 2}, {"gate", 4}, {"slice", 2}, {"chance", 80}, {"pitch", -2}, {"decay", 20}}},
+         {"glitch", P{{"division", 4}, {"repeat", 15}, {"reverse", 25}, {"jump", 10}, {"gate", 15}, {"mix", 100}}}, {"reverb", P{{"mode", 6}, {"decay", 2.5f}, {"mix", 30}}}});
 
-    // ------------------------------------------------------------------ Rhythmic
-    add("rhy.dotted_rain", "Dotted Rain", "Rhythmic", "Dotted-eighth ping-pong repeats, thinned below and softened above, on a plate.",
-        {{"filter", P{{"type", 2}, {"cutoff", 300}, {"resonance", 10}}},
-         {"delay", P{{"sync", 1}, {"division", 8}, {"stereo", 2}, {"feedback", 45}, {"high_cut", 5000}, {"mix", 35}}},
-         {"reverb", P{{"mode", 2}, {"decay", 2.2f}, {"mix", 15}}}});
-    add("rhy.stutter_bloom", "Stutter Bloom", "Rhythmic", "Bar-wise sixteenth stutters that echo and bloom into space.",
-        {{"stutter", P{{"interval", 2}, {"gate", 3}, {"slice", 2}, {"chance", 60}}},
-         {"delay", P{{"sync", 1}, {"division", 4}, {"feedback", 30}, {"mix", 25}}},
-         {"reverb", P{{"decay", 2.5f}, {"mix", 20}}}});
-    add("rhy.gated_pulse", "Gated Pulse", "Rhythmic", "Eighth-note pumping into a tempo-synced filter sweep and a quarter-note echo.",
-        {{"gate", P{{"mode", 2}, {"division", 7}, {"curve", 60}}},
-         {"filter", P{{"type", 1}, {"cutoff", 900}, {"resonance", 35}, {"mod", 1}, {"sync", 1}, {"division", 10}, {"depth", 2}}},
-         {"delay", P{{"sync", 1}, {"division", 10}, {"feedback", 25}, {"mix", 20}}}});
-    add("rhy.tape_triplets", "Tape Triplets", "Rhythmic", "Three tape heads on quarter-note triplets, saturated like an old echo unit.",
-        {{"tape_echo", P{{"sync", 1}, {"division", 9}, {"heads", 6}, {"intensity", 50}, {"mix", 35}}},
-         {"saturation", P{{"style", 1}, {"drive", 6}}}});
+    // ================================================================== Granular Worlds
+    add("gm.particle_drift", "Particle Drift", GW, "vocals, keys, pads, guitars", "Long grains drifting seconds behind the source, reversed and spread wide: the phrase dissolves into motion.",
+        {{"grain_engine", P{{"mode", 0}, {"size_ms", 420}, {"density", 12}, {"position_ms", 1500}, {"spray_ms", 1500}, {"reverse", 45}, {"pitch_jit", 3}, {"spread", 100}, {"stereo", 1}, {"mix", 100}}},
+         {"reverb", P{{"mode", 1}, {"decay", 4}, {"mix", 30}}}});
+    add("gm.swarm", "Insect Choir", GW, "vocals, field, synths, drums", "Thousands of 15 ms grains, pitch-scattered and panned: the source becomes a buzzing, living swarm.",
+        {{"grain_engine", P{{"size_ms", 15}, {"density", 200}, {"voices", 64}, {"pitch_jit", 9}, {"spray_ms", 800}, {"spread", 100}, {"stereo", 1}, {"window", 1}, {"gain", -6}, {"mix", 100}}},
+         {"filter", P{{"type", 2}, {"cutoff", 300}}}});
+    add("frg.frozen_breath", "Frozen Breath", GW, "vocals, pads, keys", "The moment is frozen; a slow playhead scans it endlessly while grains bloom over it.",
+        {{"grain_engine", P{{"mode", 1}, {"freeze", 1}, {"speed", 0.08f}, {"size_ms", 300}, {"density", 20}, {"spray_ms", 200}, {"pitch_jit", 2}, {"mix", 100}}},
+         {"spectral_smear", P{{"smear", 30}, {"time", 40}, {"scatter", 20}, {"mix", 60}}}});
+    add("gm.cascade", "Grain Cascade", GW, "keys, guitars, vocals, synths", "Grains fed back into themselves through a darkening, lo-fi loop: an evolving, regenerating cascade.",
+        {{"grain_engine", P{{"size_ms", 180}, {"density", 25}, {"spray_ms", 400}, {"pitch", 7}, {"feedback", 70}, {"delay_ms", 380}, {"fb_lp", 5000}, {"fb_rate", 14000}, {"fb_drive", 6}, {"mix", 100}}},
+         {"compressor", P{{"threshold", -24}, {"ratio", 3}}}});
+    add("frg.loop_ghost", "Loop Ghost", GW, "vocals, drums, loops, keys", "Holds a second of audio and cycles it backwards at half speed: a ghost of the phrase.",
+        {{"grain_engine", P{{"mode", 2}, {"loop_ms", 1000}, {"speed", -0.5f}, {"size_ms", 140}, {"density", 30}, {"spray_ms", 20}, {"mix", 100}}},
+         {"reverb", P{{"mode", 3}, {"decay", 2}, {"mix", 35}}}});
+    add("gm.wide_grains", "Stereo Rain", GW, "drums, percussion, field, keys", "Independent left and right grain streams of short plucked grains: rain across the stereo field.",
+        {{"grain_engine", P{{"size_ms", 35}, {"density", 70}, {"window", 3}, {"stereo", 1}, {"spread", 100}, {"spray_ms", 1200}, {"reverse", 30}, {"mix", 100}}},
+         {"delay", P{{"sync", 1}, {"division", 6}, {"stereo", 2}, {"feedback", 35}, {"mix", 25}}}});
 
-    // ------------------------------------------------------------------ Tone & Destruction
-    add("ton.broken_transistor", "Broken Transistor", "Tone & Destruction", "A cranked small combo, partly crushed, slammed by a fast compressor.",
-        {{"amp", P{{"gain", 32}, {"cab", 1}, {"presence", 4}}},
-         {"bitcrush", P{{"bits", 10}, {"rate", 18000}, {"mix", 60}}},
-         {"compressor", P{{"mode", 1}, {"threshold", -18}, {"ratio", 6}}}});
-    add("ton.warm_console", "Warm Console", "Tone & Destruction", "Subtle polish: gentle shelves, a softened attack, opto levelling and console drive.",
-        {{"eq", P{{"hp", 30}, {"ls_gain", 2}, {"hs_gain", 1.5f}}},
-         {"transient", P{{"attack", -20}, {"sustain", 10}}},
-         {"compressor", P{{"mode", 2}, {"threshold", -18}, {"ratio", 3}, {"attack", 20}}},
-         {"tape_colour", P{{"mode", 1}, {"drive", 8}}},
-         {"exciter", P{{"amount", 20}}}});
-    add("ton.crushed_telephone", "Crushed Telephone", "Tone & Destruction", "A narrow, resonant band, bit-reduced and clipped hard, folded to mono.",
-        {{"filter", P{{"type", 4}, {"cutoff", 1500}, {"resonance", 40}}},
-         {"bitcrush", P{{"bits", 6}, {"rate", 6000}, {"jitter", 20}}},
-         {"saturation", P{{"style", 3}, {"drive", 18}}},
-         {"width", P{{"width", 0}}}});
-    add("ton.fold_space", "Fold Space", "Tone & Destruction", "Wavefolding and ring modulation, cut short by a gated burst of space.",
-        {{"saturation", P{{"style", 4}, {"drive", 20}, {"mix", 70}}},
-         {"ring_mod", P{{"freq", 180}, {"mix", 35}}},
-         {"reverb", P{{"mode", 5}, {"decay", 0.8f}, {"mix", 30}}}});
+    // ================================================================== Spectral Objects
+    add("so.rising_echo", "Rising Echoes", SO, "drums, vocals, keys, synths", "Each frequency band echoes later than the one below: hits smear upwards into sweeping spectral repeats.",
+        {{"spectral_delay", P{{"sync", 1}, {"division", 10}, {"shape", 0}, {"spread", 100}, {"feedback", 55}, {"damping", 30}, {"mix", 100}}},
+         {"reverb", P{{"mode", 2}, {"decay", 2}, {"mix", 20}}}});
+    add("so.scatter_prism", "Prism Scatter", SO, "vocals, drums, field, synths", "Bands return in a fixed scattered order with per-band feedback: the source refracts into spectral shards.",
+        {{"spectral_delay", P{{"sync", 0}, {"time_ms", 900}, {"shape", 4}, {"spread", 100}, {"feedback", 65}, {"offset", 70}, {"mix", 100}}},
+         {"reverb", P{{"mode", 2}, {"decay", 1.8f}, {"mix", 25}}}});
+    add("so.partial_gate", "Partial Gate", SO, "vocals, keys, pads, guitars", "Only the strongest partials survive the spectral gate; the rest is silence. Sparse, glassy and strange.",
+        {{"spectral_smear", P{{"smear", 10}, {"time", 25}, {"scatter", 0}, {"gate", -48}, {"out", 6}, {"mix", 100}}}, {"reverb", P{{"mode", 2}, {"decay", 3}, {"mix", 30}}}});
+    add("so.disintegrate", "Disintegrate", SO, "vocals, pads, keys, field", "Partials drop out and return at random: the sound tears and sparkles apart.",
+        {{"spectral_smear", P{{"smear", 20}, {"time", 20}, {"scatter", 30}, {"disintegrate", 90}, {"mix", 100}}}, {"spectral_delay", P{{"sync", 1}, {"division", 7}, {"shape", 3}, {"feedback", 30}, {"mix", 45}}}});
+    add("ht.fifth_resonance", "Fifth Resonance", SO, "drums, percussion, vocals, field", "Everything excites a ringing bank of fifths: drums become tuned metal.",
+        {{"resonator", P{{"key", 9}, {"octave", 2}, {"chord", 2}, {"decay", 4}, {"bright", 60}, {"mix", 100}}}, {"spectral_smear", P{{"smear", 15}, {"time", 30}, {"mix", 50}}}});
+    add("ht.crystal", "Glass Chord", SO, "keys, vocals, guitars, pads", "A held spectrum of the source, shimmering in a pentatonic resonator.",
+        {{"spectral", P{{"freeze", 1}, {"fade_ms", 600}, {"blur", 50}, {"shimmer", 60}, {"mix", 100}}}, {"resonator", P{{"chord", 6}, {"decay", 6}, {"bright", 70}, {"mix", 70}}}});
 
-    // ------------------------------------------------------------------ Signature
-    add("sig.supercluster", "Supercluster", "Signature", "IH1's own: chorus, reversed grains and tuned resonance gathering in a long hall.",
-        {{"chorus", P{{"mix", 30}}},
-         {"reverse", P{{"mode", 2}, {"mix", 30}}},
-         {"resonator", P{{"key", 9}, {"chord", 6}, {"decay", 4}, {"mix", 30}}},
-         {"reverb", P{{"mode", 1}, {"decay", 6}, {"mix", 30}}},
-         {"width", P{{"width", 130}}}});
-    add("sig.machine_choir", "Machine Choir", "Signature", "A 32-band vocoder (played from MIDI notes, or a fixed C3) chorused into a hall.",
-        {{"vocoder", P{{"bands", 4}, {"carrier", 3}, {"use_midi", 1}, {"note", 48}, {"mix", 90}}},
-         {"chorus", P{{"mix", 35}}},
+    // ================================================================== Feedback Machines
+    add("ex.fractal_feedback", "Fractal Feedback", FM, "vocals, synths, keys, field", "Grains regenerate through a pitched, saturated feedback path: a self-similar, ever-growing structure.",
+        {{"grain_engine", P{{"size_ms", 120}, {"density", 35}, {"pitch", 12}, {"pitch_jit", 7}, {"scale", 2}, {"feedback", 85}, {"delay_ms", 250}, {"fb_hp", 200}, {"fb_lp", 7000}, {"fb_drive", 9}, {"mix", 100}}},
+         {"compressor", P{{"threshold", -26}, {"ratio", 4}}}});
+    add("mot.spiral_stairs", "Endless Stair", FM, "synths, pads, vocals, guitars", "A frequency-shifted feedback loop that climbs forever through ten-stage phasing.",
+        {{"freq_shift", P{{"shift", 14}, {"feedback", 82}, {"delay_ms", 160}, {"mix", 100}}}, {"phaser", P{{"stages", 4}, {"rate", 0.12f}, {"feedback", 60}, {"range", 4}}}});
+    add("f3.dub_siren", "Dub Machine", FM, "vocals, drums, synths", "Saturated tape echoes at the edge of runaway, darkened and degraded on every pass.",
+        {{"tape_echo", P{{"sync", 1}, {"division", 8}, {"heads", 3}, {"intensity", 100}, {"saturation", 70}, {"age", 70}, {"mix", 55}}},
+         {"degrade", P{{"rate", 18000}, {"bits", 11}, {"bandwidth", 35}, {"noise", 10}, {"out", -7}, {"mix", 70}}}});
+    add("f3.reverse_loop", "Mirror Loop", FM, "vocals, guitars, keys", "Reversed chunks fed back to reverse again, pitched down each time.",
+        {{"reverse", P{{"mode", 1}, {"sync", 1}, {"division", 10}, {"feedback", 75}, {"pitch", -5}, {"mix", 100}}}, {"reverb", P{{"mode", 1}, {"decay", 3}, {"mix", 25}}}});
+    add("ex.ring_cascade", "Metal Cascade", FM, "drums, synths, vocals", "Ring modulation into a resonant flanger feedback loop: bells, sirens, machinery.",
+        {{"ring_mod", P{{"freq", 440}, {"wave", 1}, {"mod_depth", 40}, {"mix", 90}}}, {"flanger", P{{"feedback", 90}, {"rate", 0.08f}, {"depth", 5}}},
+         {"delay", P{{"sync", 1}, {"division", 6}, {"feedback", 60}, {"mix", 35}, {"lofi_rate", 9000}}}});
+    add("f3.spectral_regen", "Spectral Regen", FM, "pads, vocals, field, keys", "Spectral echoes at high per-band feedback, smeared on the way back: a self-feeding spectral tide.",
+        {{"spectral_delay", P{{"sync", 0}, {"time_ms", 650}, {"shape", 2}, {"spread", 70}, {"feedback", 85}, {"damping", 50}, {"mix", 100}}},
+         {"spectral_smear", P{{"smear", 40}, {"time", 50}, {"scatter", 40}, {"mix", 70}}}});
+
+    // ================================================================== Vocal Transformations
+    add("vt.whisper_cloud", "Whisper Cloud", VT, "vocals", "The voice is reduced to breath: phase-scattered, smeared and scattered into short grains.",
+        {{"spectral_smear", P{{"smear", 55}, {"time", 30}, {"scatter", 100}, {"mix", 100}}}, {"grain_engine", P{{"size_ms", 60}, {"density", 60}, {"spray_ms", 600}, {"spread", 100}, {"mix", 100}}}});
+    add("sig.machine_choir", "Machine Choir", VT, "vocals, synths", "The voice drives a 24-band vocoder chord, chorused into a hall.",
+        {{"vocoder", P{{"bands", 3}, {"carrier", 0}, {"note", 45}, {"use_midi", 0}, {"mix", 100}}}, {"chorus", P{{"voices", 3}, {"depth", 50}, {"mix", 50}}},
          {"reverb", P{{"mode", 1}, {"decay", 3}, {"mix", 25}}}});
-    add("sig.doppler_drift", "Doppler Drift", "Signature", "The source circles the listener while modulated echoes trail behind it.",
-        {{"doppler", P{{"path", 2}, {"speed", 15}, {"period", 8}, {"mix", 60}}},
-         {"delay", P{{"sync", 0}, {"time_ms", 520}, {"feedback", 35}, {"mod_depth", 40}, {"mix", 25}}},
-         {"reverb", P{{"mix", 20}}}});
-    add("sig.vocal_polish", "Vocal Polish", "Signature", "A clean starting point: de-essed, lifted, levelled and placed on a short plate.",
-        {{"deesser", P{{"threshold", -10}}},
-         {"eq", P{{"hp", 80}, {"b2_freq", 4000}, {"b2_gain", 2}}},
-         {"compressor", P{{"threshold", -20}, {"ratio", 3}}},
-         {"reverb", P{{"mode", 2}, {"decay", 1.6f}, {"mix", 15}}}});
-    // =================================================================== V2.1 library (original IH1 designs)
-    // ------------------------------------------------------------------ Essentials
-    addT("ess.clean_slap", "Clean Slap", "Essentials", "vocals, guitars, drums", "A single short slapback, thinned and darkened, with a touch of room. Mix-ready.",
-         {{"delay", P{{"sync", 0}, {"time_ms", 95}, {"stereo", 0}, {"feedback", 8}, {"low_cut", 200}, {"high_cut", 6000}, {"mix", 20}}},
-          {"reverb", P{{"mode", 0}, {"decay", 0.6f}, {"size", 30}, {"mix", 10}}}});
-    addT("ess.quarter_throw", "Quarter Throw", "Essentials", "vocals, synths, keys", "Quarter-note ping-pong that ducks under the dry signal and softens with every repeat.",
-         {{"delay", P{{"sync", 1}, {"division", 10}, {"stereo", 2}, {"feedback", 38}, {"low_cut", 250}, {"high_cut", 4500}, {"duck", 50}, {"mix", 24}}},
-          {"reverb", P{{"mode", 2}, {"decay", 1.2f}, {"predelay", 30}, {"mix", 10}}}});
-    addT("ess.plate_vocal", "Velvet Plate", "Essentials", "vocals, snare", "Levelled and lifted, then a bright short plate with pre-delay so the words stay in front.",
-         {{"eq", P{{"hp", 90}, {"hs_freq", 9000}, {"hs_gain", 1.5f}}},
-          {"compressor", P{{"mode", 2}, {"threshold", -22}, {"ratio", 3}}},
-          {"reverb", P{{"mode", 2}, {"decay", 1.8f}, {"predelay", 45}, {"high_cut", 11000}, {"mix", 18}}}});
-    addT("ess.mix_glue", "Mix Glue", "Essentials", "full mix, drums, loops", "Gentle 2:1 bus compression with slow attack and a light console drive. Subtle on purpose.",
-         {{"compressor", P{{"mode", 0}, {"threshold", -16}, {"ratio", 2}, {"attack", 30}, {"release", 250}, {"sc_hp", 90}}},
-          {"tape_colour", P{{"mode", 1}, {"drive", 3}, {"bump", 0.5f}, {"hf_loss", 0.5f}}}});
+    add("vt.octave_halo", "Synthetic Double", VT, "vocals", "An octave-up double with shifted formants and a robotic in-key correction.",
+        {{"pitch_correct", P{{"key", 9}, {"scale", 1}, {"speed", 0}, {"amount", 100}}}, {"harmony", P{{"mode", 0}, {"voices", 1}, {"int1", 12}, {"int2", -12}, {"lvl1", -2}, {"lvl2", -6}, {"dry", -60}}},
+         {"formant", P{{"shift", 5}, {"mix", 100}}}});
+    add("vt.ring_robot", "Circuit Voice", VT, "vocals", "A broken robot: ring modulated, crushed to 9 bits and squeezed through a narrow band.",
+        {{"ring_mod", P{{"freq", 95}, {"wave", 2}, {"mix", 70}}}, {"degrade", P{{"rate", 9000}, {"bits", 9}, {"bandwidth", 60}, {"drive", 10}, {"noise", 5}}}});
+    add("voc.octave_ghost", "Formant Ghost", VT, "vocals", "Down an octave with the formants pushed up: a different, uncanny speaker, trailed by reversed echoes.",
+        {{"pitch_shift", P{{"shift_a", -12}, {"preserve", 0}, {"mix", 100}}}, {"formant", P{{"shift", 6}, {"mix", 100}}}, {"reverse", P{{"mode", 1}, {"mix", 40}}}});
+    add("v3.vowel_chorus", "Vowel Swarm", VT, "vocals", "A choir of grains in a major scale, each on a different vowel colour of the same voice.",
+        {{"harmony", P{{"mode", 1}, {"voices", 3}, {"detune", 20}, {"dry", -12}}}, {"grain_engine", P{{"size_ms", 110}, {"density", 40}, {"pitch_jit", 7}, {"scale", 3}, {"spray_ms", 300}, {"mix", 100}}}});
 
-    // ------------------------------------------------------------------ Granular Motion
-    addT("gm.particle_drift", "Particle Drift", "Granular Motion", "synths, keys, vocals, guitars", "Medium grains scattered half a second back and across the field, settling into a hall.",
-         {{"grain_engine", P{{"size_ms", 70}, {"density", 35}, {"position_ms", 250}, {"spray_ms", 400}, {"spread", 85}, {"stereo", 1}, {"mix", 45}}},
-          {"reverb", P{{"mode", 1}, {"decay", 3.5f}, {"mix", 25}}}});
-    addT("gm.octave_dust", "Octave Dust", "Granular Motion", "keys, plucks, guitars", "Plucked grains jump between octaves and some run backwards: sparkling, never out of tune.",
-         {{"grain_engine", P{{"size_ms", 45}, {"density", 50}, {"pitch_jit", 12}, {"scale", 1}, {"reverse", 30}, {"window", 3}, {"spray_ms", 300}, {"spread", 70}, {"mix", 40}}},
-          {"chorus", P{{"rate", 0.3f}, {"depth", 35}, {"mix", 25}}}});
-    addT("gm.minor_scatter", "Minor Scatter", "Granular Motion", "synths, pads, keys", "Gaussian grains snapped to a minor scale, echoed on dotted eighths across the stereo field.",
-         {{"grain_engine", P{{"size_ms", 150}, {"density", 22}, {"pitch_jit", 7}, {"scale", 4}, {"window", 1}, {"spread", 90}, {"spray_ms", 500}, {"mix", 45}}},
-          {"delay", P{{"sync", 1}, {"division", 8}, {"stereo", 2}, {"feedback", 35}, {"high_cut", 5000}, {"mix", 22}}}});
-    addT("gm.swarm", "Swarm", "Granular Motion", "vocals, full mix, noise", "Dozens of tiny, slightly detuned grains with independent left and right streams: a buzzing, living cloud.",
-         {{"grain_engine", P{{"size_ms", 22}, {"density", 160}, {"voices", 64}, {"spray_ms", 900}, {"pitch_jit", 0.3f}, {"stereo", 1}, {"spread", 100}, {"mix", 50}}},
-          {"width", P{{"width", 140}, {"mono_below", 160}}}});
-    addT("gm.cascade", "Cascade", "Granular Motion", "keys, plucks, vocals", "Grain feedback through a fifth-up delay: each pass is re-grained higher and darker until it fades.",
-         {{"grain_engine", P{{"size_ms", 180}, {"density", 14}, {"pitch", 7}, {"feedback", 62}, {"delay_ms", 380}, {"fb_hp", 220}, {"fb_lp", 5200}, {"spray_ms", 120}, {"mix", 40}}},
-          {"reverb", P{{"mode", 1}, {"decay", 4}, {"mix", 22}}}});
+    // ================================================================== Cinematic / Spatial
+    add("atm.glass_cathedral", "Glass Cathedral", CS, "vocals, keys, pads, guitars", "Octave and twelfth shimmer rising out of a twelve-second tail; the source becomes the space.",
+        {{"shimmer", P{{"decay", 14}, {"size", 85}, {"shift1", 12}, {"shift2", 19}, {"regen", 70}, {"routing", 0}, {"mix", 85}}}, {"width", P{{"width", 100}, {"mono_below", 250}, {"out", -8}}}});
+    add("atm.slow_bloom", "Reverse Bloom", CS, "vocals, keys, guitars, drums", "Every phrase swells in backwards, out of a reversed cathedral.",
+        {{"reverse", P{{"mode", 0}, {"sync", 1}, {"division", 13}, {"mix", 100}}}, {"reverb", P{{"mode", 6}, {"decay", 6}, {"size", 90}, {"mix", 60}}}});
+    add("atm.deep_hollow", "Deep Hollow", CS, "drums, vocals, field, bass", "Pitched down an octave into a dark, immense cavern: impacts become distant thunder.",
+        {{"pitch_shift", P{{"shift_a", -12}, {"mix", 100}}}, {"reverb", P{{"mode", 4}, {"decay", 18}, {"size", 100}, {"damping", 75}, {"mix", 70}}}, {"eq", P{{"lp", 4000}, {"ls_gain", 3}}}});
+    add("sig.doppler_drift", "Fly-By", CS, "vocals, synths, percussion, field", "The source circles the listener at speed, Doppler-bent and wide, in an open space.",
+        {{"doppler", P{{"path", 2}, {"speed", 60}, {"distance", 3}, {"period", 3}}}, {"reverb", P{{"mode", 1}, {"decay", 4}, {"mix", 35}}}});
+    add("atm.under_ice", "Under Ice", CS, "vocals, drums, pads, field", "Submerged: low-passed, smeared and bloomed in a ghostly convolution space.",
+        {{"filter", P{{"type", 1}, {"cutoff", 900}, {"resonance", 25}}}, {"spectral_smear", P{{"smear", 50}, {"time", 60}, {"scatter", 30}, {"mix", 100}}},
+         {"convolution", P{{"ir", 5}, {"mix", 60}}}});
+    add("c3.horizon_freeze", "Horizon Freeze", CS, "pads, keys, vocals, field", "The reverb tail is frozen into an endless horizon behind a scanning grain cloud.",
+        {{"grain_engine", P{{"mode", 1}, {"speed", 0.15f}, {"size_ms", 500}, {"density", 10}, {"spray_ms", 300}, {"mix", 100}}},
+         {"reverb", P{{"mode", 4}, {"decay", 30}, {"freeze", 1}, {"mix", 55}}}});
 
-    // ------------------------------------------------------------------ Stretch & Smear
-    addT("ss.half_time_haze", "Half-Time Haze", "Stretch & Smear", "vocals, synths, loops", "The recent past played back at half speed with the pitch kept, smoothly spliced, drifting into reverb.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.5f}, {"size_ms", 120}, {"density", 30}, {"spray_ms", 20}, {"align", 1}, {"mix", 65}}},
-          {"reverb", P{{"mode", 1}, {"decay", 4}, {"mix", 25}}}});
-    addT("ss.quarter_drift", "Quarter Drift", "Stretch & Smear", "pads, vocals, keys", "Four times slower, long overlapping grains at a constant overlap, blurred at the edges.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.25f}, {"size_ms", 260}, {"lock", 1}, {"overlap", 6}, {"spray_ms", 40}, {"window", 1}, {"mix", 75}}},
-          {"spectral", P{{"blur", 30}, {"mix", 30}}}});
-    addT("ss.glacier", "Glacier", "Stretch & Smear", "pads, strings, ambient", "An eighth-speed scan through the buffer: chords become slowly shifting glacial walls.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.125f}, {"size_ms", 420}, {"density", 9}, {"window", 1}, {"spray_ms", 60}, {"mix", 85}}},
-          {"reverb", P{{"mode", 4}, {"decay", 10}, {"damping", 60}, {"mix", 35}}}});
-    addT("ss.tape_slow", "Tape Slowdown", "Stretch & Smear", "drums, loops, vocals", "Varispeed at half speed: the recent past an octave down, like a slowed tape, warmly saturated.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.5f}, {"varispeed", 1}, {"size_ms", 90}, {"density", 30}, {"mix", 60}}},
-          {"tape_colour", P{{"drive", 7}, {"hf_loss", 5}}}});
-    addT("ss.smear_field", "Smear Field", "Stretch & Smear", "vocals, guitars, full mix", "Spectral blur plus wide-sprayed grains: transients dissolve into a soft, moving smear.",
-         {{"spectral", P{{"blur", 70}, {"smear", 55}, {"mix", 45}}},
-          {"grain_engine", P{{"size_ms", 200}, {"density", 18}, {"spray_ms", 1500}, {"spread", 80}, {"mix", 35}}}});
+    // ================================================================== Hybrid / Experimental
+    add("ex.inverted_world", "Inverted World", HX, "vocals, drums, keys, full mix", "Reversed, octave-shifted grains through spectral delay and a crushed, folded output.",
+        {{"grain_engine", P{{"size_ms", 200}, {"density", 30}, {"reverse", 100}, {"pitch", -12}, {"pitch_jit", 12}, {"scale", 1}, {"mix", 100}}},
+         {"spectral_delay", P{{"sync", 1}, {"division", 7}, {"shape", 1}, {"feedback", 40}, {"mix", 60}}}, {"fold_crush", P{{"drive", 8}, {"fold", 40}, {"crush", 40}, {"mix", 60}}}});
+    add("h3.machine_dream", "Machine Dream", HX, "drums, loops, synths, vocals", "Glitched steps degraded to 6 kHz, then frozen and smeared between the hits.",
+        {{"glitch", P{{"division", 4}, {"repeat", 35}, {"reverse", 25}, {"jump", 30}, {"pitch", 15}, {"lofi", 70}, {"seed", 42}, {"mix", 100}}},
+         {"spectral_smear", P{{"smear", 40}, {"time", 70}, {"scatter", 30}, {"mix", 60}}}});
+    add("h3.broken_tape_choir", "Broken Tape Choir", HX, "vocals, keys, guitars", "Harmonised into a choir, then stopped and started like a dying tape machine every bar.",
+        {{"harmony", P{{"mode", 1}, {"voices", 2}, {"detune", 15}, {"dry", -6}}}, {"time_warp", P{{"mode", 1}, {"trigger", 2}, {"division", 10}, {"stop_ms", 500}, {"mix", 100}}},
+         {"degrade", P{{"rate", 20000}, {"bits", 12}, {"bandwidth", 40}, {"wobble", 40}, {"noise", 12}}}});
+    add("h3.particle_engine", "Particle Accelerator", HX, "drums, synths, field", "Tiny grains at 200 per second, ring modulated and spectrally delayed into a rising, crackling stream.",
+        {{"grain_engine", P{{"size_ms", 8}, {"density", 200}, {"voices", 64}, {"pitch_jit", 24}, {"spray_ms", 2000}, {"stereo", 1}, {"mix", 100}}},
+         {"ring_mod", P{{"freq", 1200}, {"mod_depth", 80}, {"mix", 50}}}, {"spectral_delay", P{{"sync", 1}, {"division", 4}, {"shape", 0}, {"feedback", 50}, {"mix", 60}}}});
+    add("h3.rubber_room", "Rubber Room", HX, "vocals, drums, loops", "Scrubbed back and forth, folded, then flung around a spectral delay.",
+        {{"time_warp", P{{"mode", 3}, {"scrub_rate", 2.2f}, {"scrub_depth", 90}, {"mix", 100}}}, {"fold_crush", P{{"drive", 12}, {"fold", 70}, {"crush", 20}}},
+         {"spectral_delay", P{{"sync", 1}, {"division", 7}, {"shape", 2}, {"feedback", 35}, {"mix", 40}}}});
+    add("h3.tidal_memory", "Tidal Memory", HX, "pads, field, vocals, keys", "A slow tide of memory: the last eight seconds drift back in, pitched in octaves, degraded and blurred.",
+        {{"grain_engine", P{{"size_ms", 800}, {"density", 4}, {"position_ms", 6000}, {"spray_ms", 2000}, {"pitch_jit", 12}, {"scale", 1}, {"window", 4}, {"mix", 100}}},
+         {"degrade", P{{"rate", 15000}, {"bits", 10}, {"bandwidth", 25}, {"wobble", 30}, {"noise", 8}}}, {"reverb", P{{"mode", 4}, {"decay", 9}, {"mix", 40}}}});
 
-    // ------------------------------------------------------------------ Glitch & Rhythm
-    addT("gr.slice_retrigger", "Slice Retrigger", "Glitch & Rhythm", "drums, loops, vocals", "The playhead jumps back to the same slice every eighth note: rhythmic repeats that follow the tempo.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 1}, {"retrig", 1}, {"sync", 1}, {"retrig_div", 7}, {"position_ms", 120}, {"size_ms", 60}, {"density", 40}, {"window", 2}, {"spray_ms", 0}, {"mix", 70}}},
-          {"eq", P{{"hp", 70}, {"b2_freq", 3000}, {"b2_gain", 1.5f}}}});
-    addT("gr.backspin", "Backspin Slices", "Glitch & Rhythm", "drums, loops, vocals", "Every beat the last moment plays backwards from the top: reversed slices locked to the grid.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", -1}, {"retrig", 1}, {"sync", 1}, {"retrig_div", 10}, {"position_ms", 20}, {"size_ms", 70}, {"density", 35}, {"window", 2}, {"spray_ms", 0}, {"mix", 60}}},
-          {"delay", P{{"sync", 1}, {"division", 7}, {"feedback", 20}, {"mix", 15}}}});
-    addT("gr.buffer_roll", "Buffer Roll", "Glitch & Rhythm", "drums, loops, full mix", "Thirty-second-note rolls that step down in pitch and decay, roughened by a light crush.",
-         {{"stutter", P{{"interval", 1}, {"gate", 2}, {"slice", 0}, {"pitch", -1}, {"decay", 20}, {"chance", 75}}},
-          {"bitcrush", P{{"bits", 10}, {"rate", 22050}, {"mix", 40}}}});
-    addT("gr.halftime_chop", "Halftime Chop", "Glitch & Rhythm", "drums, loops", "Half-speed slices restarted every half note, then pumped on eighths: a lurching, chopped groove.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.5f}, {"retrig", 1}, {"sync", 1}, {"retrig_div", 13}, {"size_ms", 80}, {"density", 30}, {"window", 2}, {"mix", 80}}},
-          {"gate", P{{"mode", 2}, {"division", 7}, {"curve", 50}, {"range", 18}}}});
-
-    // ------------------------------------------------------------------ Vocal Transformations
-    addT("vt.whisper_cloud", "Whisper Cloud", "Vocal Transformations", "vocals, spoken word", "Tiny bright grains around a slightly lifted formant: the voice breaks into breathy particles.",
-         {{"formant", P{{"shift", 3}, {"mix", 60}}},
-          {"grain_engine", P{{"size_ms", 28}, {"density", 90}, {"spray_ms", 140}, {"spread", 90}, {"window", 1}, {"mix", 40}}},
-          {"reverb", P{{"mode", 2}, {"decay", 2.2f}, {"mix", 20}}}});
-    addT("vt.octave_halo", "Octave Halo", "Vocal Transformations", "vocals", "Swelling grains an octave above and below the voice, behind an in-key harmony, like a distant choir.",
-         {{"harmony", P{{"mode", 1}, {"voices", 1}, {"wet", -6}}},
-          {"grain_engine", P{{"pitch_jit", 12}, {"scale", 1}, {"window", 4}, {"size_ms", 220}, {"density", 22}, {"voices", 48}, {"spread", 80}, {"mix", 35}}}});
-    addT("vt.ring_robot", "Circuit Voice", "Vocal Transformations", "vocals, spoken word", "Hard-tuned, frequency-shifted against itself and lightly crushed: a metallic machine voice.",
-         {{"pitch_correct", P{{"speed", 0}, {"amount", 100}}},
-          {"freq_shift", P{{"shift", 30}, {"feedback", 25}, {"delay_ms", 40}, {"mix", 50}}},
-          {"bitcrush", P{{"bits", 12}, {"rate", 16000}, {"mix", 35}}}});
-    addT("vt.giant", "Giant", "Vocal Transformations", "vocals, spoken word", "An octave down with darker formants and a big room: a huge, slow-moving voice.",
-         {{"pitch_shift", P{{"shift_a", -12}, {"mix", 100}}},
-          {"formant", P{{"shift", -4}, {"mix", 100}}},
-          {"reverb", P{{"mode", 0}, {"decay", 1.4f}, {"size", 80}, {"mix", 22}}}});
-
-    // ------------------------------------------------------------------ Atmospheres
-    addT("atm.slow_bloom", "Slow Bloom", "Atmospheres", "pads, vocals, guitars", "Third-speed swelling grains that bloom into an octave shimmer tail.",
-         {{"grain_engine", P{{"mode", 1}, {"speed", 0.33f}, {"window", 4}, {"size_ms", 600}, {"density", 6}, {"mix", 55}}},
-          {"shimmer", P{{"decay", 10}, {"regen", 45}, {"mix", 30}}}});
-    addT("atm.deep_hollow", "Deep Hollow", "Atmospheres", "pads, drones, guitars", "A long, heavily damped cathedral fed by low, re-grained feedback: dark and enormous.",
-         {{"grain_engine", P{{"pitch", -12}, {"feedback", 45}, {"fb_lp", 2500}, {"size_ms", 300}, {"density", 10}, {"mix", 30}}},
-          {"reverb", P{{"mode", 4}, {"decay", 16}, {"damping", 80}, {"high_cut", 4000}, {"mix", 45}}}});
-    addT("atm.veil", "Veil", "Atmospheres", "vocals, keys, guitars", "A translucent spectral veil with a faint shimmer, softened on a long plate.",
-         {{"spectral", P{{"blur", 85}, {"smear", 40}, {"shimmer", 20}, {"mix", 45}}},
-          {"reverb", P{{"mode", 2}, {"decay", 5}, {"mix", 30}}}});
-
-    // ------------------------------------------------------------------ Harmonic & Tonal
-    addT("ht.fifth_resonance", "Fifth Resonance", "Harmonic & Tonal", "drums, percussion, plucks", "Hits ring out as tuned fifths in D, with grains snapped to fifths shimmering above.",
-         {{"resonator", P{{"key", 2}, {"chord", 2}, {"decay", 5}, {"bright", 60}, {"mix", 40}}},
-          {"grain_engine", P{{"pitch_jit", 12}, {"scale", 2}, {"size_ms", 100}, {"density", 20}, {"mix", 25}}}});
-    addT("ht.major_bloom", "Major Bloom", "Harmonic & Tonal", "vocals, keys, guitars", "Three in-key harmonies opening into a fifth-and-octave shimmer.",
-         {{"harmony", P{{"mode", 1}, {"voices", 2}, {"detune", 6}, {"wet", -4}}},
-          {"shimmer", P{{"shift1", 12}, {"shift2", 7}, {"decay", 8}, {"mix", 30}}}});
-    addT("ht.minor_drone", "Minor Drone", "Harmonic & Tonal", "pads, guitars, drones", "Captures two seconds, loops it at half speed and lets a minor resonator sing over it.",
-         {{"grain_engine", P{{"mode", 2}, {"loop_ms", 2000}, {"speed", 0.5f}, {"size_ms", 250}, {"density", 12}, {"window", 1}, {"gain", -4}, {"mix", 55}}},
-          {"resonator", P{{"key", 9}, {"chord", 4}, {"octave", 1}, {"decay", 8}, {"mix", 18}}}});
-    addT("ht.crystal", "Crystal", "Harmonic & Tonal", "keys, plucks, synths", "Octave-up pentatonic grains over a high pentatonic resonator: glassy and bell-like.",
-         {{"grain_engine", P{{"pitch", 12}, {"pitch_jit", 12}, {"scale", 5}, {"window", 3}, {"size_ms", 80}, {"density", 28}, {"spread", 80}, {"mix", 35}}},
-          {"resonator", P{{"chord", 6}, {"octave", 3}, {"decay", 3}, {"bright", 75}, {"mix", 25}}}});
-
-    // ------------------------------------------------------------------ Movement & Width
-    addT("mw.wide_grains", "Wide Grains", "Movement & Width", "synths, vocals, guitars", "Independent left and right grain streams add width without phasing; the bass stays centred.",
-         {{"grain_engine", P{{"stereo", 1}, {"spread", 100}, {"size_ms", 60}, {"density", 40}, {"position_ms", 30}, {"spray_ms", 40}, {"mix", 30}}},
-          {"width", P{{"width", 140}, {"mono_below", 150}}}});
-    addT("mw.pan_haze", "Pan Haze", "Movement & Width", "pads, keys, guitars", "A slow half-note auto-pan through a four-voice chorus into a soft hall.",
-         {{"tremolo", P{{"mode", 1}, {"sync", 1}, {"division", 13}, {"depth", 60}}},
-          {"chorus", P{{"voices", 3}, {"rate", 0.35f}, {"depth", 45}, {"mix", 40}}},
-          {"reverb", P{{"mode", 1}, {"decay", 3}, {"mix", 20}}}});
-    addT("mw.phase_drift", "Phase Drift", "Movement & Width", "guitars, synths, drums", "Twelve-stage phasing so slow it feels like weather, with a faint flange on top.",
-         {{"phaser", P{{"stages", 5}, {"rate", 0.05f}, {"feedback", 35}, {"range", 4}, {"stereo", 120}}},
-          {"flanger", P{{"rate", 0.03f}, {"depth", 1.5f}, {"feedback", 20}, {"mix", 30}}}});
-
-    // ------------------------------------------------------------------ Character & Dirt
-    addT("cd.cassette", "Cassette", "Character & Dirt", "drums, keys, full mix, loops", "Worn tape: saturated, dulled, slowly warbling and slightly crushed.",
-         {{"tape_colour", P{{"drive", 8}, {"hf_loss", 6}, {"bump", 2.5f}}},
-          {"vibrato", P{{"depth", 8}, {"rate", 0.8f}}},
-          {"bitcrush", P{{"bits", 12}, {"rate", 32000}, {"mix", 30}}}});
-    addT("cd.blown_speaker", "Blown Speaker", "Character & Dirt", "guitars, bass, drums", "A cranked small amp into a folding stage, blended in parallel so the body survives.",
-         {{"amp", P{{"gain", 30}, {"cab", 1}, {"out", -9}, {"mix", 80}}},
-          {"saturation", P{{"style", 4}, {"drive", 14}, {"mix", 30}}}});
-    addT("cd.lofi_sampler", "Lo-Fi Sampler", "Character & Dirt", "drums, loops, keys", "Twelve-bit sampler colour, rounded lows, and a fast FET squeeze.",
-         {{"bitcrush", P{{"bits", 12}, {"rate", 22050}, {"prefilter", 1}}},
-          {"eq", P{{"hp", 40}, {"ls_gain", 2}, {"lp", 12000}}},
-          {"compressor", P{{"mode", 1}, {"threshold", -18}, {"ratio", 5}, {"attack", 3}}}});
-
-    // ------------------------------------------------------------------ Experimental
-    addT("ex.ring_cascade", "Ring Cascade", "Experimental", "synths, drums, noise", "Ring modulation feeding pitched grain feedback and a slowly climbing frequency shift.",
-         {{"ring_mod", P{{"freq", 330}, {"mod_depth", 30}, {"mix", 40}}},
-          {"grain_engine", P{{"pitch", 5}, {"feedback", 70}, {"delay_ms", 220}, {"fb_lp", 6000}, {"size_ms", 120}, {"density", 20}, {"mix", 40}}},
-          {"freq_shift", P{{"shift", 4}, {"feedback", 30}, {"mix", 35}}}});
-    addT("ex.inverted_world", "Inverted World", "Experimental", "vocals, guitars, keys", "A held loop scanned backwards at half speed like reversed tape, under a spectral shimmer.",
-         {{"grain_engine", P{{"mode", 2}, {"loop_ms", 3000}, {"speed", -0.5f}, {"varispeed", 1}, {"size_ms", 160}, {"density", 20}, {"gain", -5}, {"mix", 60}}},
-          {"spectral", P{{"blur", 50}, {"shimmer", 35}, {"mix", 35}}}});
-    addT("ex.fractal_feedback", "Fractal Feedback", "Experimental", "synths, vocals, noise", "Grains re-grained through minor-scale feedback, each pass a little lower and darker.",
-         {{"grain_engine", P{{"pitch", -5}, {"pitch_jit", 3}, {"scale", 4}, {"feedback", 85}, {"delay_ms", 250}, {"fb_hp", 150}, {"fb_lp", 3000}, {"size_ms", 140}, {"density", 18}, {"mix", 45}}},
-          {"reverb", P{{"mode", 3}, {"decay", 2}, {"mix", 25}}}});
-
-    // ------------------------------------------------------------------ legacy ids (kept for DAW projects), re-filed
-    struct Refile { const char* id; const char* cat; const char* tags; };
-    static const Refile kRefile[] = {
-        {"atm.slow_horizon", "Atmospheres", "pads, vocals, guitars"},     {"atm.glass_cathedral", "Atmospheres", "pads, keys, vocals"},
-        {"atm.under_ice", "Atmospheres", "full mix, pads, loops"},        {"atm.afterglow", "Atmospheres", "guitars, keys, vocals"},
-        {"voc.choir_of_one", "Vocal Transformations", "vocals"},          {"voc.wide_double", "Vocal Transformations", "vocals, guitars"},
-        {"voc.octave_ghost", "Vocal Transformations", "vocals"},          {"voc.tuned_glide", "Vocal Transformations", "vocals"},
-        {"frg.glass_grains", "Granular Motion", "keys, plucks, vocals"},   {"frg.backwards_letters", "Stretch & Smear", "vocals, guitars"},
-        {"frg.frozen_breath", "Stretch & Smear", "pads, vocals"},         {"frg.loop_ghost", "Granular Motion", "loops, drums, keys"},
-        {"mot.tidal_chorus", "Movement & Width", "guitars, synths, keys"}, {"mot.jet_wash", "Movement & Width", "drums, guitars, full mix"},
-        {"mot.spiral_stairs", "Experimental", "synths, guitars"},         {"mot.leslie_room", "Movement & Width", "keys, organ, guitars"},
-        {"rhy.dotted_rain", "Essentials", "guitars, vocals, synths"},     {"rhy.stutter_bloom", "Glitch & Rhythm", "drums, loops"},
-        {"rhy.gated_pulse", "Glitch & Rhythm", "synths, pads, loops"},    {"rhy.tape_triplets", "Glitch & Rhythm", "guitars, drums, vocals"},
-        {"ton.broken_transistor", "Character & Dirt", "guitars, drums, bass"}, {"ton.warm_console", "Essentials", "full mix, drums, bass"},
-        {"ton.crushed_telephone", "Character & Dirt", "vocals, drums"},   {"ton.fold_space", "Experimental", "synths, drums, bass"},
-        {"sig.supercluster", "Harmonic & Tonal", "keys, pads, vocals"},   {"sig.machine_choir", "Vocal Transformations", "vocals, synths"},
-        {"sig.doppler_drift", "Experimental", "vocals, synths, percussion"}, {"sig.vocal_polish", "Essentials", "vocals"},
-    };
-    for (auto& p : v)
-        for (const auto& r : kRefile)
-            if (p.id == r.id) { p.category = r.cat; p.tags = r.tags; }
     // presets are listed (and stepped by the arrows) in category order, curated order inside a category
     const auto& cats = presetCategories();
     auto rank = [&](const std::string& c) { return static_cast<int>(std::find(cats.begin(), cats.end(), c) - cats.begin()); };

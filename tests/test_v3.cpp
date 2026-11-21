@@ -55,7 +55,9 @@ struct Rig {
 
 TEST_CASE("V3 P1: a preset recall is heard exactly as the preset chain alone, whatever was staged (null test, every FX)") {
     const auto& presets = factoryPresets();
-    const auto& p = presets[static_cast<size_t>(factoryPresetIndex("atm.slow_horizon"))];
+    const int pi = factoryPresetIndex("gm.particle_drift");
+    REQUIRE(pi >= 0);
+    const auto& p = presets[static_cast<size_t>(pi)];
     const std::string text = presetToJson(p);
     int tested = 0;
     for (int t : fxCarouselOrder()) {

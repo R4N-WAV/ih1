@@ -241,3 +241,27 @@ TEST_CASE("preset JSON carries metadata and malformed preset files are rejected 
     CHECK_FALSE(s.fromJson("{\"format\":\"other\",\"version\":1,\"chain\":[]}", false, &err));
     CHECK(s.chain().size() == n);
 }
+
+// V3 Phase 7.3: the creative bank is measurably bold. Each creative preset is rendered on its first two tagged
+// sources (level-matched; see ih1/presets/Audition.h); at least two-thirds must be transformative on both.
+#include "ih1/presets/Audition.h"
+TEST_CASE("V3 factory bank: at least two-thirds of the creative presets are transformative (level-matched)") {
+    int creative = 0, transformative = 0;
+    std::string timid;
+    for (const auto& p : factoryPresets()) {
+        if (p.category == "Init / Utility") continue;
+        ++creative;
+        const auto srcs = audition::sourcesForTags(p.tags);
+        int t = 0, n = 0;
+        for (size_t k = 0; k < srcs.size() && k < 2; ++k, ++n) {
+            const auto r = audition::run(presetToJson(p), srcs[k], 3.0);
+            REQUIRE(r.finite);
+            t += r.cls == audition::Class::Transformative;
+        }
+        if (t == n) ++transformative;
+        else timid += p.id + " ";
+    }
+    MESSAGE(transformative << " of " << creative << " creative presets transformative; not: " << timid);
+    CHECK(creative >= 60);
+    CHECK(3 * transformative >= 2 * creative);
+}

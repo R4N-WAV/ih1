@@ -117,7 +117,7 @@ FxDescriptor describeGrainEngine() {
         P::flt("voices", "Voices", "", 1.0f, 64.0f, 32.0f, "Maximum grains sounding at once (a CPU and density ceiling). New grains wait when all voices are busy."),
         P::flt("spray_ms", "Spray", "ms", 0.0f, 2000.0f, 60.0f, "Random extra distance for each grain's start: blurs the sound in time."),
         P::pct("size_jit", "Size Jitter", 0.0f, "Random variation of each grain's length."),
-        P::flt("pitch_jit", "Pitch Jitter", "st", 0.0f, 12.0f, 0.0f, "Random pitch per grain. Combine with Scale for musical clouds of notes."),
+        P::flt("pitch_jit", "Pitch Jitter", "st", 0.0f, 36.0f, 0.0f, "Random pitch per grain, up to three octaves either way. Combine with Scale for musical clouds of notes."),
         P::choice("scale", "Scale", {"Off", "Octaves", "Fifths", "Major", "Minor", "Pentatonic", "Chromatic"}, 0, "Snaps each grain's pitch (Pitch + Jitter) to these intervals."),
         P::pct("reverse", "Reverse", 0.0f, "Chance that a grain plays backwards."),
         P::choice("window", "Window", {"Smooth", "Gaussian", "Full", "Pluck", "Swell"}, 0, "Shape of each grain: smooth (Hann), soft and narrow (Gaussian), full-bodied (Tukey), plucked attack, or a reversed swell."),
