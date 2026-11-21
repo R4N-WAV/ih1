@@ -57,7 +57,7 @@ class Shimmer final : public FxBase {
         mix_.setMix(pct(shMix), snap);
     }
     double tailSeconds() const override { return std::min(60.0, 2.0 * p_[shDecay] + 1.0); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float r1 = dsp::semitonesToRatio(fp(shShift1)), r2 = dsp::semitonesToRatio(fp(shShift2));
         const float bal = pct(shBalance);
@@ -145,7 +145,7 @@ class PitchCorrect final : public FxBase {
         const float c1 = 0.5f * (x1 - xm1), c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2, c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
         return ((c3 * f + c2) * f + c1) * f + x0;
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float speedMs = fp(pcSpeed);
         const float k = speedMs <= 0.5f ? 1.0f : 1.0f - std::exp(-1.0f / (speedMs * 0.001f * srf()));
@@ -242,7 +242,7 @@ class Vocoder final : public FxBase {
             for (auto& nn : notes_) nn = -1;
         }
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const int car = ip(voCarrier);  // 0 saw, 1 pulse, 2 noise, 3 saw+noise
         const float aA = 1.0f - std::exp(-1.0f / (fp(voAttack) * 0.001f * srf()));

@@ -19,7 +19,7 @@ class Bitcrusher final : public FxBase {
         for (int c = 0; c < 2; ++c) { pre_[c].setup(dsp::Svf::Lowpass, fc, 0.54f, 0, sr_); pre2_[c].setup(dsp::Svf::Lowpass, fc, 1.31f, 0, sr_); }
         mix_.setMix(pct(bcMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float bits = fp(bcBits);
         const float levels = std::exp2(bits - 1.0f);
@@ -89,7 +89,7 @@ class TapeColour final : public FxBase {
         if (snap) { drive_.snap(drive_.target()); out_.snap(out_.target()); }
         mix_.setMix(pct(tcMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float d0 = drive_.current();
         float d1 = d0;
@@ -150,7 +150,7 @@ class Exciter final : public FxBase {
         if (snap) amt_.snap(amt_.target());
         if (dly_[0].empty()) for (auto& d : dly_) d.assign(64, 0.0f);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         // dry path delayed by the oversampler latency; add only the *generated* upper harmonics
         const int lat = os_[0].latency();
         const float drive = dsp::dbToGain(fp(exDrive));

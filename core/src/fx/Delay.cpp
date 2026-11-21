@@ -36,6 +36,8 @@ class Delay final : public FxBase {
         mix_.prepare(sr_, maxBlock_, 0, MixLaw::Flat);
         fbS_.prepare(sr_, 30.0f);
         diffS_.prepare(sr_, 40.0f);
+        duckS_.prepare(sr_, 20.0f);
+        duckS_.snap(pct(kDuck));
         lofi_.prepare(sr_, 0xDE1Au);
         static const float msL[4] = {4.7f, 7.3f, 11.9f, 17.3f}, msR[4] = {5.3f, 8.1f, 12.7f, 18.9f};  // incommensurate
         for (int k = 0; k < 4; ++k) {
@@ -74,7 +76,7 @@ class Delay final : public FxBase {
         return fb <= 0.0 ? t : std::min(30.0, t * std::log(1e-3) / std::log(fb) + t);
     }
 
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double sec = std::min<double>(syncedSeconds(bp(kSync), fp(kTime), ip(kDiv), ctx.bpm), kMaxSeconds);
         const int mode = ip(kStereo);  // 0 mono, 1 stereo, 2 ping-pong
@@ -90,7 +92,7 @@ class Delay final : public FxBase {
         lofiSet.bits = bitsOn ? fp(kLofiBits) : 24.0f;
         lofiSet.reconstruct = rateOn ? dsp::RateReducer::FilterSoft : dsp::RateReducer::FilterOff;
         const bool lofiOn = rateOn || bitsOn;
-        const float duck = pct(kDuck);
+        duckS_.setTarget(pct(kDuck));
         const float xfStep = 1.0f / (kXfadeMs * 0.001f * srf());
 
         for (int i = 0; i < n; ++i) {
@@ -100,7 +102,7 @@ class Delay final : public FxBase {
             float in[2] = {ch[0][i], ch[1][i]};
             if (mode != 1) { const float mono = 0.5f * (in[0] + in[1]); in[0] = mono; in[1] = mode == 2 ? 0.0f : mono; }
             const float env = duckEnv_.process(0.5f * (ch[0][i] + ch[1][i]));
-            const float duckGain = 1.0f / (1.0f + duck * 8.0f * env);
+            const float duckGain = 1.0f / (1.0f + duckS_.next() * 8.0f * env);  // V4: smoothed amount (no gain step)
 
             float out[2], fbSig[2];
             for (int c = 0; c < 2; ++c) {
@@ -155,7 +157,7 @@ class Delay final : public FxBase {
     dsp::Svf lc_[2], hc_[2];
     dsp::Lfo lfo_;
     dsp::EnvelopeFollower duckEnv_;
-    dsp::Smoother fbS_, diffS_;
+    dsp::Smoother fbS_, diffS_, duckS_;
     dsp::Allpass ap_[2][4];
     Head cur_[2];
     MixStage mix_;

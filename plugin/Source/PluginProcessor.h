@@ -58,6 +58,13 @@ public:
     bool uiMove(int from, int to);
     bool uiRemove(uint64_t id);
     void uiClearChain();
+    // V4 Phase 6: click a committed FX name to bypass / enable that instance (its parameters never change)
+    bool uiToggleEnabled(uint64_t id);
+    // V4 Phase 1.5: preset macros (names of the recalled chain's macros; empty string = no live target)
+    std::vector<juce::String> presetMacroNames();
+    float presetMacroValue(int k) const;
+    void uiSetPresetMacro(int k, float v01);
+    void uiPresetMacroGesture(int k, bool begin);
     void uiSetSolo(bool on);
     void uiSetMute(bool on);
     // Latency mode (V2.1 Phase 16). Message thread. Rebuilds the processor variants off the audio thread and
@@ -133,6 +140,8 @@ private:
     void applyRecallHostState();      // lock held: SOLO / MUTE off, staged macros re-synced, host told
     void resetGlobalsToNeutral();     // Init: input / output gain, mix, safety to their defaults
     std::array<juce::RangedAudioParameter*, kNumMacros> macros_{};
+    std::array<juce::RangedAudioParameter*, kNumPresetMacros> presetMacros_{};
+    std::array<std::atomic<float>*, kNumPresetMacros> pPresetMacro_{};
     std::array<float, kNumMacros> lastMacro_{};
     bool lastSolo_ = false, lastMute_ = false;
 

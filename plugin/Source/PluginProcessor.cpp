@@ -26,6 +26,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout Processor::createLayout() {
     // V3 (appended, version hint 2): final Output Safety. Existing ids above are unchanged.
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"safety_mode", 2}, "Output Safety", StringArray{"Off", "Guard", "True Peak"}, 1));
     l.add(std::make_unique<AudioParameterFloat>(ParameterID{"safety_ceiling", 2}, "Safety Ceiling", NormalisableRange<float>(-24.0f, 0.0f, 0.1f), -0.5f, AudioParameterFloatAttributes().withLabel("dB")));
+    // V4 (appended, version hint 3): the four preset macros. They modulate committed parameters at runtime only
+    // (stored values never change); 0 = the chain exactly as stored. Every recall returns them to 0.
+    for (int k = 0; k < kNumPresetMacros; ++k)
+        l.add(std::make_unique<AudioParameterFloat>(ParameterID{"pmacro_" + String(k + 1), 3}, "Preset Macro " + String(k + 1), NormalisableRange<float>(0.0f, 1.0f), 0.0f));
     return l;
 }
 
@@ -44,6 +48,10 @@ Processor::Processor()
     pMix_ = apvts_.getRawParameterValue("mix");
     pSafetyMode_ = apvts_.getRawParameterValue("safety_mode");
     pSafetyCeil_ = apvts_.getRawParameterValue("safety_ceiling");
+    for (int k = 0; k < kNumPresetMacros; ++k) {
+        presetMacros_[static_cast<size_t>(k)] = apvts_.getParameter("pmacro_" + juce::String(k + 1));
+        pPresetMacro_[static_cast<size_t>(k)] = apvts_.getRawParameterValue("pmacro_" + juce::String(k + 1));
+    }
     for (int k = 0; k < kNumMacros; ++k) {
         macros_[static_cast<size_t>(k)] = apvts_.getParameter(macroId(k));
         lastMacro_[static_cast<size_t>(k)] = 0.0f;
@@ -86,6 +94,7 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
     engine_.setOutputGainDb(pOut_->load());
     engine_.setMix(pMix_->load() * 0.01f);
     engine_.setSafety(safetyRun_.load(std::memory_order_relaxed), pSafetyCeil_->load());
+    for (int k = 0; k < kNumPresetMacros; ++k) engine_.setMacro(k, pPresetMacro_[static_cast<size_t>(k)]->load());
 
     midi_.clear();
     for (const auto meta : midi) {
@@ -228,6 +237,39 @@ bool Processor::uiRemove(uint64_t id) {
     const bool ok = session_->remove(id);
     afterModelChange();
     return ok;
+}
+
+bool Processor::uiToggleEnabled(uint64_t id) {
+    const juce::ScopedLock sl(lock_);
+    const bool ok = session_->toggleEnabled(id);
+    afterModelChange();
+    return ok;
+}
+
+std::vector<juce::String> Processor::presetMacroNames() {
+    std::vector<juce::String> v;
+    const juce::ScopedLock sl(lock_);
+    for (const auto& m : session_->macros()) {
+        bool live = false;
+        for (const auto& t : m.targets) live = live || session_->indexOf(t.id) >= 0;
+        v.push_back(live ? juce::String::fromUTF8(m.name.c_str()) : juce::String());
+    }
+    return v;
+}
+
+float Processor::presetMacroValue(int k) const {
+    return k >= 0 && k < kNumPresetMacros && presetMacros_[static_cast<size_t>(k)] ? presetMacros_[static_cast<size_t>(k)]->getValue() : 0.0f;
+}
+
+void Processor::uiSetPresetMacro(int k, float v01) {
+    if (k < 0 || k >= kNumPresetMacros || !presetMacros_[static_cast<size_t>(k)]) return;
+    presetMacros_[static_cast<size_t>(k)]->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, v01));
+}
+
+void Processor::uiPresetMacroGesture(int k, bool begin) {
+    if (k < 0 || k >= kNumPresetMacros || !presetMacros_[static_cast<size_t>(k)]) return;
+    if (begin) presetMacros_[static_cast<size_t>(k)]->beginChangeGesture();
+    else presetMacros_[static_cast<size_t>(k)]->endChangeGesture();
 }
 
 void Processor::uiClearChain() {
@@ -389,6 +431,8 @@ void Processor::applyRecallHostState() {
     apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
     lastSolo_ = lastMute_ = false;
     syncMacrosFromDraft();
+    // V4: preset macros start at 0 on every recall (= the recalled chain exactly as stored)
+    for (auto* m : presetMacros_) if (m) m->setValueNotifyingHost(0.0f);
     updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withProgramChanged(true).withParameterInfoChanged(false));
 }
 
@@ -518,7 +562,7 @@ juce::File Processor::userPresetDir() {
 std::string Processor::chainSignature() const {
     std::string sig;
     for (const auto& ci : session_->chain()) {
-        sig += ci.descriptor().typeId + "{";
+        sig += ci.descriptor().typeId + (ci.enabled() ? "{" : "~{");
         char buf[32];
         for (size_t i = 0; i < ci.descriptor().params.size(); ++i) { std::snprintf(buf, sizeof buf, "%.5g,", static_cast<double>(ci.values()[i])); sig += buf; }
         sig += "}";

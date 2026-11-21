@@ -39,7 +39,7 @@ class Flanger final : public FxBase {
         if (snap) { manS_.snap(manS_.target()); depS_.snap(depS_.target()); }
         mix_.setMix(pct(flMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const double inc = fp(flRate) / sr_;
         const float fb = fp(flFeedback) * 0.01f * 0.95f;
@@ -81,7 +81,7 @@ class Phaser final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override { mix_.setMix(pct(phMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const int stages = 2 * (ip(phStages) + 1);
         const double inc = fp(phRate) / sr_;
@@ -126,7 +126,7 @@ class Vibrato final : public FxBase {
     }
     void reset() override { for (auto& l : line_) l.reset(); mix_.reset(); phase_ = 0.0; }
     void applyParams(bool snap) override { mix_.setMix(pct(viMix), snap); depS_.setTarget(fp(viDepth)); if (snap) depS_.snap(depS_.target()); }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const float rate = bp(viSync) ? static_cast<float>(1.0 / dsp::divisionSeconds(ip(viDiv), ctx.bpm)) : fp(viRate);
         const double inc = rate / sr_;
@@ -157,10 +157,12 @@ class Vibrato final : public FxBase {
 // =============================================================================================== Tremolo / Auto-Pan
 enum { trMode, trSync, trRate, trDiv, trDepth, trShape, trStereo };
 class Tremolo final : public FxBase {
-    void onPrepare() override { depS_.prepare(sr_, 30.0f); }
-    void reset() override { phase_ = 0.0; }
+    // V4 Phase 4: the Square and Ramp shapes have vertical edges; the modulator is passed through a 2-pole ~0.7 ms
+    // smoother so each edge becomes a ~1.5 ms ramp: still a hard, choppy pulse, no click.
+    void onPrepare() override { depS_.prepare(sr_, 30.0f); edgeA_ = 1.0f - std::exp(-1.0f / (0.0007f * srf())); }
+    void reset() override { phase_ = 0.0; for (auto& z : edge_) z[0] = z[1] = 1.0f; pan_[0] = pan_[1] = 0.0f; }
     void applyParams(bool snap) override { depS_.setTarget(pct(trDepth)); if (snap) depS_.snap(depS_.target()); }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         const bool sync = bp(trSync);
         const double cycleBeats = dsp::kDivisions[std::clamp(ip(trDiv), 0, dsp::kNumDivisions - 1)].beats;
         const double inc = sync ? 1.0 / (dsp::divisionSeconds(ip(trDiv), ctx.bpm) * sr_) : fp(trRate) / sr_;
@@ -173,7 +175,11 @@ class Tremolo final : public FxBase {
             const float ph = static_cast<float>(phase_);
             if (mode == 1) {  // auto-pan, constant power
                 float gl, gr;
-                dsp::panGains(d * shapeAt(shape, ph), gl, gr);
+                float pv = d * shapeAt(shape, ph);
+                pan_[0] += edgeA_ * (pv - pan_[0]);
+                pan_[1] += edgeA_ * (pan_[0] - pan_[1]);
+                pv = pan_[1];
+                dsp::panGains(pv, gl, gr);
                 const float m = 0.5f * (ch[0][i] + ch[1][i]);
                 const float s = 0.5f * (ch[0][i] - ch[1][i]);
                 ch[0][i] = (m * gl * 1.41421356f) + s * (1.0f - d);
@@ -182,7 +188,10 @@ class Tremolo final : public FxBase {
                 for (int c = 0; c < 2; ++c) {
                     float p = ph + (c ? off : 0.0f);
                     p -= std::floor(p);
-                    ch[c][i] *= 1.0f - d * (0.5f - 0.5f * shapeAt(shape, p));
+                    const float g = 1.0f - d * (0.5f - 0.5f * shapeAt(shape, p));
+                    edge_[c][0] += edgeA_ * (g - edge_[c][0]);
+                    edge_[c][1] += edgeA_ * (edge_[c][0] - edge_[c][1]);
+                    ch[c][i] *= edge_[c][1];
                 }
             }
             phase_ += inc;
@@ -191,6 +200,7 @@ class Tremolo final : public FxBase {
     }
     dsp::Smoother depS_;
     double phase_ = 0.0;
+    float edgeA_ = 1.0f, edge_[2][2] = {{1, 1}, {1, 1}}, pan_[2] = {0, 0};
 };
 
 // =============================================================================================== Ring Modulator
@@ -204,7 +214,7 @@ class RingMod final : public FxBase {
         if (t > 1.0 - dt) { t = (t - 1.0) / dt; return static_cast<float>(t * t + t + t + 1.0); }
         return 0.0f;
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const int wave = ip(rmWave);
         const double lfoInc = fp(rmModRate) / sr_;
@@ -255,7 +265,7 @@ class Rotary final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override { mix_.setMix(pct(roMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const int speed = ip(roSpeed);  // 0 slow, 1 fast, 2 brake
         const float hornT = speed == 0 ? 0.8f : (speed == 1 ? 6.7f : 0.0f);

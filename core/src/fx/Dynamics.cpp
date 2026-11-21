@@ -38,7 +38,7 @@ class Compressor final : public FxBase {
         if (snap) makeup_.snap(makeup_.target());
         mix_.setMix(pct(cpMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const int mode = ip(cpMode);  // 0 clean, 1 FET, 2 opto, 3 limit
         float thr = fp(cpThr), ratio = fp(cpRatio), knee = fp(cpKnee), att = fp(cpAttack), rel = fp(cpRelease);
@@ -87,12 +87,12 @@ class Compressor final : public FxBase {
 enum { gtMode, gtThr, gtRange, gtRatio, gtAttack, gtHold, gtRelease, gtHyst, gtKeyHp, gtKeyLp, gtDiv, gtCurve };
 class Gate final : public FxBase {
     void onPrepare() override {}
-    void reset() override { env_ = 0.0f; gain_ = 1.0f; open_ = false; hold_ = 0; keyHp_.reset(); keyLp_.reset(); phase_ = 0.0; }
+    void reset() override { env_ = 0.0f; gain_ = gain2_ = 1.0f; open_ = false; hold_ = 0; keyHp_.reset(); keyLp_.reset(); phase_ = 0.0; pz_[0] = pz_[1] = 1.0f; }
     void applyParams(bool) override {
         keyHp_.setup(dsp::Svf::Highpass, fp(gtKeyHp), 0.6f, 0, sr_);
         keyLp_.setup(dsp::Svf::Lowpass, fp(gtKeyLp), 0.6f, 0, sr_);
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         const int mode = ip(gtMode);  // 0 gate, 1 expander, 2 pump (tempo ducking)
         const float floorG = dsp::dbToGain(-std::fabs(fp(gtRange)));
         if (mode == 2) {
@@ -100,10 +100,14 @@ class Gate final : public FxBase {
             const double inc = 1.0 / (dsp::divisionSeconds(ip(gtDiv), ctx.bpm) * sr_);
             if (ctx.ppqValid && ctx.hostPlaying) phase_ = std::fmod(ctx.ppqPosition / beats, 1.0);
             const float curve = 0.5f + 4.0f * pct(gtCurve);
+            const float edge = 1.0f - std::exp(-1.0f / (0.0012f * srf()));  // V4: ~2.5 ms 2-pole drop, no step at the beat
             for (int i = 0; i < n; ++i) {
                 // duck at each beat, recover along a power curve (sidechain-style pump without a sidechain)
                 const float t = static_cast<float>(phase_);
-                const float g = floorG + (1.0f - floorG) * std::pow(std::min(1.0f, t * 1.15f), 1.0f / curve);
+                const float tgt = floorG + (1.0f - floorG) * std::pow(std::min(1.0f, t * 1.15f), 1.0f / curve);
+                pz_[0] += edge * (tgt - pz_[0]);
+                pz_[1] += edge * (pz_[0] - pz_[1]);
+                const float g = pz_[1];  // the curve, through a ~2.5 ms 2-pole smoother: the drop is a ramp
                 ch[0][i] *= g;
                 ch[1][i] *= g;
                 phase_ += inc;
@@ -112,7 +116,10 @@ class Gate final : public FxBase {
             return;
         }
         const float thr = fp(gtThr), hyst = fp(gtHyst), ratio = fp(gtRatio);
-        const float aA = coef(fp(gtAttack), sr_), aR = coef(fp(gtRelease), sr_), aEnv = coef(2.0f, sr_);
+        // V4 Phase 4: a 0.4 ms floor on attack and a second smoothing pole: the gate still snaps open on a hit, but
+        // opening or closing on a sustained sound is a short ramp, not a step
+        const float aA = coef(std::max(0.4f, fp(gtAttack)), sr_), aR = coef(fp(gtRelease), sr_), aEnv = coef(2.0f, sr_);
+        const float a2 = coef(0.25f, sr_);
         const int holdS = static_cast<int>(fp(gtHold) * 0.001f * srf());
         for (int i = 0; i < n; ++i) {
             const float k = keyLp_.process(keyHp_.process(0.5f * (ch[0][i] + ch[1][i])));
@@ -130,14 +137,15 @@ class Gate final : public FxBase {
                 target = std::max(floorG, dsp::dbToGain(below * (ratio - 1.0f)));
             }
             gain_ += (target > gain_ ? aA : aR) * (target - gain_);
-            ch[0][i] *= gain_;
-            ch[1][i] *= gain_;
+            gain2_ += a2 * (gain_ - gain2_);
+            ch[0][i] *= gain2_;
+            ch[1][i] *= gain2_;
         }
         keyHp_.flush();
         keyLp_.flush();
     }
     dsp::Svf keyHp_, keyLp_;
-    float env_ = 0.0f, gain_ = 1.0f;
+    float env_ = 0.0f, gain_ = 1.0f, gain2_ = 1.0f, pz_[2] = {1.0f, 1.0f};
     bool open_ = false;
     int hold_ = 0;
     double phase_ = 0.0;
@@ -152,7 +160,7 @@ class DeEsser final : public FxBase {
         band_.setup(dsp::Svf::Bandpass, fp(deFreq), 1.4f, 0, sr_);
         for (auto& s : split_) s.setup(dsp::Svf::Bandpass, fp(deFreq), 1.4f, 0, sr_);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         const float aA = coef(0.5f, sr_), aR = coef(60.0f, sr_), aF = coef(20.0f, sr_);
         const float range = std::fabs(fp(deRange)), thr = fp(deThr);
         const bool split = ip(deMode) == 0, rel = bp(deRelative), listen = bp(deListen);
@@ -195,7 +203,7 @@ class TransientShaper final : public FxBase {
     // staged receives the engine's 12 ms de-click fade-in, which must not read as a giant attack.
     void reset() override { fa_ = sa_ = fr_ = sr2_ = kFloorDb; g_ = 0.0f; warm_ = false; warmLeft_ = static_cast<int>(0.02 * sr_); mix_.reset(); }
     void applyParams(bool snap) override { mix_.setMix(pct(tsMix), snap); out_.setTarget(dsp::dbToGain(fp(tsOut))); if (snap) out_.snap(out_.target()); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float sp = 0.5f + pct(tsSpeed) * 1.5f;  // speed scales all time constants
         const float aFast = coef(1.0f / sp, sr_), aSlowA = coef(30.0f / sp, sr_);

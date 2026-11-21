@@ -18,6 +18,10 @@ struct PresetFx {
     std::vector<std::pair<std::string, float>> params;  // parameter id -> plain value; others = defaults
 };
 
+// V4 Phase 1.5: a preset macro (see Session::MacroDef). Targets address chain positions of this preset.
+struct PresetMacroTarget { int slot = 0; std::string param; float depth = 0.0f; };
+struct PresetMacro { std::string name; std::vector<PresetMacroTarget> targets; };
+
 struct FactoryPreset {
     std::string id;           // stable, never renamed (e.g. "atm.slow_horizon")
     std::string name;
@@ -26,6 +30,10 @@ struct FactoryPreset {
     int version = 1;
     std::vector<PresetFx> chain;  // processing order
     std::string tags;         // suggested sources, comma separated (vocals, drums, bass, synths, guitars, keys, loops, full mix)
+    // V4 metadata (searchable in the browser)
+    std::string intensity;    // Subtle, Moderate, Strong, Extreme
+    std::string styles;       // genre / style inspiration, comma separated (e.g. "IDM, glitch")
+    std::vector<PresetMacro> macros;  // 0..4
 };
 
 // Category display order. The last one, "User", holds user presets (not part of the factory list).

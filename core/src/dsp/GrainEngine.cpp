@@ -83,6 +83,7 @@ void GrainEngine::reset() {
     spawnOrder_ = 0;
     rng_.seed_(seed_);
     for (auto& d : delay_) d.reset();
+    delayCur_ = -1.0f;
     fbRate_.reset();
     for (int c = 0; c < 2; ++c) {
         fbHp_[c].reset();
@@ -304,6 +305,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
     const float interval = static_cast<float>(sr) / std::clamp(p.density, 0.05f, 1000.0f);
     const float delaySamples = std::clamp(p.delayMs, 0.0f, 2000.0f) * 0.001f * static_cast<float>(sr);
     const bool echo = delaySamples > 1.0f;
+    if (delayCur_ < 0.0f) delayCur_ = delaySamples;
     float peakAcc = binPeak_;
 
     for (int i = 0; i < n; ++i) {
@@ -401,11 +403,19 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         float fbIn[2] = {0.0f, 0.0f};
         float wet[2] = {l, r};
         float fbPre[2];
+        // V4 Phase 4: the grain-delay tap moves at most 0.5 samples per sample (a short tape-style bend), so a new
+        // Grain Delay value never jumps the read point
+        {
+            const float diff = delaySamples - delayCur_;
+            delayCur_ += std::clamp(diff, -0.5f, 0.5f);
+            if (delayCur_ < 1.0f) delayCur_ = std::max(delayCur_, 0.0f);
+        }
+        const bool echoNow = echo || delayCur_ > 1.0f;
         for (int c = 0; c < 2; ++c) {
             delay_[c].push(wet[c]);
-            const float d = echo ? delay_[c].readLinear(delaySamples) : wet[c];
+            const float d = echoNow ? delay_[c].readLinear(std::max(1.0f, delayCur_)) : wet[c];
             fbPre[c] = fbLp_[c].process(fbHp_[c].process(d * p.feedback));
-            if (echo) wet[c] += d * p.feedback;
+            if (echoNow) wet[c] += d * p.feedback;
         }
         if (fbChar) {
             if (fbRateOn) fbRate_.process(&fbPre[0], &fbPre[1], 1, fbSet);

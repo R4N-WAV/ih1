@@ -155,6 +155,7 @@ private:
     uint32_t seed_ = 1;
     Rng rng_;
     DelayLine delay_[2];
+    float delayCur_ = -1.0f;  // slewed grain-delay time (samples)
     Svf fbHp_[2], fbLp_[2];
     RateReducer fbRate_;
     float fbState_[2] = {0.0f, 0.0f};

@@ -173,7 +173,7 @@ class Reverb final : public FxBase {
     }
     double tailSeconds() const override { return bp(rFreeze) ? 60.0 : std::min(60.0, 1.6 * p_[rDecay] + 0.3); }
 
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float pre = fp(rPredelay) * 0.001f * srf();
         const float diffusion = 0.4f + 0.35f * pct(rDiffusion);

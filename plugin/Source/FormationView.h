@@ -126,7 +126,7 @@ public:
     juce::Button* cancelButton() const;
 
 private:
-    struct Item { uint64_t id; int index; juce::String name; juce::Colour colour; juce::Rectangle<float> r; };
+    struct Item { uint64_t id; int index; juce::String name; juce::Colour colour; juce::Rectangle<float> r; bool enabled = true; };
     class Confirm;
 
     void timerCallback() override;
@@ -160,6 +160,11 @@ private:
     double toastMs_ = 0.0;
     std::unique_ptr<Confirm> confirm_;
     juce::Slider inGain_, mix_, outGain_;
+    // V4 preset macros (shown only for macros the recalled preset defines)
+    std::array<juce::Slider, kNumPresetMacros> pmacro_;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, kNumPresetMacros> pmacroAtt_;
+    std::array<juce::String, kNumPresetMacros> pmacroName_;
+    void syncMacros();
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> inAtt_, mixAtt_, outAtt_;
     // software fallback (no OpenGL 3.2)
     bool software_ = false;

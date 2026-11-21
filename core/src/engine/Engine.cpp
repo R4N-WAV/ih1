@@ -16,6 +16,10 @@ constexpr float kMuteMs = 30.0f;
 constexpr float kBypassMs = 20.0f;
 constexpr float kGainMs = 20.0f;
 constexpr float kFreshInMs = 12.0f;  // raised-cosine input fade for a freshly built processor
+constexpr float kSlotBypassMs = 15.0f;  // V4: per-instance enable / bypass crossfade
+constexpr float kMacroMs = 40.0f;       // V4: macro smoothing (on top of each effect's own parameter smoothing)
+constexpr float kIdleFloor = 1e-5f;     // V4: a bypassed tail below -100 dBFS for kIdleSeconds stops being computed
+constexpr float kIdleSeconds = 1.5f;
 constexpr float kSafetyLimit = 4.0f;  // +12 dBFS hard safety ceiling
 constexpr int kCompMask = Engine::kCompSize - 1;
 
@@ -87,6 +91,17 @@ void Engine::prepare(double sampleRate, int maxBlock) {
     safety_.prepare(sampleRate_, maxBlock_);
     slotInRamp_.fill(1.0f);
     stagedInRamp_ = 1.0f;
+    slotDly_.assign(static_cast<size_t>(kMaxChain) * 2 * kSlotDly, 0.0f);
+    slotDlyPos_ = 0;
+    slotTmp_.assign(static_cast<size_t>(maxBlock_) * 4, 0.0f);
+    for (int s = 0; s < kMaxChain; ++s) {
+        slotOn_[static_cast<size_t>(s)] = (active_ && s < active_->chainSize && !active_->enabled[static_cast<size_t>(s)]) ? 0.0f : 1.0f;
+        slotIdle_[static_cast<size_t>(s)] = 0;
+        slotQuiet_[static_cast<size_t>(s)] = 0;
+        slotEnvFast_[static_cast<size_t>(s)] = slotEnvSlow_[static_cast<size_t>(s)] = 0.0f;
+    }
+    for (int m = 0; m < kNumPresetMacros; ++m) macroSm_[static_cast<size_t>(m)] = macro_[static_cast<size_t>(m)].load();
+    macroApplied_.fill(-1.0f);
 }
 
 void Engine::markFresh(const Program* old, const Program* p) {
@@ -113,6 +128,53 @@ void Engine::markFresh(const Program* old, const Program* p) {
     }
     slotInRamp_ = next;
     stagedInRamp_ = (p->staged && !(old && old->staged == p->staged)) ? 0.0f : 1.0f;
+    // V4: per-slot enable ramps and idle flags travel with their processor (reorder); new processors start at their
+    // target (they are faded in by the fresh-input ramp anyway). A slot whose processor changed gets a clean
+    // latency-compensation history.
+    std::array<float, kMaxChain> on{};
+    std::array<uint8_t, kMaxChain> idle{};
+    for (int i = 0; i < p->chainSize; ++i) {
+        const size_t si = static_cast<size_t>(i);
+        on[si] = p->enabled[si] ? 1.0f : 0.0f;
+        idle[si] = 0;
+        bool same = false;
+        for (int j = 0; old && j < old->chainSize; ++j)
+            if (old->chain[static_cast<size_t>(j)] == p->chain[si]) {
+                on[si] = slotOn_[static_cast<size_t>(j)];
+                idle[si] = slotIdle_[static_cast<size_t>(j)];
+                same = j == i;
+            }
+        if (!same && p->slotLatency[si] > 0 && !slotDly_.empty()) {
+            float* d = slotDly_.data() + si * 2 * kSlotDly;
+            std::fill(d, d + 2 * kSlotDly, 0.0f);
+        }
+    }
+    slotOn_ = on;
+    slotIdle_ = idle;
+}
+
+void Engine::applyMacros(bool force) {
+    const Program& p = *active_;
+    if (p.numMacroTargets <= 0) return;
+    bool changed = force;
+    for (int m = 0; m < kNumPresetMacros; ++m) if (std::fabs(macroSm_[static_cast<size_t>(m)] - macroApplied_[static_cast<size_t>(m)]) > 1e-4f) changed = true;
+    if (!changed) return;
+    macroApplied_ = macroSm_;
+    // one setParams per affected slot: stored snapshot + every target's offset (snapshot is never modified)
+    uint32_t done = 0;
+    for (int t = 0; t < p.numMacroTargets; ++t) {
+        const int slot = p.macroTargets[static_cast<size_t>(t)].slot;
+        if (slot < 0 || slot >= p.chainSize || (done & (1u << slot))) continue;
+        done |= 1u << slot;
+        ParamValues v = p.chainValues[static_cast<size_t>(slot)];
+        for (int u = t; u < p.numMacroTargets; ++u) {
+            const auto& mt = p.macroTargets[static_cast<size_t>(u)];
+            if (mt.slot != slot || mt.param < 0 || mt.param >= kMaxParams) continue;
+            float& x = v[static_cast<size_t>(mt.param)];
+            x = std::clamp(x + mt.depth * macroSm_[static_cast<size_t>(std::clamp(mt.macro, 0, kNumPresetMacros - 1))], mt.lo, mt.hi);
+        }
+        p.chain[static_cast<size_t>(slot)]->setParams(v, false);
+    }
 }
 
 bool Engine::post(Program* p) {
@@ -132,9 +194,18 @@ void Engine::installDirect(Program* p, std::vector<Program*>& released) {
     slotInRamp_.fill(1.0f);
     stagedInRamp_ = 1.0f;
     for (int i = 0; i < p->chainSize; ++i) p->chain[static_cast<size_t>(i)]->setParams(p->chainValues[static_cast<size_t>(i)], true);
+    for (int i = 0; i < kMaxChain; ++i) {
+        slotOn_[static_cast<size_t>(i)] = (i < p->chainSize && !p->enabled[static_cast<size_t>(i)]) ? 0.0f : 1.0f;
+        slotIdle_[static_cast<size_t>(i)] = 0;
+    }
+    macroApplied_.fill(-1.0f);
+    applyMacros(true);
     trans_ = Transition::None;
     transGain_ = 1.0f;
     stagedFade_ = 1.0f;
+    haveLastStaged_ = false;
+    switchPending_ = false;
+    switchAmt_ = 1.0f;
     appliedVersion_ = stagedParamVersion_.load() - 1u;
     activeLatency_.store(p->chainLatency + p->stagedLatency);
 }
@@ -151,8 +222,23 @@ void Engine::applyStagedParamsIfChanged() {
     if (stagedParamType_.load(std::memory_order_relaxed) != active_->stagedType) return;  // not for us (yet)
     ParamValues vals;
     for (int i = 0; i < kMaxParams; ++i) vals[static_cast<size_t>(i)] = stagedParams_[static_cast<size_t>(i)].load(std::memory_order_relaxed);
-    active_->staged->setParams(vals, false);
     appliedVersion_ = v;
+    // discrete change? (registry is immutable after start-up: reading it here is lock- and allocation-free)
+    bool discrete = false;
+    const int type = active_->stagedType;
+    if (haveLastStaged_ && type >= 0 && type < static_cast<int>(fxRegistry().size())) {
+        const auto& ps = fxRegistry()[static_cast<size_t>(type)].params;
+        for (size_t i = 0; i < ps.size(); ++i)
+            if (ps[i].kind != ParamKind::Float && vals[i] != lastStaged_[i]) { discrete = true; break; }
+    }
+    if (switchPending_ || discrete) {
+        pendingStaged_ = vals;  // applied when the dip reaches zero (latest values win)
+        switchPending_ = true;
+        return;
+    }
+    active_->staged->setParams(vals, false);
+    lastStaged_ = vals;
+    haveLastStaged_ = true;
 }
 
 void Engine::installNow(Program* p) {
@@ -176,6 +262,9 @@ void Engine::installNow(Program* p) {
     }
     appliedVersion_ = stagedParamVersion_.load() - 1u;  // force re-apply of staged params
     activeLatency_.store(p->chainLatency + p->stagedLatency);
+    if (!old || old->staged != p->staged) { haveLastStaged_ = false; switchPending_ = false; switchAmt_ = 1.0f; }
+    macroApplied_.fill(-1.0f);
+    applyMacros(false);
 }
 
 void Engine::beginTransitionIfPending() {
@@ -185,6 +274,13 @@ void Engine::beginTransitionIfPending() {
     const Program* a = active_;
     bool sameChain = p->chainSize == a->chainSize;
     for (int i = 0; sameChain && i < a->chainSize; ++i) sameChain = p->chain[static_cast<size_t>(i)] == a->chain[static_cast<size_t>(i)];
+
+    // V4: a program that only changes per-instance enable flags (same processors in the same order, same staged
+    // processor) installs at once: each slot's own 15 ms bypass crossfade does the transition, no output fade.
+    if (sameChain && p->staged == a->staged && p->stagedType == a->stagedType && !p->commitHandover) {
+        installNow(p);
+        return;
+    }
 
     // COMMIT hand-over: identical prefix + old staged appended, nothing staged after. Seamless when the
     // staged FX was fully audible (no SOLO, no MUTE, no fade in progress).
@@ -246,9 +342,127 @@ void Engine::process(float* left, float* right, int numSamples, const ProcessCon
     }
 }
 
+void Engine::processSlot(int s, float* cL, float* cR, int n, const ProcessContext& ctx) {
+    const Program& p = *active_;
+    const size_t si = static_cast<size_t>(s);
+    FxProcessor* fx = p.chain[si];
+    const float sr = static_cast<float>(sampleRate_);
+    const float freshStep = 1.0f / (kFreshInMs * 0.001f * sr);
+    const float onStep = 1.0f / (kSlotBypassMs * 0.001f * sr);
+    const float target = p.enabled[si] ? 1.0f : 0.0f;
+    float& on = slotOn_[si];
+    // latency-matched copy of this slot's input (always written, so a bypass can start at any moment)
+    const int lat = std::clamp(p.slotLatency[si], 0, kSlotDly - maxBlock_ - 1);
+    float* dlyL = slotDly_.data() + si * 2 * kSlotDly;
+    float* dlyR = dlyL + kSlotDly;
+    float* dryL = slotTmp_.data();
+    float* dryR = dryL + maxBlock_;
+    for (int i = 0; i < n; ++i) {
+        const int w = (slotDlyPos_ + i) & (kSlotDly - 1);
+        dlyL[w] = cL[i];
+        dlyR[w] = cR[i];
+        const int r = (slotDlyPos_ + i - lat) & (kSlotDly - 1);
+        dryL[i] = dlyL[r];
+        dryR[i] = dlyR[r];
+    }
+    const bool fullyOn = on >= 1.0f && target >= 1.0f;
+    const bool tail = p.tailOnBypass[si] != 0;
+    auto fadeIn = [n, freshStep](float& ramp, float* a, float* b) {
+        for (int i = 0; i < n && ramp < 1.0f; ++i) {
+            const float g = 0.5f - 0.5f * std::cos(3.14159265f * ramp);
+            a[i] *= g;
+            b[i] *= g;
+            ramp = std::min(1.0f, ramp + freshStep);
+        }
+    };
+    if (fullyOn) {
+        slotIdle_[si] = 0;
+        float* cbuf[2] = {cL, cR};
+        if (slotInRamp_[si] < 1.0f) fadeIn(slotInRamp_[si], cL, cR);
+        fx->process(cbuf, n, ctx);
+    } else {
+        // per-sample enable ramp
+        float* onR = slotTmp_.data() + 2 * static_cast<size_t>(maxBlock_);  // reuse as ramp storage (n floats)
+        for (int i = 0; i < n; ++i) {
+            if (on < target) on = std::min(target, on + onStep);
+            else if (on > target) on = std::max(target, on - onStep);
+            onR[i] = on;
+        }
+        const bool idleNow = slotIdle_[si] && target <= 0.0f && on <= 0.0f;
+        if (idleNow) {
+            std::memcpy(cL, dryL, sizeof(float) * static_cast<size_t>(n));
+            std::memcpy(cR, dryR, sizeof(float) * static_cast<size_t>(n));
+        } else {
+            if (slotIdle_[si]) { slotIdle_[si] = 0; slotInRamp_[si] = 0.0f; }  // waking a parked tail effect
+            if (tail) {
+                // stop new input (faded with the ramp), let the tail ring; the bypassed dry path fades in beside it
+                for (int i = 0; i < n; ++i) { cL[i] *= onR[i]; cR[i] *= onR[i]; }
+                float* cbuf[2] = {cL, cR};
+                if (slotInRamp_[si] < 1.0f) fadeIn(slotInRamp_[si], cL, cR);
+                fx->process(cbuf, n, ctx);
+                double sq = 0.0;
+                for (int i = 0; i < n; ++i) {
+                    sq += static_cast<double>(cL[i]) * cL[i] + static_cast<double>(cR[i]) * cR[i];
+                    cL[i] += (1.0f - onR[i]) * dryL[i];
+                    cR[i] += (1.0f - onR[i]) * dryR[i];
+                }
+                // park the effect once its tail has decayed (saves CPU while bypassed)
+                if (target <= 0.0f && on <= 0.0f) {
+                    const float rms = static_cast<float>(std::sqrt(sq / (2.0 * n)));
+                    slotQuiet_[si] = rms < kIdleFloor ? slotQuiet_[si] + n : 0;
+                    if (slotQuiet_[si] > static_cast<int>(kIdleSeconds * sr)) slotIdle_[si] = 1;
+                } else {
+                    slotQuiet_[si] = 0;
+                }
+            } else {
+                // switch off with a crossfade; the effect keeps running underneath (re-enable is seamless)
+                float* cbuf[2] = {cL, cR};
+                if (slotInRamp_[si] < 1.0f) fadeIn(slotInRamp_[si], cL, cR);
+                fx->process(cbuf, n, ctx);
+                for (int i = 0; i < n; ++i) {
+                    const float g = onR[i];
+                    cL[i] = g * cL[i] + (1.0f - g) * dryL[i];
+                    cR[i] = g * cR[i] + (1.0f - g) * dryR[i];
+                }
+            }
+        }
+    }
+    const bool bad = sanitize(cL, n, 32.0f) | sanitize(cR, n, 32.0f);
+    if (bad) { fx->reset(); slotInRamp_[si] = 0.0f; tele_.faults.fetch_add(1, std::memory_order_relaxed); }
+    // stage analysis (V4 Phase 7.3): RMS, sample peak, onset strength (fast vs slow envelope), never audio buffers
+    double sq = 0.0;
+    float pk = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        sq += 0.5 * (static_cast<double>(cL[i]) * cL[i] + static_cast<double>(cR[i]) * cR[i]);
+        pk = std::max(pk, std::max(std::fabs(cL[i]), std::fabs(cR[i])));
+    }
+    const float rms = static_cast<float>(std::sqrt(sq / n));
+    const float af = 1.0f - std::exp(-static_cast<float>(n) / (0.005f * sr));
+    const float as = 1.0f - std::exp(-static_cast<float>(n) / (0.150f * sr));
+    slotEnvFast_[si] += af * (rms - slotEnvFast_[si]);
+    slotEnvSlow_[si] += as * (rms - slotEnvSlow_[si]);
+    const float onset = std::clamp((slotEnvFast_[si] - 1.4f * slotEnvSlow_[si]) / std::max(slotEnvSlow_[si], 1e-4f), 0.0f, 1.0f);
+    tele_.slotRms[si].store(rms, std::memory_order_relaxed);
+    tele_.slotPeak[si].store(pk, std::memory_order_relaxed);
+    tele_.slotOnset[si].store(onset, std::memory_order_relaxed);
+    tele_.slotEnabled[si].store(on, std::memory_order_relaxed);
+    tele_.slotIds[si].store(p.ids[si], std::memory_order_relaxed);
+}
+
 void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) {
     applyStagedParamsIfChanged();
     const float sr = static_cast<float>(sampleRate_);
+    {
+        // macros: one-pole smoothing per block (each effect smooths its own parameters further)
+        const float a = 1.0f - std::exp(-static_cast<float>(n) / (kMacroMs * 0.001f * sr));
+        for (int m = 0; m < kNumPresetMacros; ++m) {
+            float& v = macroSm_[static_cast<size_t>(m)];
+            const float t = macro_[static_cast<size_t>(m)].load(std::memory_order_relaxed);
+            v += a * (t - v);
+            if (std::fabs(t - v) < 2e-4f) v = t;
+        }
+        applyMacros(false);
+    }
     auto stepFor = [sr](float ms) { return 1.0f / (ms * 0.001f * sr); };
 
     const Program& p = *active_;
@@ -277,6 +491,14 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
             if (stagedFade_ < fadeTgt) stagedFade_ = std::min(fadeTgt, stagedFade_ + fadeStep);
             else if (stagedFade_ > fadeTgt) stagedFade_ = std::max(fadeTgt, stagedFade_ - fadeStep);
             rampWet_[static_cast<size_t>(i)] = (1.0f - muteAmt_) * stagedFade_;
+        }
+        // discrete switch dip (6 ms down, apply, 6 ms up)
+        const float swStep = stepFor(6.0f), swTgt = switchPending_ ? 0.0f : 1.0f;
+        for (int i = 0; i < n; ++i) {
+            if (switchAmt_ < swTgt) switchAmt_ = std::min(swTgt, switchAmt_ + swStep);
+            else if (switchAmt_ > swTgt) switchAmt_ = std::max(swTgt, switchAmt_ - swStep);
+            const float sm = 0.5f - 0.5f * std::cos(3.14159265f * switchAmt_);
+            rampWet_[static_cast<size_t>(i)] *= sm;
         }
     }
 
@@ -311,17 +533,10 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
             ramp = std::min(1.0f, ramp + freshStep);
         }
     };
-    for (int s = 0; s < p.chainSize; ++s) {
-        FxProcessor* fx = p.chain[static_cast<size_t>(s)];
-        if (slotInRamp_[static_cast<size_t>(s)] < 1.0f) fadeIn(slotInRamp_[static_cast<size_t>(s)], cL, cR);
-        fx->process(cbuf, n, ctx);
-        const bool bad = sanitize(cL, n, 32.0f) | sanitize(cR, n, 32.0f);
-        if (bad) { fx->reset(); slotInRamp_[static_cast<size_t>(s)] = 0.0f; tele_.faults.fetch_add(1, std::memory_order_relaxed); }
-        double sq = 0.0;
-        for (int i = 0; i < n; ++i) sq += 0.5 * (static_cast<double>(cL[i]) * cL[i] + static_cast<double>(cR[i]) * cR[i]);
-        tele_.slotRms[static_cast<size_t>(s)].store(static_cast<float>(std::sqrt(sq / n)), std::memory_order_relaxed);
-        tele_.slotIds[static_cast<size_t>(s)].store(p.ids[static_cast<size_t>(s)], std::memory_order_relaxed);
-    }
+    (void)cbuf;
+    (void)fadeIn;
+    for (int s = 0; s < p.chainSize; ++s) processSlot(s, cL, cR, n, ctx);
+    slotDlyPos_ = (slotDlyPos_ + n) & (kSlotDly - 1);
     tele_.chainSize.store(p.chainSize, std::memory_order_relaxed);
 
     // --- SOLO mix: staged input = (1-a) * chain + a * dry (delayed by chain latency) ------
@@ -429,6 +644,12 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
 
     dryPos_ = (dryPos_ + n) & kCompMask;
     sinPos_ = (sinPos_ + n) & kCompMask;
+    if (switchPending_ && switchAmt_ <= 0.0f && active_->staged) {
+        active_->staged->setParams(pendingStaged_, false);
+        lastStaged_ = pendingStaged_;
+        haveLastStaged_ = true;
+        switchPending_ = false;
+    }
 }
 
 }  // namespace ih1

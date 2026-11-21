@@ -62,7 +62,7 @@ class Chorus final : public FxBase {
         mix_.setMix(pct(cMix), snap);
     }
 
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float fb = pct(cFeedback) * 0.7f;
         const float vin = pct(cVintage);
@@ -120,7 +120,7 @@ class Doubler final : public FxBase {
         for (auto& f : lc_) f.setup(dsp::Svf::Highpass, fp(dLowCut), 0.6f, 0, sr_);
         mix_.setMix(pct(dMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const int voices = ip(dVoices) == 1 ? 4 : 2;
         const float cents = fp(dDetune);

@@ -67,7 +67,7 @@ class TapeEcho final : public FxBase {
         return fb <= 0.0 ? 4.0 : std::min(40.0, 3.0 * std::log(1e-3) / std::log(fb));
     }
 
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double head1 = std::clamp(syncedSeconds(bp(kSync), fp(kTime), ip(kDiv), ctx.bpm), 0.04, kMaxHead1);
         const double vTarget = kRefSeconds / head1;  // tape speed (tape-distance units per second / ref)

@@ -29,6 +29,7 @@ class Reverse final : public FxBase {
         for (auto& f : tone_) f.reset();
         mix_.reset();
         phase_ = 0.0;
+        started_ = false;
         for (auto& a : anchor_) a = 0;
         written_ = 0;
         fbState_[0] = fbState_[1] = 0.0f;
@@ -43,7 +44,7 @@ class Reverse final : public FxBase {
         return 2.0 * len + (fb > 0 ? len * std::log(1e-3) / std::log(fb) : 0.0);
     }
 
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const int mode = ip(kMode);
         const double lenSec = std::clamp(syncedSeconds(bp(kSync), fp(kLength), ip(kDiv), ctx.bpm), 0.03, static_cast<double>(kMaxLen));
@@ -74,28 +75,53 @@ class Reverse final : public FxBase {
             return;
         }
 
-        // tempo alignment for Reverse Delay: re-phase at chunk boundaries to the host grid
+        // V4 Phase 4: every reversed voice (two half-overlapped voices per channel in Buffer mode, one per channel in
+        // Delay mode) has its own phase and latches the chunk length and pitch rate when IT wraps (window = 0). The
+        // read offset is phase x (1 + rate), so a change mid-chunk used to move the read point by hundreds of samples.
+        // The right channel's spread offset glides (a slight speed change, never a jump).
         const bool aligned = mode == 1 && bp(kSync) && ctx.ppqValid && ctx.hostPlaying;
-        const double fadeLen = std::max(32.0, L * std::clamp(pct(kFade), 0.01f, 0.5f));
+        const int voices = mode == 0 ? 2 : 1;
+        if (!started_) {
+            started_ = true;
+            for (int c = 0; c < 2; ++c)
+                for (int v = 0; v < 2; ++v) { vL_[c][v] = L; vRate_[c][v] = rate; vPh_[c][v] = v * 0.5 * L; }
+            offCur_ = 0.0;
+        }
+        const double offTarget = spread * 0.5 * L;
         for (int i = 0; i < n; ++i) {
             float out[2] = {0, 0};
+            const double slew = std::clamp(offTarget - offCur_, -0.02, 0.02);
+            offCur_ += slew;
             for (int c = 0; c < 2; ++c) {
-                // right channel optionally offset by up to half a chunk for width
-                const double ph0 = std::fmod(phase_ + (c == 1 ? spread * 0.5 * L : 0.0), L);
-                if (mode == 0) {
-                    for (int v = 0; v < 2; ++v) {
-                        const double ph = std::fmod(ph0 + v * 0.5 * L, L);
-                        const float w = 0.5f - 0.5f * std::cos(dsp::kTwoPi * static_cast<float>(ph / L));
-                        const double d = 2.0 * ph * 0.5 * (1.0 + rate) + 1.0;  // read point walks back from the anchor
-                        out[c] += w * line_[c].readCubic(static_cast<float>(std::min<double>(d, line_[c].capacity() - 4)));
+                for (int v = 0; v < voices; ++v) {
+                    double& ph = vPh_[c][v];
+                    const double Lv = vL_[c][v];
+                    const double pc = std::fmod(ph + (c == 1 ? offCur_ : 0.0) + Lv, Lv);
+                    float w;
+                    double d;
+                    if (mode == 0) {
+                        w = 0.5f - 0.5f * std::cos(dsp::kTwoPi * static_cast<float>(pc / Lv));
+                        d = pc * (1.0 + vRate_[c][v]) + 1.0;  // read point walks back from the anchor
+                    } else {
+                        const double fadeLen = std::max(32.0, Lv * std::clamp(pct(kFade), 0.01f, 0.5f));
+                        w = 1.0f;
+                        if (pc < fadeLen) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>(pc / fadeLen));
+                        else if (pc > Lv - fadeLen) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>((Lv - pc) / fadeLen));
+                        d = pc * (1.0 + vRate_[c][v]) + 1.0;
                     }
-                } else {
-                    const double ph = ph0;
-                    float w = 1.0f;
-                    if (ph < fadeLen) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>(ph / fadeLen));
-                    else if (ph > L - fadeLen) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>((L - ph) / fadeLen));
-                    const double d = ph * (1.0 + rate) + 1.0;
-                    out[c] = w * line_[c].readCubic(static_cast<float>(std::min<double>(d, line_[c].capacity() - 4)));
+                    out[c] += w * line_[c].readCubic(static_cast<float>(std::min<double>(d, line_[c].capacity() - 4)));
+                    // advance; latch the new length / rate exactly where this voice's window is zero
+                    const double prev = pc;
+                    ph += 1.0;
+                    const double next = std::fmod(ph + (c == 1 ? offCur_ : 0.0) + Lv, Lv);
+                    if (next < prev) {
+                        // wrapped: start the new chunk at window 0 with the current settings
+                        // (each voice restarts at its own window zero; the half-cycle overlap of the two Buffer voices
+                        // is kept because each latches at its own wrap, half a chunk apart)
+                        vL_[c][v] = L;
+                        vRate_[c][v] = rate;
+                        ph = next - (c == 1 ? offCur_ : 0.0);
+                    }
                 }
             }
             for (int c = 0; c < 2; ++c) {
@@ -103,14 +129,13 @@ class Reverse final : public FxBase {
                 line_[c].push(ch[c][i] + fb * f);
                 ch[c][i] = f;
             }
-            phase_ += 1.0;
-            if (phase_ >= L) {
-                phase_ -= L;
-                if (aligned) {
-                    const double samplesFromBar = (ctx.ppqPosition * 60.0 / ctx.bpm) * sr_ + i;
-                    phase_ = std::fmod(samplesFromBar, L);
-                    if (phase_ > fadeLen) phase_ = 0.0;  // only snap when near a boundary
-                }
+            // Reverse Delay on a playing host: re-phase to the grid only at the start of a chunk (window ~0)
+            if (aligned) {
+                const double Lv = vL_[0][0];
+                const double samplesFromBar = (ctx.ppqPosition * 60.0 / ctx.bpm) * sr_ + i;
+                const double snapped = std::fmod(samplesFromBar, Lv);
+                const double fadeLen = std::max(32.0, Lv * std::clamp(pct(kFade), 0.01f, 0.5f));
+                if (vPh_[0][0] < 1.0 && snapped < 0.1 * fadeLen) { vPh_[0][0] = snapped; vPh_[1][0] = snapped; }
             }
         }
         for (auto& f : tone_) f.flush();
@@ -123,6 +148,9 @@ class Reverse final : public FxBase {
     dsp::Smoother lenS_;
     MixStage mix_;
     double phase_ = 0.0;
+    bool started_ = false;
+    double vPh_[2][2] = {{0, 0}, {0, 0}}, vL_[2][2] = {{1, 1}, {1, 1}}, offCur_ = 0.0;
+    float vRate_[2][2] = {{1, 1}, {1, 1}};
     int64_t anchor_[2] = {0, 0};
     int64_t written_ = 0;
     float fbState_[2] = {0, 0};

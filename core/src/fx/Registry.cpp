@@ -1,5 +1,6 @@
 #include "ih1/fx/FxProcessor.h"
 #include "ih1/fx/AllFx.h"
+#include "ih1/fx/FxBase.h"
 
 namespace ih1 {
 
@@ -155,6 +156,16 @@ const std::vector<FxDescriptor>& fxRegistry() {
             annotate(d);
             // never index past ParamValues: a descriptor over the cap is truncated (and fails the contract test)
             if (d.params.size() > static_cast<size_t>(kMaxParams)) d.params.resize(static_cast<size_t>(kMaxParams));
+            // V4: tell every processor which parameters are discrete (they switch; continuous ones glide)
+            uint64_t mask = 0;
+            for (size_t i = 0; i < d.params.size() && i < 64; ++i)
+                if (d.params[i].kind != ParamKind::Float) mask |= 1ull << i;
+            auto make = d.create;
+            d.create = [make, mask]() {
+                auto p = make();
+                if (auto* b = dynamic_cast<fx::FxBase*>(p.get())) b->setDiscreteMask(mask);
+                return p;
+            };
         }
         return r;
     }();

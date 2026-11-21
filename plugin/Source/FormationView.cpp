@@ -510,7 +510,30 @@ FormationView::FormationView(Processor& p, FormationRenderer& r) : proc_(p), ren
     inGain_.setDoubleClickReturnValue(true, 0.0);
     outGain_.setDoubleClickReturnValue(true, 0.0);
     mix_.setDoubleClickReturnValue(true, 100.0);
+    for (int k = 0; k < kNumPresetMacros; ++k) {
+        auto& s = pmacro_[static_cast<size_t>(k)];
+        setupMini(s, "");
+        pmacroAtt_[static_cast<size_t>(k)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(proc_.params(), "pmacro_" + juce::String(k + 1), s);
+        s.setDoubleClickReturnValue(true, 0.0);
+        s.setVisible(false);
+    }
+    syncMacros();
     startTimerHz(30);
+}
+
+void FormationView::syncMacros() {
+    const auto names = proc_.presetMacroNames();
+    bool changed = false;
+    for (int k = 0; k < kNumPresetMacros; ++k) {
+        const juce::String n = k < static_cast<int>(names.size()) ? names[static_cast<size_t>(k)] : juce::String();
+        auto& s = pmacro_[static_cast<size_t>(k)];
+        if (n != pmacroName_[static_cast<size_t>(k)]) changed = true;
+        pmacroName_[static_cast<size_t>(k)] = n;
+        s.setVisible(n.isNotEmpty());
+        s.setTooltip(n.isEmpty() ? juce::String() : n + ": a performance macro of this preset. It moves several of the chain's settings together while it plays; "
+                                                        "the committed settings themselves never change (0 = the preset exactly as saved). Double-click for 0. Automatable as Preset Macro " + juce::String(k + 1) + ".");
+    }
+    if (changed) { resized(); repaint(); }
 }
 
 // V3 software volume renderer: simulation + CPU field volume on a background thread (never on the message thread)
@@ -643,7 +666,7 @@ void FormationView::syncChain() {
         const auto& c = proc_.session().chain();
         for (size_t i = 0; i < c.size(); ++i) {
             const auto col = juce::Colour::fromFloatRGBA(chain_[i].colour.r, chain_[i].colour.g, chain_[i].colour.b, 1.0f);
-            items_.push_back({c[i].id(), static_cast<int>(i), juce::String(c[i].descriptor().name), col, {}});
+            items_.push_back({c[i].id(), static_cast<int>(i), juce::String(c[i].descriptor().name), col, {}, c[i].enabled()});
         }
     }
     // a drag whose instance disappeared (preset load, delete elsewhere) is cancelled, never retargeted
@@ -679,6 +702,7 @@ void FormationView::timerCallback() {
     if (proc_.revision() != seenRevision_) {
         seenRevision_ = proc_.revision();
         syncChain();
+        syncMacros();
         latency_ = proc_.latencyStatus();
         safety_ = proc_.safetyStatus();
         if (safety_.riskyWhileOff && !riskWarned_) showToast("Output Safety is off and this chain uses high feedback or drive. Keep monitors low.");
@@ -706,6 +730,18 @@ void FormationView::resized() {
     mix_.setBounds(r.removeFromRight(40));
     r.removeFromRight(6);
     inGain_.setBounds(r.removeFromRight(40));
+    // preset macros, to the left of the global controls (right to left keeps them next to IN)
+    auto m = getLocalBounds().removeFromTop(64).withTrimmedRight(170).reduced(10, 10);
+    {
+        // visible macros in order 1..4, packed leftwards from the IN knob
+        int count = 0;
+        for (const auto& n : pmacroName_) count += n.isNotEmpty() ? 1 : 0;
+        auto row = m.removeFromRight(count * 64);
+        for (int k = 0; k < kNumPresetMacros; ++k) {
+            if (pmacroName_[static_cast<size_t>(k)].isEmpty()) continue;
+            pmacro_[static_cast<size_t>(k)].setBounds(row.removeFromLeft(64).withSizeKeepingCentre(40, 40));
+        }
+    }
     if (confirm_) mountConfirm();
 }
 
@@ -722,6 +758,12 @@ void FormationView::paint(juce::Graphics& g) {
         g.setColour(s->isMouseOverOrDragging() ? Colours::textDim : Colours::textFaint);
         g.drawText(cap, s->getBounds().translated(0, 34).withHeight(12), juce::Justification::centred);
     }
+    for (int k = 0; k < kNumPresetMacros; ++k) {
+        const auto& s = pmacro_[static_cast<size_t>(k)];
+        if (!s.isVisible()) continue;
+        g.setColour(s.isMouseOverOrDragging() ? Colours::textDim : Colours::textFaint);
+        g.drawFittedText(pmacroName_[static_cast<size_t>(k)].toUpperCase(), s.getBounds().translated(0, 34).withHeight(12).expanded(12, 0), juce::Justification::centred, 1, 0.7f);
+    }
     // chain strip (the reorder / delete affordance; below the artwork, never over it)
     const auto mouse = getMouseXYRelative().toFloat();
     const auto font = LookAndFeel::font(12.5f, true);
@@ -730,11 +772,17 @@ void FormationView::paint(juce::Graphics& g) {
         if (it.r.isEmpty()) { ++hidden; continue; }
         const bool src = dragging_ && it.id == dragId_;
         const bool hot = !dragging_ && it.r.contains(mouse);
-        const auto c = readable(it.colour, 0.75f);
-        g.setColour(Colours::textFaint.withAlpha(src ? 0.35f : 0.9f));
-        g.setFont(LookAndFeel::font(10.0f));
-        g.drawText(juce::String(it.index + 1), it.r.withWidth(14.0f), juce::Justification::centredLeft);
-        g.setColour(c.withAlpha(src ? 0.3f : (hot ? 1.0f : 0.78f)));
+        // V4 Phase 6: enabled = the FX colour and a filled mark; bypassed = grey text and a hollow mark
+        const auto c = it.enabled ? readable(it.colour, 0.75f) : Colours::textFaint;
+        const float mx = it.r.getX() + 4.0f, my = it.r.getCentreY();
+        if (it.enabled) {
+            g.setColour(readable(it.colour, 0.8f).withAlpha(src ? 0.3f : 0.9f));
+            g.fillEllipse(mx - 2.5f, my - 2.5f, 5.0f, 5.0f);
+        } else {
+            g.setColour(Colours::textFaint.withAlpha(src ? 0.3f : 0.85f));
+            g.drawEllipse(mx - 2.5f, my - 2.5f, 5.0f, 5.0f, 1.0f);
+        }
+        g.setColour(c.withAlpha(src ? 0.3f : (hot ? 1.0f : (it.enabled ? 0.78f : 0.6f))));
         g.setFont(font);
         g.drawText(it.name, it.r.withTrimmedLeft(16.0f), juce::Justification::centredLeft);
         if (hot) g.fillRect(it.r.getX() + 16.0f, it.r.getBottom() - 2.0f, it.r.getWidth() - 18.0f, 1.0f);
@@ -886,7 +934,20 @@ void FormationView::cancelDrag() {
 }
 
 void FormationView::mouseUp(const juce::MouseEvent& e) {
-    if (!dragging_) { cancelDrag(); return; }
+    if (!dragging_) {
+        // V4 Phase 6: a click (no drag) on a committed FX name bypasses / enables that instance
+        const uint64_t id = dragId_;
+        const bool click = pressed_ && !e.mods.isPopupMenu() && hitItem(e.position) >= 0 && items_[static_cast<size_t>(hitItem(e.position))].id == id;
+        cancelDrag();
+        if (click && id != 0) {
+            proc_.uiToggleEnabled(id);
+            syncChain();
+            seenRevision_ = proc_.revision();
+            for (const auto& it : items_)
+                if (it.id == id) showToast(it.name + (it.enabled ? " enabled" : " bypassed"));
+        }
+        return;
+    }
     const uint64_t id = dragId_;
     const bool overDelete = deleteZone_.expanded(10.0f).contains(e.position);
     const bool inStrip = strip_.expanded(0.0f, 30.0f).contains(e.position);
@@ -1090,7 +1151,10 @@ juce::String FormationView::getTooltip() {
         return "Output peak " + juce::String(db, 1) + " dBFS, safety reduction " + juce::String(meterGr_, 1) + " dB. " + safety_.headline + ".\n\n" + safety_.detail;
     }
     const int i = hitItem(getMouseXYRelative().toFloat());
-    return i >= 0 ? describe(items_[static_cast<size_t>(i)].id) : juce::String();
+    if (i < 0) return {};
+    const auto& it = items_[static_cast<size_t>(i)];
+    return describe(it.id) + "\n\n" + (it.enabled ? "Click to bypass this effect (its settings are kept). Drag to reorder or delete."
+                                                   : "Bypassed. Click to enable it again with exactly the same settings. Drag to reorder or delete.");
 }
 
 }  // namespace ih1::plugin

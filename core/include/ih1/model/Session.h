@@ -25,8 +25,12 @@ public:
     const ParamValues& values() const { return values_; }
     uint32_t visualSeed() const { return seed_; }
     FxProcessor* processor() const { return proc_; }
+    // V4 Phase 6: enabled / bypassed. A separate boolean: bypass never edits the frozen parameter values.
+    bool enabled() const { return enabled_; }
 
 private:
+    friend class Session;
+    bool enabled_ = true;
     uint64_t id_;
     int type_;
     ParamValues values_;
@@ -66,6 +70,19 @@ public:
     bool move(int from, int to);  // reorder (changes DSP order)
     bool remove(uint64_t id);     // delete one instance (confirmation is the UI's job)
     void clearChain();
+    // V4 Phase 6: enable / bypass one committed instance (click-free in the engine). Saved with presets and projects.
+    bool setEnabled(uint64_t id, bool on);
+    bool toggleEnabled(uint64_t id);
+
+    // ---- preset macros (V4 Phase 1.5) -------------------------------------------------------------
+    // A macro is a modulation source owned by the recalled chain: each target adds depth * value (value 0..1) to one
+    // continuous parameter of one committed instance at runtime, clamped to its range. The committed values are
+    // never modified (invariant 4); macro value 0 reproduces the stored chain exactly. Targets follow instance ids
+    // through reorder; a deleted instance's targets disappear. Values are host parameters (the plug-in sets them).
+    struct MacroTargetDef { uint64_t id = 0; std::string param; float depth = 0.0f; };
+    struct MacroDef { std::string name; std::vector<MacroTargetDef> targets; };
+    const std::vector<MacroDef>& macros() const { return macros_; }
+    int activeMacroCount() const;  // macros with at least one live target
     // Init (V3 Phase 7.1): the explicit clean starting state. No committed FX, staged = None, every draft back to its
     // defaults (the staged cache is cleared only here and by RESET), SOLO / MUTE off. Every processor is retired,
     // so no loop, freeze, feedback or modulation memory survives. The latency mode is a host-latency preference and
@@ -125,6 +142,7 @@ private:
     bool solo_ = false, mute_ = false;
     LatencyMode latencyMode_ = LatencyMode::Quality;
     std::vector<CommittedInstance> chain_;
+    std::vector<MacroDef> macros_;
 
     std::unordered_map<FxProcessor*, std::unique_ptr<FxProcessor>> owned_;
     std::unordered_map<FxProcessor*, int> refs_;  // references from programs not yet retired

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -26,7 +27,22 @@ struct Program {
     std::array<ParamValues, kMaxChain> chainValues{};
     // True when this program results from COMMIT: the old staged processor became the last chain slot.
     bool commitHandover = false;
+    // V4 Phase 6: per-instance enable / bypass. A separate boolean, never part of the frozen parameter snapshot.
+    // A bypassed slot passes its input (delayed by the slot's own latency, so the chain timing never moves).
+    // tailOnBypass: Time & Space effects stop receiving new input but let their echoes / reverb ring out; every other
+    // effect switches off with a short crossfade (it keeps running underneath so re-enabling is seamless).
+    std::array<uint8_t, kMaxChain> enabled{};
+    std::array<uint8_t, kMaxChain> tailOnBypass{};
+    std::array<int, kMaxChain> slotLatency{};
+    // V4 Phase 1.5: preset macros. Each target adds `depth * macro` to one Float parameter of one slot at runtime,
+    // clamped to the parameter range. The stored (committed) values never change; macro 0 = exactly the stored chain.
+    struct MacroTarget { int macro = 0, slot = 0, param = 0; float depth = 0, lo = 0, hi = 1; };
+    static constexpr int kMaxMacroTargets = 48;
+    std::array<MacroTarget, kMaxMacroTargets> macroTargets{};
+    int numMacroTargets = 0;
 };
+
+constexpr int kNumPresetMacros = 4;
 
 struct Telemetry {
     std::atomic<float> inRms{0}, outRms{0}, outPeak{0};
@@ -35,6 +51,10 @@ struct Telemetry {
     std::atomic<float> stagedRms{0};
     std::array<std::atomic<float>, kMaxChain> slotRms{};  // output RMS after each committed slot
     std::array<std::atomic<uint64_t>, kMaxChain> slotIds{};
+    std::array<std::atomic<float>, kMaxChain> slotEnabled{};  // V4: per-slot enable ramp 0 (bypassed) .. 1
+    // V4 Phase 7.3: per-stage analysis (output of each committed slot): peak, crest factor (dB), onset strength 0..1
+    std::array<std::atomic<float>, kMaxChain> slotPeak{};
+    std::array<std::atomic<float>, kMaxChain> slotOnset{};
     std::atomic<int> chainSize{0};
     std::atomic<float> soloAmount{0}, muteAmount{0};      // current ramp positions (0..1)
     // Output Safety (V3 Phase 8.5)
@@ -69,6 +89,8 @@ public:
     void setInputGainDb(float db) { inGainDb_.store(db); }
     void setOutputGainDb(float db) { outGainDb_.store(db); }
     void setMix(float m01) { mix_.store(m01); }
+    // V4: preset macro values 0..1 (host-automatable). Smoothed on the audio thread.
+    void setMacro(int i, float v01) { if (i >= 0 && i < kNumPresetMacros) macro_[static_cast<size_t>(i)].store(std::clamp(v01, 0.0f, 1.0f)); }
     // Output Safety: mode (OutputSafety::Mode) and ceiling. The caller resolves Zero-latency sessions to Guard.
     void setSafety(int mode, float ceilingDb) { safetyMode_.store(mode); safetyCeil_.store(ceilingDb); }
     // Latency the TruePeak safety mode adds at the prepared rate (for host reporting on the message thread).
@@ -87,6 +109,8 @@ private:
     void installNow(Program* p);
     void applyStagedParamsIfChanged();
     void markFresh(const Program* old, const Program* p);
+    void applyMacros(bool force);
+    void processSlot(int s, float* cL, float* cR, int n, const ProcessContext& ctx);
 
     enum class Transition { None, OutputFadeOut, OutputFadeIn, StagedFadeOut, StagedFadeIn };
 
@@ -113,6 +137,26 @@ private:
     // envelopes are empty, so its first delayed copy would start mid-waveform. Its input is faded in instead.
     std::array<float, kMaxChain> slotInRamp_{};
     float stagedInRamp_ = 1.0f;
+    // V4 per-slot bypass: enable ramp (1 = on), idle flag (bypassed tail has decayed: stop computing it), idle timer,
+    // a latency-matched copy of each slot's input, and scratch for the slot's dry / feed signals.
+    static constexpr int kSlotDly = 1 << 14;
+    std::array<float, kMaxChain> slotOn_{};
+    std::array<uint8_t, kMaxChain> slotIdle_{};
+    std::array<int, kMaxChain> slotQuiet_{};
+    std::vector<float> slotDly_;  // kMaxChain * 2 * kSlotDly
+    int slotDlyPos_ = 0;
+    std::vector<float> slotTmp_;  // 4 * maxBlock: dry L/R, out L/R
+    // macros
+    std::array<std::atomic<float>, kNumPresetMacros> macro_{};
+    std::array<float, kNumPresetMacros> macroSm_{};
+    std::array<float, kNumPresetMacros> macroApplied_{};
+    // V4 Phase 4: a discrete staged-parameter change (mode, pattern, sync...) is applied under a 6 ms dip of the staged
+    // wet signal into its own (latency-aligned) input, so a switch inside the effect is never heard as a step
+    ParamValues pendingStaged_{}, lastStaged_{};
+    bool switchPending_ = false, haveLastStaged_ = false;
+    float switchAmt_ = 1.0f;
+    // stage analysis state
+    std::array<float, kMaxChain> slotEnvFast_{}, slotEnvSlow_{};
 
     // ramps (per-sample linear)
     float soloAmt_ = 0, muteAmt_ = 0, bypassAmt_ = 0, transGain_ = 1, stagedFade_ = 1;

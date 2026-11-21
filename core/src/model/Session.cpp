@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cmath>
 #include <random>
 
 #include "ih1/model/Json.h"
@@ -17,7 +18,14 @@ uint64_t splitmix(uint64_t& s) {
     return z ^ (z >> 31);
 }
 constexpr const char* kFormat = "ih1-state";
+// V4: the document version stays 1 because every V4 addition is an optional field that older readers ignore
+// (per-instance "enabled", chain "macros"): a V3 build still opens a V4 project (all FX enabled, no macros) instead
+// of refusing it. "schema" records the feature level that wrote the document (4 = V4). Missing fields = V3 meaning.
 constexpr int kStateVersion = 1;
+constexpr int kSchemaLevel = 4;
+bool tailCategory(const FxDescriptor& d) {
+    return d.category == FxCategory::TimeSpace || d.typeId == "spectral_delay" || d.typeId == "echo_matrix" || d.typeId == "reverse_echo";
+}
 }  // namespace
 
 std::string idToHex(uint64_t id) {
@@ -110,8 +118,29 @@ void Session::rebuild(bool commitHandover, bool post) {
         p->chain[i] = chain_[i].processor();
         p->ids[i] = chain_[i].id();
         p->chainValues[i] = chain_[i].values();
-        p->chainLatency += chain_[i].processor()->latencySamples();
+        const int lat = chain_[i].processor()->latencySamples();
+        p->chainLatency += lat;
+        p->slotLatency[i] = lat;
+        p->enabled[i] = chain_[i].enabled() ? 1 : 0;
+        p->tailOnBypass[i] = tailCategory(chain_[i].descriptor()) ? 1 : 0;
         ++refs_[p->chain[i]];
+    }
+    // macro targets resolved to slots / parameter indices (continuous parameters only)
+    for (size_t m = 0; m < macros_.size() && m < static_cast<size_t>(kNumPresetMacros); ++m) {
+        for (const auto& t : macros_[m].targets) {
+            const int slot = indexOf(t.id);
+            if (slot < 0 || p->numMacroTargets >= Program::kMaxMacroTargets) continue;
+            const auto& d = chain_[static_cast<size_t>(slot)].descriptor();
+            const int k = d.paramIndex(t.param);
+            if (k < 0 || d.params[static_cast<size_t>(k)].kind != ParamKind::Float) continue;
+            auto& mt = p->macroTargets[static_cast<size_t>(p->numMacroTargets++)];
+            mt.macro = static_cast<int>(m);
+            mt.slot = slot;
+            mt.param = k;
+            mt.depth = t.depth;
+            mt.lo = d.params[static_cast<size_t>(k)].minValue;
+            mt.hi = d.params[static_cast<size_t>(k)].maxValue;
+        }
     }
     p->staged = staged_;
     p->stagedType = staged_ ? selected_ : -1;
@@ -178,14 +207,13 @@ void Session::select(int typeIndex) {
 }
 
 void Session::step(int direction) {
+    // V4 Phase 3: the same ring as the carousel: None (position 0) followed by the carousel order.
     const auto& order = fxCarouselOrder();
-    if (order.empty()) return;
-    const int n = static_cast<int>(order.size());
-    int pos = -1;
-    for (int i = 0; i < n; ++i) if (order[static_cast<size_t>(i)] == selected_) pos = i;
-    if (pos < 0) pos = direction >= 0 ? 0 : n - 1;  // from "nothing selected" land on first/last
-    else pos = ((pos + (direction >= 0 ? 1 : -1)) % n + n) % n;
-    select(order[static_cast<size_t>(pos)]);
+    const int n = static_cast<int>(order.size()) + 1;
+    int pos = 0;
+    for (int i = 0; i < n - 1; ++i) if (order[static_cast<size_t>(i)] == selected_) pos = i + 1;
+    pos = ((pos + (direction >= 0 ? 1 : -1)) % n + n) % n;
+    select(pos == 0 ? kNone : order[static_cast<size_t>(pos - 1)]);
 }
 
 void Session::setDraftParam(int paramIndex, float plainValue) {
@@ -254,14 +282,41 @@ bool Session::remove(uint64_t id) {
     return true;
 }
 
+bool Session::setEnabled(uint64_t id, bool on) {
+    const int i = indexOf(id);
+    if (i < 0) return false;
+    auto& ci = chain_[static_cast<size_t>(i)];
+    if (ci.enabled_ == on) return true;
+    ci.enabled_ = on;
+    rebuild(false);  // same processors: the engine installs it at once and crossfades only that slot
+    return true;
+}
+
+bool Session::toggleEnabled(uint64_t id) {
+    const int i = indexOf(id);
+    return i >= 0 && setEnabled(id, !chain_[static_cast<size_t>(i)].enabled());
+}
+
+int Session::activeMacroCount() const {
+    int n = 0;
+    for (const auto& m : macros_) {
+        bool live = false;
+        for (const auto& t : m.targets) live = live || indexOf(t.id) >= 0;
+        n += live ? 1 : 0;
+    }
+    return n;
+}
+
 void Session::clearChain() {
     chain_.clear();
+    macros_.clear();
     rebuild(false);
     collectGarbage();
 }
 
 void Session::initialise() {
     chain_.clear();
+    macros_.clear();
     selected_ = kNone;
     staged_ = nullptr;
     solo_ = mute_ = false;
@@ -295,8 +350,10 @@ void Session::setLatencyMode(LatencyMode m) {
     // through the program queue and freed here once the audio thread has let go of them
     std::vector<CommittedInstance> next;
     next.reserve(chain_.size());
-    for (const auto& ci : chain_)
+    for (const auto& ci : chain_) {
         next.emplace_back(ci.id(), ci.typeIndex(), ci.values(), ci.visualSeed(), adopt(makeProcessor(ci.typeIndex(), ci.values())));
+        next.back().enabled_ = ci.enabled();
+    }
     chain_.swap(next);
     if (selected_ >= 0) staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
     rebuild(false);
@@ -354,6 +411,7 @@ std::string Session::toJson(bool includeSession) const {
     json::Value root = json::Value::object();
     root.set("format", kFormat);
     root.set("version", kStateVersion);
+    root.set("schema", kSchemaLevel);
     json::Value chain = json::Value::array();
     for (const auto& ci : chain_) {
         const auto& d = ci.descriptor();
@@ -363,9 +421,29 @@ std::string Session::toJson(bool includeSession) const {
         e.set("fxVersion", d.version);
         e.set("seed", static_cast<double>(ci.visualSeed()));
         e.set("params", paramsToJson(d, ci.values()));
+        e.set("enabled", ci.enabled());
         chain.push(std::move(e));
     }
     root.set("chain", std::move(chain));
+    if (!macros_.empty()) {
+        json::Value ms = json::Value::array();
+        for (const auto& m : macros_) {
+            json::Value mo = json::Value::object();
+            mo.set("name", m.name);
+            json::Value ts = json::Value::array();
+            for (const auto& t : m.targets) {
+                if (indexOf(t.id) < 0) continue;
+                json::Value to = json::Value::object();
+                to.set("id", idToHex(t.id));
+                to.set("param", t.param);
+                to.set("depth", static_cast<double>(t.depth));
+                ts.push(std::move(to));
+            }
+            mo.set("targets", std::move(ts));
+            ms.push(std::move(mo));
+        }
+        root.set("macros", std::move(ms));
+    }
     if (includeSession) {
         json::Value s = json::Value::object();
         json::Value drafts = json::Value::object();
@@ -396,7 +474,7 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
     if (!chainJ.isArray()) { if (error) *error = "missing chain"; return false; }
 
     // ---- validate and build everything before touching the live state ----
-    struct NewInst { uint64_t id; int type; ParamValues v; uint32_t seed; };
+    struct NewInst { uint64_t id; int type; ParamValues v; uint32_t seed; bool enabled; uint64_t fileId; };
     std::vector<NewInst> insts;
     std::unordered_set<uint64_t> seen;
     std::string warnings;
@@ -408,7 +486,8 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
         const auto& d = fxRegistry()[static_cast<size_t>(t)];
         uint64_t id = idFromHex(e.get("id").asString());
         if (id == 0 || seen.count(id)) id = 0;  // re-issued below
-        NewInst ni{id, t, paramsFromJson(d, e.get("params")), static_cast<uint32_t>(e.get("seed").asNumber(0))};
+        const auto& en = e.get("enabled");
+        NewInst ni{id, t, paramsFromJson(d, e.get("params")), static_cast<uint32_t>(e.get("seed").asNumber(0)), en.isBool() ? en.asBool() : true, id};
         if (id) seen.insert(id);
         insts.push_back(ni);
     }
@@ -446,6 +525,35 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
         if (!seed) { uint64_t st = id; seed = static_cast<uint32_t>(splitmix(st)); }
         FxProcessor* p = adopt(makeProcessor(ni.type, ni.v));
         chain_.emplace_back(id, ni.type, ni.v, seed, p);
+        chain_.back().enabled_ = ni.enabled;
+        ni.id = id;  // final id (re-issued ids resolve macro targets by slot below)
+    }
+    // macros: targets reference instances by file id or by "slot" (chain position, factory presets)
+    macros_.clear();
+    const auto& mj = root.get("macros");
+    if (mj.isArray()) {
+        for (const auto& m : mj.items()) {
+            if (!m.isObject() || static_cast<int>(macros_.size()) >= kNumPresetMacros) continue;
+            MacroDef md;
+            md.name = m.get("name").asString();
+            if (md.name.empty()) md.name = "Macro " + std::to_string(macros_.size() + 1);
+            const auto& ts = m.get("targets");
+            for (const auto& t : ts.items()) {
+                if (!t.isObject()) continue;
+                uint64_t tid = 0;
+                if (t.get("slot").isNumber()) {
+                    const int sl = static_cast<int>(t.get("slot").asNumber(-1));
+                    if (sl >= 0 && sl < static_cast<int>(insts.size())) tid = insts[static_cast<size_t>(sl)].id;
+                } else {
+                    const uint64_t fid = idFromHex(t.get("id").asString());
+                    for (const auto& ni : insts) if (fid != 0 && ni.fileId == fid) tid = ni.id;
+                }
+                const float depth = static_cast<float>(t.get("depth").asNumber(0));
+                if (tid == 0 || !std::isfinite(depth)) continue;
+                md.targets.push_back({tid, t.get("param").asString(), depth});
+            }
+            macros_.push_back(std::move(md));
+        }
     }
     // V3 Phase 1: a recall always lands on None. The old staged processor is retired with the old program (crossfaded
     // out by the engine's program hand-over), so the recalled chain is heard alone. Drafts are a separate cache.

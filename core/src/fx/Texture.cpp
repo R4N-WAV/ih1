@@ -37,7 +37,7 @@ class Granular final : public FxBase {
         mix_.setMix(pct(gMix), snap);
     }
     double tailSeconds() const override { return 2.5; }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         dsp::GrainCloud::Params gp;
         gp.sizeSamples = fp(gSize) * 0.001f * srf();
@@ -100,6 +100,7 @@ class Stutter final : public FxBase {
         mix_.reset();
         freeQ_ = 0.0;
         active_ = false;
+        tailing_ = false;
         lastTrig_ = -1;
         abs_ = 0;
         wet_ = 0.0f;
@@ -113,7 +114,7 @@ class Stutter final : public FxBase {
         return static_cast<uint32_t>(z >> 32);
     }
 
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double bpm = std::clamp(ctx.bpm, 20.0, 400.0);
         const double spb = 60.0 / bpm * sr_;  // samples per beat
@@ -138,27 +139,38 @@ class Stutter final : public FxBase {
             if (trig != lastTrig_) {
                 lastTrig_ = trig;
                 const bool fire = (hash(trig) & 0xFFFFFF) / 16777216.0f < chance;
+                // V4 Phase 4: a new trigger while the previous event is still audible keeps rendering that event
+                // (its own slice, window and pitch) until its wet level has faded out; it is never swapped mid-level
+                if (wet_ > 0.0f) { tailStart_ = startAbs_; tailing_ = true; }
                 active_ = fire;
                 startAbs_ = abs_ - static_cast<int64_t>(inEvent * spb);
             }
             for (int c = 0; c < 2; ++c) line_[c].push(ch[c][i]);
             const double e = static_cast<double>(abs_ - startAbs_);  // samples since trigger
-            const bool repeating = active_ && inEvent < gate && e >= sliceSamples;
+            const bool repeating = !tailing_ && active_ && inEvent < gate && e >= sliceSamples;
             wet_ = repeating ? std::min(1.0f, wet_ + wetStep) : std::max(0.0f, wet_ - wetStep);
+            if (wet_ <= 0.0f) tailing_ = false;
             if (wet_ > 0.0f) {
-                const int64_t k = static_cast<int64_t>(e / sliceSamples);
-                const double inSlice = e - static_cast<double>(k) * sliceSamples;
-                const float rate = std::exp2(static_cast<float>(k) * pitchStep / 12.0f);
-                double rp = std::fmod(inSlice * rate, sliceSamples);
+                const int64_t src = tailing_ ? tailStart_ : startAbs_;
+                const double es = static_cast<double>(abs_ - src);
+                const int64_t k = static_cast<int64_t>(es / sliceSamples);
+                const double inSlice = es - static_cast<double>(k) * sliceSamples;
+                // cumulative transposition is capped at +-24 st: compounding steps never run the read head into
+                // aliasing hash (or past the live input)
+                // the pitch step is latched per repetition (a change lands on the next repeat, never mid-slice)
+                if (k != lastK_ || tailing_ != lastTail_) { lastK_ = k; lastTail_ = tailing_; latchedStep_ = pitchStep; }
+                const float rate = std::exp2(std::clamp(static_cast<float>(k) * latchedStep_, -24.0f, 24.0f) / 12.0f);
+                // pitched repeats read further into the source instead of wrapping inside the slice (no jump)
+                double rp = inSlice * rate;
                 if (rev) rp = sliceSamples - 1.0 - rp;
-                // window each repetition to avoid clicks at slice boundaries
+                // raised-cosine window on every repetition (no slope corner at the slice boundaries)
                 float w = 1.0f;
-                if (inSlice < fade) w = static_cast<float>(inSlice / fade);
-                else if (inSlice > sliceSamples - fade) w = static_cast<float>((sliceSamples - inSlice) / fade);
-                const float g = std::pow(1.0f - decay * 0.5f, static_cast<float>(k - 1)) * w;
-                const double d = static_cast<double>(abs_ - startAbs_) - rp;  // delay back to the slice sample
+                if (inSlice < fade) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>(inSlice / fade));
+                else if (inSlice > sliceSamples - fade) w = 0.5f - 0.5f * std::cos(dsp::kPi * static_cast<float>((sliceSamples - inSlice) / fade));
+                const float g = std::pow(1.0f - decay * 0.5f, static_cast<float>(std::max<int64_t>(0, k - 1))) * w;
+                const double d = es - rp;  // delay back to the slice sample
                 for (int c = 0; c < 2; ++c) {
-                    const float s = line_[c].readLinear(static_cast<float>(std::clamp(d, 0.0, static_cast<double>(line_[c].capacity() - 2))));
+                    const float s = line_[c].readLinear(static_cast<float>(std::clamp(d, 1.0, static_cast<double>(line_[c].capacity() - 2))));
                     ch[c][i] = (1.0f - wet_) * ch[c][i] + wet_ * g * s;
                 }
             }
@@ -171,7 +183,9 @@ class Stutter final : public FxBase {
     MixStage mix_;
     double freeQ_ = 0.0;
     bool active_ = false;
-    int64_t lastTrig_ = -1, abs_ = 0, startAbs_ = 0;
+    int64_t lastTrig_ = -1, abs_ = 0, startAbs_ = 0, tailStart_ = 0, lastK_ = -1;
+    bool tailing_ = false, lastTail_ = false;
+    float latchedStep_ = 0.0f;
     float wet_ = 0.0f;
 };
 

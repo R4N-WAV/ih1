@@ -183,7 +183,7 @@ class Harmony final : public FxBase {
         }
     }
 
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);  // latency-aligned dry
         int ev = 0;
         for (int i = 0; i < n; ++i) {
@@ -243,7 +243,7 @@ class PitchShift final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override { mix_.setMix(pct(pMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float ra = dsp::semitonesToRatio(fp(pShiftA) + fp(pFineA) * 0.01f);
         const float rb = dsp::semitonesToRatio(fp(pShiftB));
@@ -301,7 +301,7 @@ class FormantShift final : public FxBase {
         out_.setTarget(dsp::dbToGain(fp(oOut)));
         if (snap) out_.snap(out_.target());
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float ratio = dsp::semitonesToRatio(fp(oShift));
         const int order = static_cast<int>(20.0f + pct(oDetail) * 100.0f) * n_ / 2048;
@@ -368,7 +368,7 @@ class SpectralFreeze final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override { mix_.setMix(pct(zMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const bool freeze = bp(zFreeze);
         if (!freeze) captured_ = false;

@@ -57,7 +57,7 @@ class FreqShifter final : public FxBase {
     }
     void reset() override { for (auto& h : hil_) h.reset(); for (auto& l : fbLine_) l.reset(); ph_[0] = ph_[1] = 0.0; mix_.reset(); }
     void applyParams(bool snap) override { shiftS_.setTarget(fp(fsShift) + fp(fsFine)); if (snap) shiftS_.snap(shiftS_.target()); mix_.setMix(pct(fsMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float fb = pct(fsFeedback) * 0.85f;
         const float dly = std::max(1.0f, fp(fsDelay) * 0.001f * srf());
@@ -90,7 +90,7 @@ class Doppler final : public FxBase {
     void onPrepare() override { line_.prepare(static_cast<int>(0.6 * sr_)); mix_.prepare(sr_, maxBlock_, 0, MixLaw::Linear); }
     void reset() override { line_.reset(); t_ = 0.0; mix_.reset(); }
     void applyParams(bool snap) override { mix_.setMix(pct(dpMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const int path = ip(dpPath);  // 0 pass-by L->R, 1 pass-by R->L, 2 circle
         const double v = fp(dpSpeed), d0 = fp(dpDistance), c = 343.0;
@@ -145,7 +145,7 @@ class Looper final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override { mix_.setMix(pct(lpMix), snap); }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double bpm = std::clamp(ctx.bpm, 30.0, 300.0);
         const double seconds = std::min(kMaxSeconds - 0.1, kLoopBeats[std::clamp(ip(lpLength), 0, 4)] * 60.0 / bpm);
@@ -255,7 +255,7 @@ class Resonator final : public FxBase {
         mix_.setMix(pct(rsMix), snap);
     }
     double tailSeconds() const override { return p_[rsDecay] * 1.2; }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float spread = pct(rsSpread);
         for (int i = 0; i < n; ++i) {
@@ -378,7 +378,7 @@ class Convolution final : public FxBase {
         for (auto& f : tone_) f.setup(dsp::Svf::Lowpass, fp(cvTone), 0.6f, 0, sr_);
         mix_.setMix(pct(cvMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float pre = fp(cvPredelay) * 0.001f * srf();
         const int useParts = std::max(1, static_cast<int>(std::ceil(parts_ * std::clamp(pct(cvLength), 0.02f, 1.0f))));
@@ -509,7 +509,7 @@ class Amp final : public FxBase {
         if (snap) out_.snap(out_.target());
         mix_.setMix(pct(amMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float g1 = dsp::dbToGain(fp(amGain) * 0.6f), g2 = dsp::dbToGain(fp(amGain) * 0.4f);
         const float master = dsp::dbToGain(fp(amMaster));

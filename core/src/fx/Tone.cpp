@@ -57,7 +57,7 @@ class Filter final : public FxBase {
             default: a_[c].setup(dsp::Svf::Bandpass, fc, 2.5f + res * 12.0f, 0, sr_); break;  // wah
         }
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const int mod = ip(fMod);  // 0 off, 1 LFO, 2 envelope, 3 both
         const float rate = bp(fSync) ? static_cast<float>(1.0 / dsp::divisionSeconds(ip(fDiv), ctx.bpm)) : fp(fRate);
@@ -139,7 +139,7 @@ class Eq final : public FxBase {
         }
         det_.setup(dsp::Svf::Bandpass, std::exp2(cur_[6]), std::max(0.7f, cur_[8]), 0, sr_);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         const float range = fp(eDynRange), thr = fp(eDynThr);
         const bool dyn = std::fabs(range) > 0.05f;
         const bool hpOn = fp(eHp) > 20.5f, lpOn = fp(eLp) < 19900.0f;
@@ -223,7 +223,7 @@ class Saturation final : public FxBase {
         if (snap) { drive_.snap(drive_.target()); out_.snap(out_.target()); bias_.snap(bias_.target()); }
         mix_.setMix(pct(sMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const bool autoGain = bp(sAuto);
         const float aRms = 1.0f - std::exp(-1.0f / (0.3f * srf()));
@@ -317,7 +317,7 @@ class Width final : public FxBase {
         monoOn_ = fp(wMono) > 20.5f;
         if (monoOn_) xo_.setup(fp(wMono), sr_);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         for (int i = 0; i < n; ++i) {
             const float w = width_.next(), sp = spread_.next(), b = bal_.next(), g = out_.next();
             const float M = 0.5f * (ch[0][i] + ch[1][i]);

@@ -17,6 +17,8 @@
 // voice counts) and click-free (all jumps crossfade; every fragment has a fade).
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "ih1/dsp/DelayLine.h"
 #include "ih1/dsp/Fft.h"
@@ -87,7 +89,13 @@ struct AutoLevel {
 struct XfadeReader {
     double pos = 0.0, oldPos = 0.0, rate = 1.0, oldRate = 1.0;
     float fade = 1.0f, fadeStep = 0.01f;
+    // V4 Phase 4: a jump requested while a crossfade is still running is deferred until it ends (two heads cannot
+    // represent three sources; replacing the old head mid-fade dropped an audible signal instantly)
+    bool pending = false;
+    double pTo = 0.0, pRate = 1.0;
+    void service() { if (pending && fade >= 1.0f) { pending = false; jump(pTo, pRate); } }
     void jump(double to, double newRate) {
+        if (fade < 1.0f) { pending = true; pTo = to; pRate = newRate; return; }
         oldPos = pos;
         oldRate = rate;
         pos = to;
@@ -141,7 +149,7 @@ class Degrade final : public FxBase {
         if (snap) { rate_.snap(rate_.target()); drive_.snap(drive_.target()); out_.snap(out_.target()); bw_.snap(bw_.target()); }
         mix_.setMix(pct(dgMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         // control values move in 32-sample steps aligned to absolute time: identical output for any host block size
         int done = 0;
@@ -258,7 +266,7 @@ class FoldCrush final : public FxBase {
         for (auto& t : tone_) t.setup(dsp::Svf::Lowpass, std::min(fp(fcTone), 0.45f * srf()), 0.6f, 0, sr_);
         mix_.setMix(pct(fcMix), snap);
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float dyn = fp(fcDynamics) * 0.01f;
         // envelope (shared by both channels) and a transient weight
@@ -389,7 +397,7 @@ class SpectralSmear final : public FxBase {
         out_.setTarget(dsp::dbToGain(fp(ssOut)));
         if (snap) out_.snap(out_.target());
     }
-    void process(float* const* ch, int n, const ProcessContext&) override {
+    void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float hopSec = static_cast<float>(hop_) / srf();
         // time smear: magnitude memory with a time constant up to ~4 s
@@ -557,7 +565,7 @@ class SpectralDelay final : public FxBase {
             default: return x;                                          // rising: highs arrive last
         }
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double secs = syncedSeconds(bp(sdSync), fp(sdTime), ip(sdDiv), ctx.bpm);
         const float maxFrames = static_cast<float>(std::clamp(secs * sr_ / hop_, 1.0, static_cast<double>(frames_ - 2)));
@@ -646,6 +654,7 @@ class TimeWarp final : public FxBase {
         atLive_ = true;
         oldLive_ = false;
         exactAmt_ = 1.0f;
+        keepAmt_ = 0.0f;
         for (auto& lp : tone_) lp.reset();
         mix_.reset();
         speedS_.snap(1.0f);
@@ -687,7 +696,7 @@ class TimeWarp final : public FxBase {
         }
         return y;
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const int mode = ip(twMode);
         const bool keep = bp(twKeepPitch) && (mode == 0 || mode == 2);
@@ -723,7 +732,7 @@ class TimeWarp final : public FxBase {
                 if (segT_ <= 0.0 || segT_ >= 2.0 * L || std::fabs(segLen_ - L) > 1.0) {
                     segLen_ = L;
                     segT_ = 0.0;
-                    rd_.jump(std::max(live - L, static_cast<double>(head_) - maxLag), 0.5);
+                    rd_.jump(std::max({live - L, static_cast<double>(head_) - maxLag, 4.0}), 0.5);
                 }
                 segT_ += 1.0;
                 target = 0.5;
@@ -736,7 +745,7 @@ class TimeWarp final : public FxBase {
                 const double depth = std::max(1.0, fp(twScrubDepth) * 0.001 * sr_);
                 scrubPh_ += fp(twScrubRate) / sr_;
                 if (scrubPh_ >= 1.0) scrubPh_ -= 1.0;
-                const double want = live - depth * (0.55 + 0.45 * std::sin(dsp::kTwoPi * scrubPh_));
+                const double want = std::max(4.0, live - depth * (0.55 + 0.45 * std::sin(dsp::kTwoPi * scrubPh_)));
                 if (lastMode_ != 3) rd_.jump(want, 1.0);  // start on the swing (crossfaded), not a 4x catch-up
                 rate = 1.0 + (want - rd_.pos) * 0.002;  // follow smoothly (a pitch-bending scratch)
                 rate = std::clamp(rate, -4.0, 4.0);
@@ -748,26 +757,40 @@ class TimeWarp final : public FxBase {
             rd_.oldPos += rd_.oldRate;
             // bounds: never read the future; lagging too far behind re-anchors to live (crossfaded)
             if (rd_.pos > live) { rd_.pos = live; }
-            if (rd_.pos < static_cast<double>(head_) - maxLag) rd_.jump(live, 1.0);
+            // V4 Phase 4: never read before the first recorded sample (the empty ring is silence, so swinging across
+            // that edge was a jump from nothing to signal right after a start or reset)
+            const double oldest = std::max(static_cast<double>(head_) - maxLag, 4.0);
+            if (rd_.pos < oldest) {
+                if (static_cast<double>(head_) - maxLag > 4.0) rd_.jump(live, 1.0);
+                else rd_.pos = oldest;
+            }
+            if (rd_.oldPos < 4.0) rd_.oldPos = 4.0;
             if (rd_.oldPos > live) rd_.oldPos = live;
             // varispeed faster than 1x has caught up with the input: it stays at live (no future to read)
             float yl, yr;
             // at rest (a triggered mode that is not engaged, back at live): the input itself, zero latency
             const bool rest = (mode == 1 || mode == 4 || (mode == 2 && !on && ip(twTrigger) != 0)) && !engaged_ && std::fabs(rate - 1.0) < 1e-6;
+            rd_.service();
             if (rest) {
-                if (!atLive_) { rd_.jump(live, 1.0); oldLive_ = false; atLive_ = true; }
+                if (!atLive_) { if (rd_.fade >= 1.0f && !rd_.pending) rd_.jump(live, 1.0); oldLive_ = false; atLive_ = true; }
                 rd_.pos = live;
                 yl = ch[0][i];
                 yr = ch[1][i];
-            } else if (keep && std::fabs(rate) < 0.999) {
+            } else {
+                // the pitch-keeping grains always run (fresh anchors), and are crossfaded in and out with a 12 ms ramp
+                // instead of switching when the smoothed speed crosses 1x
                 gPh_ += 1.0f / grain_;
                 if (gPh_ >= 1.0f) gPh_ -= 1.0f;
                 advanceGrains(rd_.pos);
-                yl = readKeep(0);
-                yr = readKeep(1);
-            } else {
+                const float kt = (keep && std::fabs(rate) < 0.999) ? 1.0f : 0.0f;
+                keepAmt_ = kt > keepAmt_ ? std::min(kt, keepAmt_ + xfStep_) : std::max(kt, keepAmt_ - xfStep_);
                 yl = read(0, rd_.pos);
                 yr = read(1, rd_.pos);
+                if (keepAmt_ > 0.0f) {
+                    const float k = 0.5f - 0.5f * std::cos(dsp::kPi * keepAmt_);
+                    yl += k * (readKeep(0) - yl);
+                    yr += k * (readKeep(1) - yr);
+                }
             }
             if (!rest && atLive_) {  // leaving live: crossfade from the direct input into the buffer read
                 rd_.fade = 0.0f;
@@ -775,13 +798,16 @@ class TimeWarp final : public FxBase {
                 atLive_ = false;
             }
             if (rd_.fade < 1.0f) {
-                const float a = rd_.fade;
+                const float a = 0.5f - 0.5f * std::cos(dsp::kPi * rd_.fade);  // zero-slope equal-power time base
                 const float ga = std::sin(0.5f * dsp::kPi * a), gb = std::cos(0.5f * dsp::kPi * a);
                 const float ol = oldLive_ ? ch[0][i] : read(0, rd_.oldPos);
                 const float orr = oldLive_ ? ch[1][i] : read(1, rd_.oldPos);
                 yl = ga * yl + gb * ol;
                 yr = ga * yr + gb * orr;
                 rd_.fade = std::min(1.0f, rd_.fade + xfStep_);
+                // V4 Phase 4: "the outgoing source is the live input" holds only for the crossfade that left live;
+                // it was never cleared, so a later release crossfaded from the input instead of the playhead (a jump)
+                if (rd_.fade >= 1.0f) oldLive_ = false;
             }
             // a stopping tape loses level as it slows (and a held tape is silent, not a DC step)
             const float amp = (mode == 1 || mode == 4) ? std::clamp(static_cast<float>(std::fabs(rate)) * 3.0f, 0.0f, 1.0f) : 1.0f;
@@ -800,7 +826,7 @@ class TimeWarp final : public FxBase {
     std::array<std::vector<float>, 2> buf_;
     int64_t mask_ = 0, head_ = 0, samples_ = 0;
     XfadeReader rd_;
-    float speed_ = 1.0f, stopT_ = 0.0f, xfStep_ = 0.01f, grain_ = 3000.0f, gPh_ = 0.0f, exactAmt_ = 1.0f;
+    float speed_ = 1.0f, stopT_ = 0.0f, xfStep_ = 0.01f, grain_ = 3000.0f, gPh_ = 0.0f, exactAmt_ = 1.0f, keepAmt_ = 0.0f;
     bool engaged_ = false, atLive_ = false, oldLive_ = false;
     int lastMode_ = -1;
     double segT_ = 0.0, segLen_ = 0.0, scrubPh_ = 0.0;
@@ -825,6 +851,9 @@ class GlitchScatter final : public FxBase {
         xfLen_ = static_cast<float>(0.003 * sr_);
         tmpL_.assign(static_cast<size_t>(maxBlock_), 0.0f);
         tmpR_.assign(static_cast<size_t>(maxBlock_), 0.0f);
+        lofL_.assign(static_cast<size_t>(maxBlock_), 0.0f);
+        lofR_.assign(static_cast<size_t>(maxBlock_), 0.0f);
+        lofiRamp_.assign(static_cast<size_t>(maxBlock_), 0.0f);
     }
     void reset() override {
         for (auto& b : buf_) std::fill(b.begin(), b.end(), 0.0f);
@@ -839,6 +868,9 @@ class GlitchScatter final : public FxBase {
         fragLen_ = 1.0;
         fragStart_ = 0.0;
         lofi_ = false;
+        lofiAmt_ = 0.0f;
+        curGate_ = oldGain_ = 1.0f;
+        gateU_ = 0.0f;
         rr_.reset();
         mix_.reset();
     }
@@ -849,6 +881,9 @@ class GlitchScatter final : public FxBase {
         return h;
     }
     void startFragment(Action a, double newPos, double newRate, double len) {
+        // V4 Phase 4: the outgoing signal keeps the gain it was actually heard at (a Gate step is silent), so the
+        // crossfade never starts from a level that was not audible
+        oldGain_ = 1.0f;  // the gate level is applied after the crossfade (gateU_), so both sides stay at unity here
         oldLive_ = act_ == Pass;
         oldPos_ = pos_;
         oldRate_ = rate_;
@@ -860,7 +895,7 @@ class GlitchScatter final : public FxBase {
         fragLen_ = std::max(64.0, len);
         fragStart_ = newPos;
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         const double stepSec = std::max(0.01, dsp::divisionSeconds(ip(glDiv), ctx.bpm));
         const double step = stepSec * sr_;
@@ -921,30 +956,51 @@ class GlitchScatter final : public FxBase {
             if (act_ == Pass) { yl = inL; yr = inR; pos_ = live; }
             else { yl = hermite(buf_[0], mask_, std::min(pos_, live)); yr = hermite(buf_[1], mask_, std::min(pos_, live)); }
             if (fade_ < 1.0f) {
-                const float a = fade_;
+                // equal-power law on a raised-cosine time base: zero slope at both ends (no corner at the splice)
+                const float a = 0.5f - 0.5f * std::cos(dsp::kPi * fade_);
                 const float ga = std::sin(0.5f * dsp::kPi * a), gb = std::cos(0.5f * dsp::kPi * a);
                 float ol, orr;
                 if (oldLive_) { ol = inL; orr = inR; }
                 else { ol = hermite(buf_[0], mask_, std::min(oldPos_, live)); orr = hermite(buf_[1], mask_, std::min(oldPos_, live)); }
+                ol *= oldGain_;
+                orr *= oldGain_;
                 yl = ga * yl + gb * ol;
                 yr = ga * yr + gb * orr;
                 fade_ = std::min(1.0f, fade_ + 1.0f / xfLen_);
                 oldPos_ += oldRate_;
             }
-            float g = 1.0f;
-            if (act_ == Gate) g = std::max(0.0f, 1.0f - static_cast<float>(fragT_) / xfLen_);
+            // gate level is a continuous state (raised-cosine ramp towards silence on Gate steps, back up otherwise):
+            // consecutive Gate steps stay silent instead of restarting from full level
+            gateU_ = act_ == Gate ? std::min(1.0f, gateU_ + 1.0f / xfLen_) : std::max(0.0f, gateU_ - 1.0f / xfLen_);
+            const float g = 0.5f + 0.5f * std::cos(dsp::kPi * gateU_);
+            curGate_ = g;
             tmpL_[static_cast<size_t>(i)] = yl * g;
             tmpR_[static_cast<size_t>(i)] = yr * g;
+            // lo-fi amount follows the step decision per sample with a 3 ms ramp (was switched per block)
+            const float lofiTarget = (lofi_ && act_ != Pass) ? 1.0f : 0.0f;
+            lofiAmt_ += (lofiTarget > lofiAmt_ ? 1.0f : -1.0f) * std::min(std::fabs(lofiTarget - lofiAmt_), 1.0f / xfLen_);
+            lofiRamp_[static_cast<size_t>(i)] = lofiAmt_;
             if (act_ != Pass) pos_ += rate_;
             fragT_ += 1.0;
         }
-        // lo-fi character only on glitched steps (the shared RateReducer)
-        if (lofi_ && act_ != Pass) {
+        // lo-fi character only on glitched steps (the shared RateReducer), crossfaded per sample: the reducer runs on a
+        // copy whenever any sample of the block wants it, so switching it in or out is never a step
+        // the reducer runs continuously on a copy (warm hold / reconstruction state: a cold start inside the fade-in was
+        // a step response) and is crossfaded in per sample
+        {
+            std::copy(tmpL_.begin(), tmpL_.begin() + n, lofL_.begin());
+            std::copy(tmpR_.begin(), tmpR_.begin() + n, lofR_.begin());
             dsp::RateReducer::Settings s;
             s.rateHz = 6000.0f;
             s.bits = 9.0f;
             s.reconstruct = dsp::RateReducer::FilterSoft;
-            rr_.process(tmpL_.data(), tmpR_.data(), n, s);
+            rr_.process(lofL_.data(), lofR_.data(), n, s);
+            for (int i = 0; i < n; ++i) {
+                const float a = lofiRamp_[static_cast<size_t>(i)];
+                if (a <= 0.0f) continue;
+                tmpL_[static_cast<size_t>(i)] += a * (lofL_[static_cast<size_t>(i)] - tmpL_[static_cast<size_t>(i)]);
+                tmpR_[static_cast<size_t>(i)] += a * (lofR_[static_cast<size_t>(i)] - tmpR_[static_cast<size_t>(i)]);
+            }
         }
         std::copy(tmpL_.begin(), tmpL_.begin() + n, ch[0]);
         std::copy(tmpR_.begin(), tmpR_.begin() + n, ch[1]);
@@ -952,7 +1008,8 @@ class GlitchScatter final : public FxBase {
         mix_.apply(ch, n);
     }
     std::array<std::vector<float>, 2> buf_;
-    std::vector<float> tmpL_, tmpR_;
+    std::vector<float> tmpL_, tmpR_, lofL_, lofR_, lofiRamp_;
+    float lofiAmt_ = 0.0f, curGate_ = 1.0f, oldGain_ = 1.0f, gateU_ = 0.0f;
     int64_t mask_ = 0, head_ = 0, samples_ = 0, lastStep_ = -1;
     Action act_ = Pass;
     double pos_ = 0, oldPos_ = 0, rate_ = 1, oldRate_ = 1, fragT_ = 0, fragLen_ = 1, fragStart_ = 0;

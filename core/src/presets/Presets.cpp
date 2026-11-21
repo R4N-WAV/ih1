@@ -275,6 +275,18 @@ bool validatePreset(const FactoryPreset& p, std::string* error) {
             if (spec.kind != ParamKind::Float && std::fabs(val - std::round(val)) > 1e-6f) return fail(fx.type + "." + pid + " must be a whole step");
         }
     }
+    if (p.macros.size() > 4) return fail("more than 4 macros");
+    for (const auto& m : p.macros) {
+        if (m.name.empty() || m.targets.empty()) return fail("macro without name or targets");
+        for (const auto& t : m.targets) {
+            if (t.slot < 0 || t.slot >= static_cast<int>(p.chain.size())) return fail("macro " + m.name + ": slot out of range");
+            const auto& d = fxRegistry()[static_cast<size_t>(fxTypeIndex(p.chain[static_cast<size_t>(t.slot)].type))];
+            const int k = d.paramIndex(t.param);
+            if (k < 0) return fail("macro " + m.name + ": unknown parameter " + t.param);
+            if (d.params[static_cast<size_t>(k)].kind != ParamKind::Float) return fail("macro " + m.name + ": " + t.param + " is not continuous");
+            if (!std::isfinite(t.depth) || t.depth == 0.0f) return fail("macro " + m.name + ": zero depth");
+        }
+    }
     return true;
 }
 
@@ -289,6 +301,8 @@ std::string presetToJson(const FactoryPreset& p) {
     meta.set("description", p.description);
     meta.set("tags", p.tags);
     meta.set("presetVersion", p.version);
+    if (!p.intensity.empty()) meta.set("intensity", p.intensity);
+    if (!p.styles.empty()) meta.set("styles", p.styles);
     meta.set("factory", true);
     root.set("preset", std::move(meta));
     json::Value chain = json::Value::array();
@@ -308,6 +322,24 @@ std::string presetToJson(const FactoryPreset& p) {
         chain.push(std::move(e));
     }
     root.set("chain", std::move(chain));
+    if (!p.macros.empty()) {
+        json::Value ms = json::Value::array();
+        for (const auto& m : p.macros) {
+            json::Value mo = json::Value::object();
+            mo.set("name", m.name);
+            json::Value ts = json::Value::array();
+            for (const auto& t : m.targets) {
+                json::Value to = json::Value::object();
+                to.set("slot", t.slot);
+                to.set("param", t.param);
+                to.set("depth", static_cast<double>(t.depth));
+                ts.push(std::move(to));
+            }
+            mo.set("targets", std::move(ts));
+            ms.push(std::move(mo));
+        }
+        root.set("macros", std::move(ms));
+    }
     return root.dump(1);
 }
 

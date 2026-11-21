@@ -72,20 +72,90 @@ public:
     void prepare(double sampleRate, int maxBlock) final {
         sr_ = sampleRate > 0 ? sampleRate : 48000.0;
         maxBlock_ = std::max(1, maxBlock);
+        glideLeft_ = 0;
         onPrepare();
         if (hasParams_) applyParams(true);
         reset();
     }
     void setLatencyMode(LatencyMode m) final { latMode_ = m; }
+    // V4 Phase 4 (parameter glide): a non-snapped change of a continuous parameter no longer lands in one step.
+    // Discrete parameters (choices, toggles) switch at once (the engine crossfades the staged effect around them);
+    // continuous ones glide linearly over kGlideMs while process() runs in kGlideSub-sample sub-blocks, so a jump of
+    // e.g. a modulation depth or a read offset becomes ~45 small steps that each effect's own smoothers absorb.
     void setParams(const ParamValues& v, bool snap) final {
-        p_ = v;
         hasParams_ = true;
-        applyParams(snap);
+        if (snap || !glideReady_) {
+            p_ = v;
+            target_ = v;
+            glideLeft_ = 0;
+            glideReady_ = true;
+            applyParams(snap);
+            return;
+        }
+        target_ = v;
+        bool any = false;
+        for (int i = 0; i < kMaxParams; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            if (!isContinuous(i)) { p_[k] = v[k]; continue; }
+            if (p_[k] != v[k]) any = true;
+        }
+        if (any) {
+            glideLeft_ = std::max(1, static_cast<int>(kGlideMs * 0.001 * sr_));
+            for (int i = 0; i < kMaxParams; ++i) glideStep_[static_cast<size_t>(i)] = (target_[static_cast<size_t>(i)] - p_[static_cast<size_t>(i)]) / static_cast<float>(glideLeft_);
+        }
+        applyParams(false);
+    }
+    void process(float* const* ch, int n, const ProcessContext& ctx) final {
+        if (glideLeft_ <= 0 || ctx.numMidi > 0) {
+            if (glideLeft_ > 0) finishGlide();  // MIDI-driven effects: no sub-blocks (event offsets are per block)
+            processBlock(ch, n, ctx);
+            return;
+        }
+        int off = 0;
+        while (off < n) {
+            const int m = glideLeft_ > 0 ? std::min(kGlideSub, n - off) : n - off;
+            if (glideLeft_ > 0) {
+                const int adv = std::min(m, glideLeft_);
+                glideLeft_ -= adv;
+                if (glideLeft_ <= 0) {
+                    finishGlide();
+                } else {
+                    for (int i = 0; i < kMaxParams; ++i)
+                        if (isContinuous(i)) p_[static_cast<size_t>(i)] += glideStep_[static_cast<size_t>(i)] * static_cast<float>(adv);
+                    applyParams(false);
+                }
+            }
+            float* sub[2] = {ch[0] + off, ch[1] + off};
+            ProcessContext c2 = ctx;
+            c2.blockOffset = ctx.blockOffset + off;
+            if (ctx.ppqValid) c2.ppqPosition = ctx.ppqPosition + off / sr_ * ctx.bpm / 60.0;
+            processBlock(sub, m, c2);
+            off += m;
+        }
     }
 
 protected:
     virtual void onPrepare() = 0;
     virtual void applyParams(bool snap) = 0;
+    // The effect's audio callback (FxProcessor::process wraps it with the parameter glide).
+    virtual void processBlock(float* const* ch, int n, const ProcessContext& ctx) = 0;
+    // Continuous parameter? Effects declare their discrete parameter indices through discreteMask_ (set by the
+    // registry from the descriptor when the processor is created); unknown = continuous.
+    bool isContinuous(int i) const { return i < 64 && !((discreteMask_ >> i) & 1ull); }
+    void finishGlide() {
+        glideLeft_ = 0;
+        p_ = target_;
+        applyParams(false);
+    }
+public:
+    void setDiscreteMask(uint64_t m) { discreteMask_ = m; }
+protected:
+    static constexpr float kGlideMs = 30.0f;
+    static constexpr int kGlideSub = 32;
+    ParamValues target_{}, glideStep_{};
+    int glideLeft_ = 0;
+    bool glideReady_ = false;
+    uint64_t discreteMask_ = 0;
 
     float srf() const { return static_cast<float>(sr_); }
     int ip(int i) const { return static_cast<int>(std::lround(p_[static_cast<size_t>(i)])); }

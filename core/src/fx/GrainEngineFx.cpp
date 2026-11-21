@@ -35,7 +35,7 @@ class GrainEngineFx final : public FxBase {
         out_.setTarget(dsp::dbToGain(fp(geGain)));
         if (snap) out_.snap(out_.target());
     }
-    void process(float* const* ch, int n, const ProcessContext& ctx) override {
+    void processBlock(float* const* ch, int n, const ProcessContext& ctx) override {
         mix_.capture(ch, n);
         dsp::GrainEngine::Params p;
         p.mode = std::clamp(ip(geMode), 0, 2);

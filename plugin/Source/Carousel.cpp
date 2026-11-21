@@ -17,7 +17,11 @@ int wrap(int i, int n) { return ((i % n) + n) % n; }
 }  // namespace
 
 Carousel::Carousel() {
-    order_ = fxCarouselOrder();
+    // V4 Phase 3: None is a real entry at the top of the ring (logical position 0), not an overlay. Wheel, arrows,
+    // keys, clicks on neighbours and the right-click menu all move through the same index list, so None scrolls
+    // like any effect and the visible item always equals the staged selection.
+    order_.push_back(kNoneEntry);
+    for (int i : fxCarouselOrder()) order_.push_back(i);
     for (auto* b : {&up_, &down_}) {
         b->setShape(chevron(b == &up_), false, true, false);
         b->setOutline(Colours::textDim, 1.3f);
@@ -42,6 +46,7 @@ int Carousel::orderPosOf(int typeIndex) const {
 }
 
 void Carousel::setSelected(int typeIndex) {
+    if (typeIndex < 0) typeIndex = kNoneEntry;
     if (typeIndex == selected_) return;
     selected_ = typeIndex;
     const int pos = orderPosOf(typeIndex);
@@ -54,7 +59,6 @@ void Carousel::setSelected(int typeIndex) {
         if (delta > n / 2) delta -= n;
         if (delta < -n / 2) delta += n;
         target_ = base + static_cast<float>(delta);
-        lastPos_ = pos;
         startTimerHz(60);
     }
     repaint();
@@ -63,8 +67,9 @@ void Carousel::setSelected(int typeIndex) {
 void Carousel::step(int dir) {
     if (order_.empty()) return;
     const int n = static_cast<int>(order_.size());
-    // from "None", the first step lands on the effect the carousel was resting on
-    const int pos = selected_ >= 0 ? wrap(orderPosOf(selected_) + dir, n) : lastPos_;
+    int cur = orderPosOf(selected_);
+    if (cur < 0) cur = 0;  // unknown selection reads as None
+    const int pos = wrap(cur + (dir >= 0 ? 1 : -1), n);
     if (onSelect) onSelect(order_[static_cast<size_t>(pos)]);
 }
 
@@ -93,7 +98,6 @@ void Carousel::paint(juce::Graphics& g) {
     const float spacing = std::min(40.0f, area.getHeight() / 4.6f);
     const int base = static_cast<int>(std::floor(anim_));
     const float frac = anim_ - static_cast<float>(base);
-    const bool none = selected_ < 0;
     const auto mouse = getMouseXYRelative().toFloat();
     const bool mouseIn = isMouseOver(true);
     for (int k = -3; k <= 3; ++k) {
@@ -101,29 +105,28 @@ void Carousel::paint(juce::Graphics& g) {
         const float off = static_cast<float>(k) - frac;
         const float a = std::abs(off);
         if (a > 2.6f) continue;
-        const bool centre = a < 0.5f && !none;
-        if (none && a < 0.5f) continue;  // the centre reads "None"
+        const bool centre = a < 0.5f;
+        const bool isNone = idx == kNoneEntry;
         const float dist = a <= 1.0f ? a * spacing * 1.5f : (1.5f + (a - 1.0f)) * spacing;
         const float y = cy + (off < 0.0f ? -dist : dist);
         float alpha = centre ? 1.0f : juce::jmax(0.0f, 0.75f - 0.27f * a);
         const float size = centre ? juce::jmin(30.0f, area.getHeight() * 0.2f) : 15.0f - 1.6f * juce::jmin(a, 1.5f);
         auto row = juce::Rectangle<float>(area.getX(), y - size * 0.75f, area.getWidth(), size * 1.5f);
         if (!centre && mouseIn && row.contains(mouse)) alpha = juce::jmin(1.0f, alpha + 0.3f);
-        const auto col = readable(fxColourForIndex(idx), centre ? 0.88f : 0.8f);
-        g.setColour(col.withAlpha(alpha));
-        g.setFont(LookAndFeel::font(size, centre).withExtraKerningFactor(centre ? 0.04f : 0.08f));
-        g.drawText(juce::String(reg[static_cast<size_t>(idx)].name).toUpperCase(), row, juce::Justification::centred, false);
-        if (centre) {
+        const auto col = isNone ? Colours::text.withMultipliedAlpha(0.8f) : readable(fxColourForIndex(idx), centre ? 0.88f : 0.8f);
+        g.setColour(col.withAlpha(alpha * (isNone ? 0.78f : 1.0f)));
+        g.setFont(LookAndFeel::font(size, centre && !isNone).withExtraKerningFactor(centre ? 0.04f : 0.08f));
+        g.drawText(isNone ? juce::String("NONE") : juce::String(reg[static_cast<size_t>(idx)].name).toUpperCase(), row, juce::Justification::centred, false);
+        if (centre && isNone) {
+            g.setColour(Colours::textDim.withAlpha(0.7f));
+            g.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
+            g.drawText("NOTHING STAGED", juce::Rectangle<float>(row.getX(), y + size * 0.62f, row.getWidth(), 14.0f), juce::Justification::centred, false);
+        } else if (centre) {
             g.setColour(Colours::textDim.withAlpha(0.8f));
             g.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
             g.drawText(juce::String(categoryName(reg[static_cast<size_t>(idx)].category)).toUpperCase(),
                        juce::Rectangle<float>(row.getX(), y + size * 0.62f, row.getWidth(), 14.0f), juce::Justification::centred, false);
         }
-    }
-    if (none) {
-        g.setColour(Colours::text.withAlpha(0.72f));
-        g.setFont(LookAndFeel::font(juce::jmin(26.0f, area.getHeight() * 0.18f)).withExtraKerningFactor(0.04f));
-        g.drawText("None", juce::Rectangle<float>(area.getX(), cy - 18.0f, area.getWidth(), 36.0f), juce::Justification::centred, false);
     }
     // soft fades at the top/bottom edges (tone only, no lines)
     const float fade = spacing * 0.9f;
@@ -169,7 +172,7 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
         MenuItem none;
         none.id = kNoneMenuId;
         none.text = "None";
-        none.ticked = selected_ < 0;
+        none.ticked = selected_ == kNoneEntry;
         none.divider = true;
         items.push_back(std::move(none));
     }
@@ -223,13 +226,10 @@ void Carousel::mouseUp(const juce::MouseEvent& e) {
     const float ady = std::fabs(dy) / spacing;
     const float slots = ady <= 1.5f ? ady / 1.5f : 1.0f + (ady - 1.5f);
     const int k = static_cast<int>(std::round(dy < 0.0f ? -slots : slots));
-    if (k == 0) {
-        if (selected_ < 0) step(1);
-        return;
-    }
+    if (k == 0) return;  // the centre is the current selection (None included)
     if (std::abs(k) <= 2 && !order_.empty()) {
         const int n = static_cast<int>(order_.size());
-        const int pos = wrap((selected_ >= 0 ? orderPosOf(selected_) : lastPos_) + k, n);
+        const int pos = wrap(std::max(0, orderPosOf(selected_)) + k, n);
         if (onSelect) onSelect(order_[static_cast<size_t>(pos)]);
     }
 }
@@ -246,6 +246,10 @@ bool Carousel::keyPressed(const juce::KeyPress& key) {
         typedMs_ = now;
         typed_ += juce::String::charToString(ch);
         for (int idx : order_) {
+            if (idx == kNoneEntry) {
+                if (juce::String("None").startsWithIgnoreCase(typed_)) { if (onSelect) onSelect(-1); break; }
+                continue;
+            }
             if (juce::String(fxRegistry()[static_cast<size_t>(idx)].name).startsWithIgnoreCase(typed_)) {
                 if (onSelect) onSelect(idx);
                 break;
