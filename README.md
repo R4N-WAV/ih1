@@ -6,39 +6,23 @@ A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll 
 
 ## Status
 
-Version 0.3.0 (test build, feedback round 3), with the V1 feedback pass, the V2.1 pass and the **V3 pass** applied. V3 is documented in `docs/V3_IMPLEMENTATION.md`. V2.1 is documented in:
-- `docs/V2_1_IMPLEMENTATION.md`: diagnosis, changes, latency table, measurements, evidence, KADAL sources
-- `docs/FL_STUDIO_TEST_CHECKLIST.md`: the manual host acceptance list (FL Studio not tested here)
-- `docs/KNOWN_ISSUES.md` and `docs/FACTORY_PRESETS.md`
+Version 0.3.0 (test build, feedback round 3). V3 is documented in `docs/V3_IMPLEMENTATION.md`; open items are in
+`docs/KNOWN_ISSUES.md`.
 
-The earlier V1 feedback pass is documented in:
-- `docs/V1_FEEDBACK_TRIAGE.md`
-- `docs/V1_FEEDBACK_IMPLEMENTATION.md`
-- `docs/QA_AND_REGRESSION_RESULTS.md`
-- `docs/KNOWN_ISSUES.md`
-- `docs/FACTORY_PRESETS.md`
-
-- **39 effects** — the full catalogue, including the new **Grain Engine** (Cloud / Stretch / Loop, Freeze, varispeed, synced retrigger, scale quantise, Smooth Splice, grain feedback) — are implemented and tested. Each one has a behaviour test as well as the shared contract suite. The list, algorithms and measurements are in `docs/FX_CATALOGUE.md`.
-  - **Time & space:** Delay, Tape Echo, Reverb (7 algorithms), Reverse (3 modes), Shimmer, Convolution, Doppler
-  - **Pitch & voice:** Harmony (intervals / key & scale / MIDI), Pitch Shift, Formant Shift, Doubler, Pitch Correction, Vocoder
-  - **Modulation:** Chorus, Flanger, Phaser, Vibrato, Tremolo/Pan, Filter/Wah, Ring Mod, Rotary, Frequency Shifter
-  - **Texture & spectral:** Grain Engine, Granular Cloud, Spectral Freeze, Stutter, Looper, Resonator
-  - **Tone & dynamics:** EQ / Dynamic EQ, Saturation, Stereo Width, Compressor, Gate/Expander, De-Esser, Transient Shaper, Tape/Console, Bitcrusher, Exciter, Amp/Cabinet
-- **Workflow:**
-  - carousel with a nested category menu, per-type drafts, SOLO / MUTE, COMMIT / RESET, drag reorder, DELETE with confirmation;
-  - **Clear FX Chain** with confirmation;
-  - **Full Quality / Low Latency / Zero Latency** modes;
-  - **66 factory presets** in 10 categories, plus user presets;
-  - DAW state recall.
-- **Tested on Linux:**
-  - 101 unit, behaviour and audit test cases;
-  - `ih1_hosttest`, 56 checks through the real VST3, including reported == measured latency;
-  - `ih1_uitest`, 72 editor checks;
-  - pluginval at strictness 8 and 10;
-  - ASan / UBSan / TSan;
-  - a 30-minute soak (`ih1_soak`).
-- **Windows builds:** CI builds, tests and packages a setup wizard. pluginval at strictness 5 passes on Windows (CI) and Linux.
-- **Not yet tested:** FL Studio 25 and Cubase 14. See *Known limitations*.
+- **44 effects**, including six new V3 modules: Degrade, Fold & Crush, Spectral Smear, Spectral Delay, Time Warp
+  (varispeed, tape stop, half-time, scrub, backspin) and Glitch Scatter, plus a shared sample-rate reducer used inside
+  Delay repeats and Grain Engine feedback. Catalogue: `docs/FX_CATALOGUE.md` (V2.1) and `docs/V3_IMPLEMENTATION.md`.
+- **67 factory presets**: Init, 5 utility presets and 61 creative presets in ten categories, 56 of them measured as
+  transformative (level-matched). `docs/FACTORY_PRESETS.md`, `docs/V3_PRESET_AUDIT_TABLE.md`, renders in `docs/audio_v3/`.
+- **Workflow:** every preset recall lands the FX wheel on None; None is the first right-click row; Init is a true
+  empty state; commit transfers integrate into the formation only when they arrive.
+- **Output Safety:** Off / Guard (zero latency, default) / True Peak (lookahead, reported latency). No plug-in can
+  guarantee speaker or hearing safety.
+- **Formation:** a ray-marched 3-D force-field volume in the accepted palette (no line strands, no blur fog).
+- **Tested on Linux:** 130 unit / behaviour / audit tests (also under ASan + UBSan), 56 VST3 host-lifecycle checks,
+  editor tests in GL and software modes, pluginval strictness 8, a 2-minute soak. Windows CI builds, tests, runs
+  pluginval and packages the setup wizard and the test-build ZIP.
+- **Not tested:** FL Studio and real GPUs. See `docs/FL_STUDIO_TEST_CHECKLIST.md`.
 
 ## Install (Windows)
 

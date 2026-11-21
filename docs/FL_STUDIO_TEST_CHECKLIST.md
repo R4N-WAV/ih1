@@ -1,3 +1,45 @@
+# FL Studio acceptance checklist (V3, 0.3.0 test round 3; V2.1 items follow)
+
+**FL Studio validation was not performed by the developer.** Install from the CI artifact
+`IH1-windows-testbuild-zip` (`IH1_0.3.0_Windows_TestBuild_Round-3.zip`). Note FL build, Windows, GPU / driver,
+audio device and buffer size. Keep monitor levels low for the safety items.
+
+## V3: installer and build
+- [ ] The ZIP opens and contains `IH1-Setup-0.3.0.exe` and `README.txt`.
+- [ ] The wizard shows the IH1 formation panel, a dark header, version 0.3.0 and "test build, round 3".
+- [ ] It installs to `C:\Program Files\Common Files\VST3\IH1.vst3`; existing files in `Documents\IH1\Presets` are untouched.
+- [ ] After a rescan, the text under the IH1 wordmark reads `v0.3.0 <build>`. Uninstall leaves `Documents\IH1\Presets`.
+
+## V3: presets always audition alone (Feedback 1, 2)
+- [ ] Stage Delay (or Saturation / Grain Engine / Reverse / Pitch Shift), press the preset **next** arrow while playing:
+  the wheel shows **None**, the settings panel hides, only the preset is heard, no click.
+- [ ] Same via the preset browser, and via FL's own preset menu / project reload (host state).
+- [ ] Click next / previous rapidly for ~10 s during playback: nothing staged is ever heard, no pops.
+- [ ] Scroll back to the previously staged FX: its settings are still as you left them (until RESET).
+- [ ] Right-click the wheel: **None** is the first row, ticked when nothing is staged; choosing it un-stages.
+- [ ] **Init** (first preset): empty chain, None, settings at defaults, output gain 0 dB, no loop / freeze left over.
+
+## V3: level safety (Feedback 8)
+- [ ] With a hot input, scroll onto **Saturation** with Drive at maximum: no level jump on landing.
+- [ ] Land on Transient Shaper, Delay, Doubler, Chorus, Pitch Correction: no click on landing.
+- [ ] Grain Engine in Loop and Freeze with high pitch and feedback: no clicks when freeze engages / releases.
+- [ ] Chain options (···) > Output Safety: Guard is ticked by default; the meter left of ··· shows peak and reduction.
+- [ ] True Peak: FL's delay compensation shows the extra 72 samples (48 kHz); in Zero Latency mode it says Guard runs.
+- [ ] Safety Off with a high-feedback preset (e.g. *Dub Machine*): a warning appears.
+
+## V3: commit and formation (Feedback 3, 4)
+- [ ] COMMIT: a small packet travels into the field; the new FX's colour region appears only when it arrives.
+- [ ] Double-click COMMIT: exactly one packet / one instance. Close the editor mid-transfer and reopen: the FX is there.
+- [ ] The formation reads as luminous field sheets in depth (no drawn lines, no fog), in the accepted palette, black
+      around it, slow motion; it brightens with the music. Resize aggressively for a minute: no crash.
+- [ ] Note the GPU and whether the editor stays smooth (the volume steps its quality down automatically).
+
+## V3: sound
+- [ ] Try 5-10 presets from each creative category on a vocal, a drum loop and a pad; note any that sound timid,
+      broken or too loud. New modules: Degrade, Fold & Crush, Spectral Smear, Spectral Delay, Time Warp, Glitch Scatter.
+
+---
+
 # FL Studio acceptance checklist (V2.1)
 
 **FL Studio validation was not performed in this pass.** No Windows machine or FL Studio was available. Everything
