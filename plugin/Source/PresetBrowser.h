@@ -66,7 +66,7 @@ public:
     bool hitTest(int, int) override { return isVisible(); }
 
 private:
-    struct Entry { juce::String key, name, category, description; bool factory; };
+    struct Entry { juce::String key, name, category, description; bool factory; juce::String meta; };
     enum class Mode { Browse, SaveAs, Rename, ConfirmDelete, ConfirmOverwrite };
     void reload();
     void filter();

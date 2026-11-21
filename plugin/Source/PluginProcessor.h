@@ -94,7 +94,8 @@ public:
 
     // ---- presets (message thread) -------------------------------------------------------------
     // Keys: "f:<factory id>" or "u:<absolute file path>". Order: factory categories, then user presets.
-    struct PresetEntry { juce::String key, name, category, description; bool factory = true; };
+    // meta (V4): intensity, intended sources and style inspiration; searched by the browser and shown under the text
+    struct PresetEntry { juce::String key, name, category, description; bool factory = true; juce::String meta; };
     std::vector<PresetEntry> presetList();
     bool loadPresetKey(const juce::String& key, juce::String& message);   // atomic: all or nothing
     bool stepPreset(int direction, juce::String& message);                // wraps at both ends

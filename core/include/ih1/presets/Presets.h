@@ -36,6 +36,12 @@ struct FactoryPreset {
     std::vector<PresetMacro> macros;  // 0..4
 };
 
+// V4 helpers (PresetsV4.cpp): the V4 additions, the V3 -> V4 category remap, default intensity, derived macros.
+void addV4Presets(std::vector<FactoryPreset>& v);
+std::string v4CategoryFor(const std::string& v3Category);
+std::string v4DefaultIntensity(const std::string& category, const std::string& id);
+std::vector<PresetMacro> deriveMacros(const FactoryPreset& p);
+
 // Category display order. The last one, "User", holds user presets (not part of the factory list).
 const std::vector<std::string>& presetCategories();
 const std::vector<FactoryPreset>& factoryPresets();  // category order, then curated order

@@ -145,7 +145,7 @@ const PresetBrowser::Entry* PresetBrowser::current() const {
 
 void PresetBrowser::reload() {
     all_.clear();
-    for (const auto& e : proc_.presetList()) all_.push_back({e.key, e.name, e.category, e.description, e.factory});
+    for (const auto& e : proc_.presetList()) all_.push_back({e.key, e.name, e.category, e.description, e.factory, e.meta});
     categories_.clear();
     for (const auto& c : presetCategories()) categories_.add(c);
     filter();
@@ -157,7 +157,7 @@ void PresetBrowser::filter() {
     for (size_t i = 0; i < all_.size(); ++i) {
         const auto& e = all_[i];
         if (q.isNotEmpty()) {
-            if (e.name.containsIgnoreCase(q) || e.category.containsIgnoreCase(q) || e.description.containsIgnoreCase(q)) shown_.push_back(static_cast<int>(i));
+            if (e.name.containsIgnoreCase(q) || e.category.containsIgnoreCase(q) || e.description.containsIgnoreCase(q) || e.meta.containsIgnoreCase(q)) shown_.push_back(static_cast<int>(i));
         } else if (category_ >= 0 && category_ < categories_.size() && e.category == categories_[category_]) {
             shown_.push_back(static_cast<int>(i));
         }
@@ -317,7 +317,8 @@ void PresetBrowser::paint(juce::Graphics& g) {
     if (d) {
         g.setColour(Colours::textDim);
         g.setFont(LookAndFeel::font(12.5f));
-        g.drawFittedText(d->description.isNotEmpty() ? d->description : (d->factory ? juce::String() : juce::String("User preset")), descArea_, juce::Justification::centredLeft, 2);
+        const juce::String text = d->description.isNotEmpty() ? d->description : (d->factory ? juce::String() : juce::String("User preset"));
+        g.drawFittedText(d->meta.isNotEmpty() ? text + "\n" + d->meta : text, descArea_, juce::Justification::centredLeft, 3);
     }
     if (mode_ == Mode::ConfirmDelete || mode_ == Mode::ConfirmOverwrite) {
         g.setColour(Colours::text);

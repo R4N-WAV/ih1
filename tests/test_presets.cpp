@@ -245,11 +245,14 @@ TEST_CASE("preset JSON carries metadata and malformed preset files are rejected 
 // V3 Phase 7.3: the creative bank is measurably bold. Each creative preset is rendered on its first two tagged
 // sources (level-matched; see ih1/presets/Audition.h); at least two-thirds must be transformative on both.
 #include "ih1/presets/Audition.h"
-TEST_CASE("V3 factory bank: at least two-thirds of the creative presets are transformative (level-matched)") {
+// V4: the brief splits the bank into ~65-75 % transformative / characterful, 15-25 % musical / beautiful and 10-15 %
+// subtle utility. The Musical / Beautiful family is deliberately not destructive, so it is excluded from the
+// denominator; everything else must still be at least two-thirds transformative.
+TEST_CASE("V4 factory bank: at least two-thirds of the creative (non-utility, non-musical) presets are transformative") {
     int creative = 0, transformative = 0;
     std::string timid;
     for (const auto& p : factoryPresets()) {
-        if (p.category == "Init / Utility") continue;
+        if (p.category == "Init / Utility" || p.category == "Musical / Beautiful") continue;
         ++creative;
         const auto srcs = audition::sourcesForTags(p.tags);
         int t = 0, n = 0;

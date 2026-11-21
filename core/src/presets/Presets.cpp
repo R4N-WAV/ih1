@@ -13,8 +13,10 @@ namespace ih1 {
 const std::vector<std::string>& presetCategories() {
     // V2.1 categories (feedback 7). The last one, "User", holds user presets.
     // V3 categories (Phase 7.2). The last one, "User", holds user presets.
-    static const std::vector<std::string> c = {"Init / Utility", "Grime & Dirt", "Stretch & Smear", "Pitch Mutation", "Rhythmic Damage", "Granular Worlds",
-                                               "Spectral Objects", "Feedback Machines", "Vocal Transformations", "Cinematic / Spatial", "Hybrid / Experimental", "User"};
+    // V4 categories (Phase 1.4): sound-led names, Init pinned first. V3 categories are remapped onto these.
+    static const std::vector<std::string> c = {"Init / Utility", "Signal Collapse", "Granular / Reconstruction", "Rhythm / Glitch / Stutter",
+                                               "Pitch / Reverse / Harmonic", "Spectral / Frequency Space", "Dirt / Degradation", "Musical / Beautiful",
+                                               "Atmosphere / Cinematic / Drone", "Experimental / Hybrid", "User"};
     return c;
 }
 
@@ -233,6 +235,15 @@ std::vector<FactoryPreset> build() {
         {{"grain_engine", P{{"size_ms", 800}, {"density", 4}, {"position_ms", 6000}, {"spray_ms", 2000}, {"pitch_jit", 12}, {"scale", 1}, {"window", 4}, {"mix", 100}}},
          {"degrade", P{{"rate", 15000}, {"bits", 10}, {"bandwidth", 25}, {"wobble", 30}, {"noise", 8}}}, {"reverb", P{{"mode", 4}, {"decay", 9}, {"mix", 40}}}});
 
+    // V4: remap the V3 bank onto the V4 categories, give every preset an intensity, add the V4 presets, and derive
+    // topology-aware macros for every preset that has none (Init never has macros: it is the clean state)
+    for (auto& p : v) {
+        p.category = v4CategoryFor(p.category);
+        if (p.intensity.empty()) p.intensity = v4DefaultIntensity(p.category, p.id);
+    }
+    addV4Presets(v);
+    for (auto& p : v)
+        if (p.macros.empty() && p.id != kInitPresetId) p.macros = deriveMacros(p);
     // presets are listed (and stepped by the arrows) in category order, curated order inside a category
     const auto& cats = presetCategories();
     auto rank = [&](const std::string& c) { return static_cast<int>(std::find(cats.begin(), cats.end(), c) - cats.begin()); };

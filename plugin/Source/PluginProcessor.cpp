@@ -603,7 +603,13 @@ std::vector<Processor::PresetEntry> Processor::presetList() {
     if (now - listCacheMs_ < 2000.0 && !listCache_.empty()) return listCache_;
     std::vector<PresetEntry> v;
     for (const auto& p : factoryPresets())
-        v.push_back({"f:" + juce::String(p.id), juce::String::fromUTF8(p.name.c_str()), juce::String::fromUTF8(p.category.c_str()), juce::String::fromUTF8(p.description.c_str()), true});
+    {
+        juce::String meta = juce::String::fromUTF8(p.intensity.c_str());
+        const juce::String dot = juce::String::fromUTF8("  \xc2\xb7  ");
+        if (!p.tags.empty()) meta << (meta.isEmpty() ? juce::String() : dot) << juce::String::fromUTF8(p.tags.c_str());
+        if (!p.styles.empty()) meta << dot << juce::String::fromUTF8(p.styles.c_str());
+        v.push_back({"f:" + juce::String(p.id), juce::String::fromUTF8(p.name.c_str()), juce::String::fromUTF8(p.category.c_str()), juce::String::fromUTF8(p.description.c_str()), true, meta});
+    }
     auto files = userPresetDir().findChildFiles(juce::File::findFiles, false, "*.ih1chain");
     std::vector<PresetEntry> user;
     for (const auto& f : files) {

@@ -248,7 +248,7 @@ class AttackBody final : public FxBase {
         repS_.prepare(sr_, 60.0f);
         static const float ms[4] = {13.7f, 23.1f, 37.9f, 51.3f};
         for (int c = 0; c < 2; ++c)
-            for (int k = 0; k < 4; ++k) ap_[c][k].prepare(static_cast<int>(ms[k] * (c ? 1.07f : 1.0f) * 0.001f * srf()));
+            for (int k = 0; k < 4; ++k) ap_[c][k].prepare(static_cast<int>(ms[k] * 0.001f * srf()));  // identical L/R: mono-safe
     }
     void reset() override {
         for (auto& r : att_) r.clear();
@@ -694,7 +694,9 @@ class Dispersion final : public FxBase {
             // warp the distribution of section centres: curve < 0 packs them low, > 0 packs them high
             u = curve >= 0.0f ? std::pow(u, 1.0f / (1.0f + 3.0f * curve)) : std::pow(u, 1.0f - 3.0f * curve);
             for (int ch = 0; ch < 2; ++ch) {
-                const float oct = c + sp * (u - 0.5f) + (ch ? st : -st) * 0.25f;
+                // stereo: a very small centre offset (long high-Q cascades turn tiny offsets into large phase
+                // differences, so the range is kept narrow; 0 = mono-identical)
+                const float oct = c + sp * (u - 0.5f) + (ch ? st : -st) * 0.05f;
                 const float f = std::clamp(std::exp2(oct), 20.0f, 0.45f * srf());
                 ap_[ch][static_cast<size_t>(k)].setup(dsp::Svf::Allpass, f, q, 0.0f, sr_);
             }
@@ -1106,7 +1108,7 @@ FxDescriptor describeDispersion() {
         P::flt("mod_depth", "Motion", "oct", 0.0f, 2.0f, 0.0f, "Slowly moves the centre: the smear sweeps."),
         P::logf("mod_rate", "Motion Rate", "Hz", 0.02f, 8.0f, 0.2f, "Speed of the motion."),
         P::pct("feedback", "Feedback", 0.0f, "Recirculates the dispersed signal: springy, laser-like ringing. Safely limited."),
-        P::pct("stereo", "Stereo", 30.0f, "Left and right are dispersed slightly differently."),
+        P::pct("stereo", "Stereo", 0.0f, "Left and right are dispersed slightly differently (wider, but less mono-compatible with many stages)."),
         P::pct("mix", "Mix", 100.0f, "At 100 % only the timing changes. Mixing with the dry sound creates moving notches (phaser-like)."),
     };
     for (int i : {dpQ, dpModRate, dpStereo}) d.params[static_cast<size_t>(i)].advanced = true;
