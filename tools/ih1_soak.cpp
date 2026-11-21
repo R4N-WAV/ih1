@@ -20,6 +20,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include "ih1/engine/Engine.h"
 #include "ih1/model/Session.h"
@@ -145,11 +148,23 @@ int main(int argc, char** argv) {
     }
     stop = true;
     audio.join();
+    // leak check: drop everything the session owns, free retired programs, and let glibc return free pages,
+    // so the comparison measures memory still held (a leak), not allocator caching of freed 8 MB grain buffers
+    session.clearChain();
+    session.select(-1);
     for (int i = 0; i < 10; ++i) session.service();
+    {
+        std::vector<float> L(256), R(256);
+        ProcessContext ctx;
+        for (int i = 0; i < 20; ++i) { engine.process(L.data(), R.data(), 256, ctx); session.service(); }
+    }
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
     const double rss1 = rssMb();
     std::printf("\nSOAK SUMMARY: %.0f s wall, %lld blocks, %.0f s of audio (%.1fx real time),\n"
                 "  worst block %.2fx its real-time budget (any size, incl. 1-sample blocks), %.2fx for blocks >= 128, worst %.2f ms,\n"
-                "  output peak %.3f, non-finite samples %lld, %lld operations, RSS start %.1f / end %.1f / max %.1f MB\n",
+                "  output peak %.3f, non-finite samples %lld, %lld operations, RSS start %.1f / end (chain cleared, trimmed) %.1f / max %.1f MB\n",
                 elapsed(), blocks.load(), static_cast<double>(samples.load()) / kSr, static_cast<double>(samples.load()) / kSr / elapsed(),
                 worstRatio.load(), worstRatio128.load(), worstMs.load(), peak.load(), nonFinite.load(), ops, rss0, rss1, rssMax);
     const bool ok = nonFinite.load() == 0 && (rss1 - rss0) < 64.0;
