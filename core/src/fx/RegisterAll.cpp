@@ -50,6 +50,14 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeExciter());
     r.push_back(describeAmp());
     // hidden engine-test effects
+    // V3 (appended after every existing type: registry order inside a family sets the colour tier, so appending keeps
+    // every accepted colour unchanged)
+    r.push_back(describeSpectralSmear());
+    r.push_back(describeSpectralDelay());
+    r.push_back(describeTimeWarp());
+    r.push_back(describeGlitchScatter());
+    r.push_back(describeDegrade());
+    r.push_back(describeFoldCrush());
     r.push_back(describeTestGain());
     r.push_back(describeTestLatency());
 }

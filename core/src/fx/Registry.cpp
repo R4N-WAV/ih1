@@ -85,6 +85,13 @@ constexpr Annot kAnnot[] = {
     {"amp", FxCategory::ToneCharacter, nullptr},
     {"width", FxCategory::ToneCharacter, nullptr},
     {"ring_mod", FxCategory::Experimental, nullptr},
+    // V3
+    {"spectral_smear", FxCategory::Spectral, nullptr},
+    {"spectral_delay", FxCategory::Spectral, "time_ms"},
+    {"time_warp", FxCategory::GranularTime, nullptr},
+    {"glitch", FxCategory::RhythmGlitch, nullptr},
+    {"degrade", FxCategory::ToneCharacter, nullptr},
+    {"fold_crush", FxCategory::ToneCharacter, nullptr},
 };
 
 void annotate(FxDescriptor& d) {
@@ -103,7 +110,20 @@ void annotate(FxDescriptor& d) {
     }
     auto& L = d.latency;
     const std::string& t = d.typeId;
-    if (t == "harmony" || t == "formant" || t == "spectral" || t == "pitch_shift") {
+    if (t == "spectral_smear" || t == "spectral_delay") {
+        L.zero = false;
+        L.low = true;
+        L.analysisWindow = true;
+        L.cpuClass = 3;
+        L.lowNote = "Shorter analysis window (512 points at 48 kHz): less latency, coarser low-frequency resolution.";
+    } else if (t == "fold_crush") {
+        L.oversampling = true;
+        L.cpuClass = 2;
+        L.lowNote = "2x minimum-phase IIR oversampling: 5 samples instead of 23, same anti-aliasing.";
+        L.zeroNote = "No oversampling: 0 samples, but the folder aliases much more (part of its character at high Fold).";
+    } else if (t == "time_warp" || t == "glitch" || t == "degrade") {
+        L.cpuClass = 1;
+    } else if (t == "harmony" || t == "formant" || t == "spectral" || t == "pitch_shift") {
         L.zero = false;
         L.low = true;
         L.analysisWindow = true;
@@ -131,7 +151,11 @@ const std::vector<FxDescriptor>& fxRegistry() {
     static const std::vector<FxDescriptor> reg = [] {
         std::vector<FxDescriptor> r;
         fx::registerAll(r);
-        for (auto& d : r) annotate(d);
+        for (auto& d : r) {
+            annotate(d);
+            // never index past ParamValues: a descriptor over the cap is truncated (and fails the contract test)
+            if (d.params.size() > static_cast<size_t>(kMaxParams)) d.params.resize(static_cast<size_t>(kMaxParams));
+        }
         return r;
     }();
     return reg;

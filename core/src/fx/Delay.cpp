@@ -9,12 +9,13 @@
 #include "ih1/dsp/DelayLine.h"
 #include "ih1/dsp/Svf.h"
 #include "ih1/fx/AllFx.h"
+#include "ih1/dsp/RateReducer.h"
 #include "ih1/fx/FxBase.h"
 
 namespace ih1::fx {
 namespace {
 
-enum { kSync, kTime, kDiv, kStereo, kSpread, kFeedback, kLowCut, kHighCut, kModDepth, kModRate, kDrive, kDuck, kPattern, kMix, kDiffusion };
+enum { kSync, kTime, kDiv, kStereo, kSpread, kFeedback, kLowCut, kHighCut, kModDepth, kModRate, kDrive, kDuck, kPattern, kMix, kDiffusion, kLofiRate, kLofiBits };
 
 struct Tap { float pos, gain; };
 constexpr std::array<std::array<Tap, 4>, 4> kPatterns = {{
@@ -35,6 +36,7 @@ class Delay final : public FxBase {
         mix_.prepare(sr_, maxBlock_, 0, MixLaw::Flat);
         fbS_.prepare(sr_, 30.0f);
         diffS_.prepare(sr_, 40.0f);
+        lofi_.prepare(sr_, 0xDE1Au);
         static const float msL[4] = {4.7f, 7.3f, 11.9f, 17.3f}, msR[4] = {5.3f, 8.1f, 12.7f, 18.9f};  // incommensurate
         for (int k = 0; k < 4; ++k) {
             ap_[0][k].prepare(std::max(1, static_cast<int>(msL[k] * 0.001f * srf())));
@@ -47,6 +49,7 @@ class Delay final : public FxBase {
         for (auto& f : hc_) f.reset();
         for (auto& c : ap_) for (auto& a : c) a.reset();
         duckEnv_.reset();
+        lofi_.reset();
         mix_.reset();
         for (auto& c : cur_) c.xf = 1.0f;
     }
@@ -80,6 +83,13 @@ class Delay final : public FxBase {
         const auto& pat = kPatterns[static_cast<size_t>(std::clamp(ip(kPattern), 0, 3))];
         const float modAmt = pct(kModDepth) * 0.002f * srf();  // up to 2 ms
         const float drive = pct(kDrive);
+        dsp::RateReducer::Settings lofiSet;
+        // the top of each range means "off" at any host sample rate
+        const bool rateOn = fp(kLofiRate) < 47999.0f, bitsOn = fp(kLofiBits) < 23.99f;
+        lofiSet.rateHz = rateOn ? fp(kLofiRate) : srf();
+        lofiSet.bits = bitsOn ? fp(kLofiBits) : 24.0f;
+        lofiSet.reconstruct = rateOn ? dsp::RateReducer::FilterSoft : dsp::RateReducer::FilterOff;
+        const bool lofiOn = rateOn || bitsOn;
         const float duck = pct(kDuck);
         const float xfStep = 1.0f / (kXfadeMs * 0.001f * srf());
 
@@ -116,6 +126,12 @@ class Delay final : public FxBase {
                     for (auto& a : ap_[c]) d = a.process(d, 0.45f + 0.25f * dif);
                     f = (1.0f - dif) * f + dif * d;
                 }
+                fbSig[c] = f;
+            }
+            // V3 Phase 5: optional lo-fi character on the repeats only (inside the loop: every pass degrades further)
+            if (lofiOn) { float* fl = &fbSig[0]; float* fr = &fbSig[1]; lofi_.process(fl, fr, 1, lofiSet); }
+            for (int c = 0; c < 2; ++c) {
+                float f = fbSig[c];
                 if (drive > 0.0f) { const float k = 1.0f + 6.0f * drive; f = std::tanh(f * k) / k * (1.0f + drive); }
                 fbSig[c] = 2.0f * std::tanh(0.5f * f * fbg);  // safety soft-clip bounds runaway at 100 %
             }
@@ -143,6 +159,7 @@ class Delay final : public FxBase {
     dsp::Allpass ap_[2][4];
     Head cur_[2];
     MixStage mix_;
+    dsp::RateReducer lofi_;
 };
 
 }  // namespace
@@ -170,8 +187,11 @@ FxDescriptor describeDelay() {
         P::pct("mix", "Mix", 35.0f, "Balance of original and echoes. 50% keeps both at full level."),
         // appended in V2.1 (state is keyed by id; older projects load it at 0 = the previous sound)
         P::pct("diffusion", "Diffusion", 0.0f, "Smears every repeat a little more, so echoes bloom into a soft, reverb-like tail."),
+        // V3 (appended: old projects load them at their defaults = off)
+        P::logf("lofi_rate", "Repeats Rate", "Hz", 1000.0f, 48000.0f, 48000.0f, "Sample-rate reduction on the repeats only: each echo comes back grittier (48 kHz = off)."),
+        P::flt("lofi_bits", "Repeats Bits", "", 4.0f, 24.0f, 24.0f, "Bit-depth reduction on the repeats only (24 = off)."),
     };
-    for (int i : {kSpread, kModRate, kDrive, kDuck, kDiffusion}) d.params[static_cast<size_t>(i)].advanced = true;
+    for (int i : {kSpread, kModRate, kDrive, kDuck, kDiffusion, kLofiRate, kLofiBits}) d.params[static_cast<size_t>(i)].advanced = true;
     d.create = [] { return std::make_unique<Delay>(); };
     return d;
 }

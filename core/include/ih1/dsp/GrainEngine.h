@@ -45,6 +45,7 @@
 #include "ih1/dsp/Basics.h"
 #include "ih1/dsp/DelayLine.h"
 #include "ih1/dsp/Denormals.h"
+#include "ih1/dsp/RateReducer.h"
 #include "ih1/dsp/Svf.h"
 
 namespace ih1::dsp {
@@ -82,6 +83,9 @@ public:
         float delayMs = 0.0f;       // grain delay
         float feedback = 0.0f;      // 0..0.95
         float fbHp = 80.0f, fbLp = 9000.0f;
+        // V3 Phase 5/6: character inside the feedback path (each pass is re-degraded). Defaults = off.
+        float fbRateHz = 0.0f;      // <= 0 or >= host rate: off
+        float fbDriveDb = 0.0f;     // saturation per pass
     };
 
     void prepare(double sr, float bufferSeconds, int maxBlock, uint32_t seed);
@@ -152,6 +156,7 @@ private:
     Rng rng_;
     DelayLine delay_[2];
     Svf fbHp_[2], fbLp_[2];
+    RateReducer fbRate_;
     float fbState_[2] = {0.0f, 0.0f};
     float dcX_[2] = {0.0f, 0.0f}, dcY_[2] = {0.0f, 0.0f};
     float lastHp_ = -1.0f, lastLp_ = -1.0f;

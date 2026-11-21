@@ -60,6 +60,7 @@ void GrainEngine::prepare(double sr, float bufferSeconds, int maxBlock, uint32_t
     binLen_ = std::max(1, static_cast<int>(span * sr_ / 96.0));
     disp_.spanSeconds.store(static_cast<float>(span));
     lastHp_ = lastLp_ = -1.0f;
+    fbRate_.prepare(sr_, seed_ ^ 0xFEEDu);
     reset();
 }
 
@@ -82,6 +83,7 @@ void GrainEngine::reset() {
     spawnOrder_ = 0;
     rng_.seed_(seed_);
     for (auto& d : delay_) d.reset();
+    fbRate_.reset();
     for (int c = 0; c < 2; ++c) {
         fbHp_[c].reset();
         fbLp_[c].reset();
@@ -292,6 +294,13 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         lastFreeze_ = hold;
     }
 
+    RateReducer::Settings fbSet;
+    const bool fbRateOn = p.fbRateHz > 0.0f && p.fbRateHz < static_cast<float>(sr) * 0.999f && p.feedback > 0.0f;
+    fbSet.rateHz = fbRateOn ? p.fbRateHz : static_cast<float>(sr);
+    fbSet.reconstruct = RateReducer::FilterSoft;
+    fbSet.bits = fbRateOn ? 12.0f : 24.0f;
+    const float fbDrive = dbToGain(std::clamp(p.fbDriveDb, 0.0f, 24.0f));
+    const bool fbChar = (fbRateOn || fbDrive > 1.0001f) && p.feedback > 0.0f;
     const float interval = static_cast<float>(sr) / std::clamp(p.density, 0.05f, 1000.0f);
     const float delaySamples = std::clamp(p.delayMs, 0.0f, 2000.0f) * 0.001f * static_cast<float>(sr);
     const bool echo = delaySamples > 1.0f;
@@ -391,10 +400,19 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         // ---- grain delay + feedback (resampled into the capture buffer) ----
         float fbIn[2] = {0.0f, 0.0f};
         float wet[2] = {l, r};
+        float fbPre[2];
         for (int c = 0; c < 2; ++c) {
             delay_[c].push(wet[c]);
             const float d = echo ? delay_[c].readLinear(delaySamples) : wet[c];
-            float f = fbLp_[c].process(fbHp_[c].process(d * p.feedback));
+            fbPre[c] = fbLp_[c].process(fbHp_[c].process(d * p.feedback));
+            if (echo) wet[c] += d * p.feedback;
+        }
+        if (fbChar) {
+            if (fbRateOn) fbRate_.process(&fbPre[0], &fbPre[1], 1, fbSet);
+            if (fbDrive > 1.0001f) for (float& f : fbPre) f = std::tanh(f * fbDrive) / fbDrive * (1.0f + 0.3f * std::log(fbDrive));
+        }
+        for (int c = 0; c < 2; ++c) {
+            float f = fbPre[c];
             // DC blocker + soft limiter: the loop gain can never run away (|tanh| < 1, fb <= 0.95)
             const float y = f - dcX_[c] + 0.995f * dcY_[c];
             dcX_[c] = f;
@@ -402,7 +420,6 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             f = std::tanh(y);
             fbState_[c] = std::isfinite(f) ? f : 0.0f;
             fbIn[c] = fbState_[c];
-            if (echo) wet[c] += d * p.feedback;
         }
         // soft ceiling: transparent below 2.0 (+6 dBFS), approaches 3.0 (+9.5 dBFS)
         for (float& w : wet) {

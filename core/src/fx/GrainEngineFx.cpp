@@ -15,8 +15,7 @@ enum {
     geMode, geSize, geDensity, gePosition, gePitch, geSpeed, geFeedback, geMix,
     geFreeze, geLock, geOverlap, geVoices, geSpray, geSizeJit, gePitchJit, geScale, geReverse, geWindow,
     geSpread, geStereo, geVarispeed, geLoop, geRetrig, geSync, geRetrigDiv, geRetrigMs, geAlign,
-    geDelay, geFbHp, geFbLp, geGain
-};
+    geDelay, geFbHp, geFbLp, geGain, geFbRate, geFbDrive };
 
 class GrainEngineFx final : public FxBase {
     void onPrepare() override {
@@ -66,6 +65,8 @@ class GrainEngineFx final : public FxBase {
         p.feedback = pct(geFeedback) * 0.95f;
         p.fbHp = fp(geFbHp);
         p.fbLp = fp(geFbLp);
+        p.fbRateHz = fp(geFbRate) >= 47999.0f ? 0.0f : fp(geFbRate);  // top of the range = off
+        p.fbDriveDb = fp(geFbDrive);
         engine_.process(ch[0], ch[1], wetL_.data(), wetR_.data(), n, p);
         for (int i = 0; i < n; ++i) {
             const float g = out_.next();
@@ -133,6 +134,9 @@ FxDescriptor describeGrainEngine() {
         P::logf("fb_hp", "Feedback HP", "Hz", 20.0f, 2000.0f, 90.0f, "Removes lows from each feedback pass, so repeats thin out instead of booming."),
         P::logf("fb_lp", "Feedback LP", "Hz", 500.0f, 20000.0f, 9000.0f, "Removes highs from each feedback pass, so repeats get darker."),
         P::flt("gain", "Output", "dB", -24.0f, 12.0f, 0.0f, "Level of the grain signal."),
+        // V3 (appended, default off): character inside the feedback path
+        P::logf("fb_rate", "Feedback Rate", "Hz", 1000.0f, 48000.0f, 48000.0f, "Sample-rate reduction on every feedback pass: the re-grained material gets grittier each time (48 kHz = off)."),
+        P::flt("fb_drive", "Feedback Drive", "dB", 0.0f, 24.0f, 0.0f, "Saturation on every feedback pass (bounded): denser, dirtier regeneration."),
     };
     auto dep = [&](int i, const char* by, float when, const char* why) {
         auto& s = d.params[static_cast<size_t>(i)];
@@ -143,7 +147,7 @@ FxDescriptor describeGrainEngine() {
     dep(geDensity, "lock", 0.0f, "Inactive while Ratio Lock is on: density follows Grain Size x Overlap.");
     dep(geOverlap, "lock", 1.0f, "Only used while Ratio Lock is on.");
     for (int i : {geVoices, geSpray, geSizeJit, gePitchJit, geScale, geReverse, geWindow, geSpread, geStereo, geVarispeed,
-                  geLoop, geRetrig, geSync, geRetrigDiv, geRetrigMs, geAlign, geDelay, geFbHp, geFbLp, geGain, geLock, geOverlap})
+                  geLoop, geRetrig, geSync, geRetrigDiv, geRetrigMs, geAlign, geDelay, geFbHp, geFbLp, geGain, geLock, geOverlap, geFbRate, geFbDrive})
         d.params[static_cast<size_t>(i)].advanced = true;
     d.create = [] { return std::make_unique<GrainEngineFx>(); };
     return d;

@@ -11,6 +11,13 @@ void registerAll(std::vector<FxDescriptor>& r);
 
 // individual modules
 FxDescriptor describeDelay();
+// V3 modules (core/src/fx/V3Fx.cpp)
+FxDescriptor describeDegrade();
+FxDescriptor describeFoldCrush();
+FxDescriptor describeSpectralSmear();
+FxDescriptor describeSpectralDelay();
+FxDescriptor describeTimeWarp();
+FxDescriptor describeGlitchScatter();
 FxDescriptor describeTapeEcho();
 FxDescriptor describeReverb();
 FxDescriptor describeReverse();

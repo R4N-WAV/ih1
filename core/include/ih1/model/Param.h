@@ -10,7 +10,7 @@
 
 namespace ih1 {
 
-constexpr int kMaxParams   = 32;  // per FX type
+constexpr int kMaxParams   = 48;  // per FX type (V3: 32 -> 48; state is stored by parameter id, so this is not a format change)
 constexpr int kMaxChain    = 32;  // committed instances
 constexpr int kNumChannels = 2;   // engine is always stereo internally
 
