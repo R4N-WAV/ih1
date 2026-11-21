@@ -6,7 +6,7 @@ A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll 
 
 ## Status
 
-Version 0.2.1 (development), with the V1 feedback pass and the **V2.1 pass** applied. V2.1 is documented in:
+Version 0.3.0 (test build, feedback round 3), with the V1 feedback pass, the V2.1 pass and the **V3 pass** applied. V3 is documented in `docs/V3_IMPLEMENTATION.md`. V2.1 is documented in:
 - `docs/V2_1_IMPLEMENTATION.md`: diagnosis, changes, latency table, measurements, evidence, KADAL sources
 - `docs/FL_STUDIO_TEST_CHECKLIST.md`: the manual host acceptance list (FL Studio not tested here)
 - `docs/KNOWN_ISSUES.md` and `docs/FACTORY_PRESETS.md`
@@ -79,7 +79,7 @@ The build produces:
 - `ih1_uitest`, the editor interaction test (needs a display: `xvfb-run` on Linux)
 - `fx_dump`, which prints the FX parameter schema
 
-To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.2.1 /DSourceDir=<stage> installer\IH1.iss`.
+To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.3.0 /DTestRound=3 /DSourceDir=<stage> installer\IH1.iss`.
 
 Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching it.
 
