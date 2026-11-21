@@ -1,5 +1,50 @@
 # Known issues and unverified items
 
+## V3 (this pass, 0.3.0 test round 3)
+
+### Not verified in the target host
+- **FL Studio, Windows and real GPUs were not tested by the developer.** Everything ran on Linux (Mesa llvmpipe);
+  the Windows CI builds, tests, runs pluginval and builds the installer and ZIP, but nobody ran the installer or
+  loaded IH1 in FL Studio. Use `docs/FL_STUDIO_TEST_CHECKLIST.md`.
+- **Volume renderer GPU cost is unmeasured on real GPUs.** On llvmpipe it adapts down automatically. Expected to be
+  light on any discrete or recent integrated GPU, but not measured.
+- **Physical output peaks** (interface / monitors) cannot be measured here; Output Safety is verified digitally.
+
+### Audio (measured, bounded, left as they are)
+- **Resonator landing overshoot +2.2 to +2.4 dB**: the first onset excites the combs before they settle. Inherent to
+  the effect; below the Output Safety ceiling.
+- **Saturation worst case +3.3 dB** with a draft at 36 dB drive *and* +12 dB output (defaults < 0.5 dB).
+- **Fold & Crush, one random draft +3.2 dB** (1 kHz tone, -98 % asymmetry, heavy crush): auto-gain adapting from a
+  chord-only warm-up to broadband bursts. Hot and default drafts are clean.
+- **Time Warp Scrub** at fast rates / deep depths flags the audit's step metric (3.6-4.6x): that is the scratch's own
+  pitch rise, not a discontinuity.
+- **Grain Engine**: 2 of 600 random settings exceed the smooth-curvature bound by ≤ 2.1x (saturated pitched
+  feedback). One extreme corner (backwards live Stretch at -1.7x, 96 % reverse grains, +15 st, 82 % feedback, 7.2 s
+  offset) crackles after ~10 s while the playhead re-anchors rapidly near the start of the recording; not resolved.
+  With the new Feedback Rate stage active the audit counts its sample-and-hold steps as discontinuities (by design).
+- **Guard mode is not true-peak**: inter-sample peaks can exceed the ceiling by up to ~3 dB on worst-case material.
+  Use True Peak (1.5 ms latency) where that matters.
+- **True Peak is unavailable in Zero Latency mode** (Guard runs; the UI says so). Changing the safety mode changes the
+  reported latency; FL Studio's reaction to that during playback is untested.
+
+### Workflow / state
+- **Projects now reopen with nothing staged** (None) instead of the saved staged FX; the drafts are restored. A
+  deliberate consequence of Feedback 1 (host recall = preset recall).
+- **No preset macros**: they would move committed (immutable) parameters. Needs an owner decision.
+- **No Signalsmith / phase-vocoder time stretch**: Time Warp's Keep Pitch is granular (grainier on sustained tones).
+
+### Visual
+- The volume formation is softer than V2.1's sharp hair-line filaments and less dense than the reference's folded
+  veils. CPU reference images show ray-sampling grain; the GL path removes most of it with temporal accumulation.
+- Software fallback renders at a quarter of the field resolution on a background thread (softer than GL).
+
+### Presets
+- The audition sources are synthesised stand-ins, not recordings. 5 of 61 creative presets are character rather
+  than transformative, by design. Removed V2.1 preset ids only lose their name in the preset box; projects keep
+  their chains.
+
+---
+
 ## V2.1 (this pass)
 
 ### Not verified in the target host

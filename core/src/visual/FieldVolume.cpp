@@ -224,11 +224,11 @@ namespace {
 void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<float>& rgb, int steps);
 }
 
-void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps) {
+void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps, int threads) {
     rgb.assign(static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h)) * 3, 0.0f);
     if (w <= 0 || h <= 0 || s.bound[3] <= 0.0f) return;
     const PackedScene P = packScene(s);
-    const int nt = std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 4);
+    const int nt = threads > 0 ? threads : std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 4);
     if (nt == 1 || h < 32) { renderRows(P, w, h, 0, h, rgb, steps); return; }
     std::vector<std::thread> th;
     for (int k = 0; k < nt; ++k) th.emplace_back([&, k] { renderRows(P, w, h, h * k / nt, h * (k + 1) / nt, rgb, steps); });

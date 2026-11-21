@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < d.params.size(); ++i) v[i] = d.params[i].fromNormalised(rng.uniform());
         v[static_cast<size_t>(idx("mix"))] = 100.0f;
         v[static_cast<size_t>(idx("gain"))] = 0.0f;
+        if (std::getenv("IH1_NO_FB_CHAR")) { v[static_cast<size_t>(idx("fb_rate"))] = 48000.0f; v[static_cast<size_t>(idx("fb_drive"))] = 0.0f; }
         v = d.clamp(v);
         auto fx = d.create();
         fx->prepare(sr, 256);

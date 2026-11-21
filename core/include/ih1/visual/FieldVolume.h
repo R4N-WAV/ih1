@@ -82,7 +82,9 @@ struct PackedScene {
 PackedScene packScene(const FieldScene& s);
 
 // CPU reference renderer: linear RGB (3 floats per pixel, row-major, y down). `steps` ray-march samples.
-void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps = 40);
+// threads: 0 = up to 4 worker threads (offline tools, tests); 1 = the calling thread only (the plug-in's software
+// fallback, which must never compete with the UI or audio threads for CPU).
+void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps = 40, int threads = 0);
 
 // GLSL 1.50 fragment shader implementing exactly renderVolume()'s per-pixel function. Inputs: vUv (0..1, y up);
 // uniforms as named in packScene's layout (see the source); output: linear RGB.

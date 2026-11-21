@@ -555,7 +555,7 @@ public:
             }
             if (!have) { wait(50); continue; }
             form_.update(in);
-            visual::renderVolume(form_.scene(), w, h, lin, 28);
+            visual::renderVolume(form_.scene(), w, h, lin, 24, 1);  // single thread, low priority: never starves the UI
             const juce::SpinLock::ScopedLockType sl(lock_);
             done_.swap(lin);
             dw_ = w;
@@ -607,7 +607,7 @@ void FormationView::renderSoftware() {
     // frame is temporally averaged, tone mapped and blitted; the image is scaled up when painted.
     if (!softThread_) return;
     const auto art = artworkArea();
-    const int w = std::clamp(art.getWidth() / 4, 1, 640), h = std::clamp(art.getHeight() / 4, 1, 400);
+    const int w = std::clamp(art.getWidth() / 5, 1, 480), h = std::clamp(art.getHeight() / 5, 1, 300);
     visual::FrameInput in;
     in.chain = chain_;
     fillLevels(proc_, in.chain);
