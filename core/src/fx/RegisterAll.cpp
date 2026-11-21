@@ -58,6 +58,17 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeGlitchScatter());
     r.push_back(describeDegrade());
     r.push_back(describeFoldCrush());
+    // V4 (appended after V3 for the same reason: every accepted colour tier stays where it is)
+    r.push_back(describeSliceShuffler());
+    r.push_back(describeAttackBody());
+    r.push_back(describeEchoMatrix());
+    r.push_back(describeReversePitchEcho());
+    r.push_back(describeDispersion());
+    r.push_back(describeModalResonator());
+    r.push_back(describeTextureImprint());
+    r.push_back(describeSpectralShatter());
+    r.push_back(describePartialRecomposer());
+    r.push_back(describeSpectralGraft());
     r.push_back(describeTestGain());
     r.push_back(describeTestLatency());
 }

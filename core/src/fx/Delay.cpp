@@ -38,6 +38,8 @@ class Delay final : public FxBase {
         diffS_.prepare(sr_, 40.0f);
         duckS_.prepare(sr_, 20.0f);
         duckS_.snap(pct(kDuck));
+        modS_.prepare(sr_, 40.0f);
+        modS_.snap(pct(kModDepth) * 0.002f * srf());
         lofi_.prepare(sr_, 0xDE1Au);
         static const float msL[4] = {4.7f, 7.3f, 11.9f, 17.3f}, msR[4] = {5.3f, 8.1f, 12.7f, 18.9f};  // incommensurate
         for (int k = 0; k < 4; ++k) {
@@ -83,7 +85,7 @@ class Delay final : public FxBase {
         const float tgt[2] = {static_cast<float>(sec * sr_),
                               static_cast<float>(sec * sr_ * (mode == 1 ? 1.0 + pct(kSpread) : 1.0))};
         const auto& pat = kPatterns[static_cast<size_t>(std::clamp(ip(kPattern), 0, 3))];
-        const float modAmt = pct(kModDepth) * 0.002f * srf();  // up to 2 ms
+        modS_.setTarget(pct(kModDepth) * 0.002f * srf());  // up to 2 ms; smoothed per sample (a read offset)
         const float drive = pct(kDrive);
         dsp::RateReducer::Settings lofiSet;
         // the top of each range means "off" at any host sample rate
@@ -96,7 +98,7 @@ class Delay final : public FxBase {
         const float xfStep = 1.0f / (kXfadeMs * 0.001f * srf());
 
         for (int i = 0; i < n; ++i) {
-            const float m = lfo_.next() * modAmt;
+            const float m = lfo_.next() * modS_.next();
             const float fbg = fbS_.next();
             const float dif = diffS_.next();
             float in[2] = {ch[0][i], ch[1][i]};
@@ -157,7 +159,7 @@ class Delay final : public FxBase {
     dsp::Svf lc_[2], hc_[2];
     dsp::Lfo lfo_;
     dsp::EnvelopeFollower duckEnv_;
-    dsp::Smoother fbS_, diffS_, duckS_;
+    dsp::Smoother fbS_, diffS_, duckS_, modS_;
     dsp::Allpass ap_[2][4];
     Head cur_[2];
     MixStage mix_;

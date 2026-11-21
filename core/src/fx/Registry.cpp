@@ -93,6 +93,17 @@ constexpr Annot kAnnot[] = {
     {"glitch", FxCategory::RhythmGlitch, nullptr},
     {"degrade", FxCategory::ToneCharacter, nullptr},
     {"fold_crush", FxCategory::ToneCharacter, nullptr},
+    // V4
+    {"slice_shuffle", FxCategory::RhythmGlitch, nullptr},
+    {"transient_split", FxCategory::Experimental, nullptr},
+    {"echo_matrix", FxCategory::TimeSpace, nullptr},
+    {"reverse_echo", FxCategory::PitchVocal, "length_ms"},
+    {"dispersion", FxCategory::Modulation, nullptr},
+    {"modal", FxCategory::Spectral, nullptr},
+    {"texture", FxCategory::ToneCharacter, nullptr},
+    {"spectral_shatter", FxCategory::Spectral, nullptr},
+    {"partial_recompose", FxCategory::PitchVocal, nullptr},
+    {"spectral_graft", FxCategory::Spectral, nullptr},
 };
 
 void annotate(FxDescriptor& d) {
@@ -111,7 +122,17 @@ void annotate(FxDescriptor& d) {
     }
     auto& L = d.latency;
     const std::string& t = d.typeId;
-    if (t == "spectral_smear" || t == "spectral_delay") {
+    if (t == "spectral_shatter" || t == "spectral_graft" || t == "partial_recompose") {
+        L.zero = false;
+        L.low = true;
+        L.analysisWindow = true;
+        L.cpuClass = 3;
+        L.lowNote = "Shorter analysis window (512 points at 48 kHz): less latency, coarser low-frequency resolution.";
+    } else if (t == "dispersion" || t == "echo_matrix" || t == "modal") {
+        L.cpuClass = 2;
+    } else if (t == "slice_shuffle" || t == "transient_split" || t == "reverse_echo" || t == "texture") {
+        L.cpuClass = 1;
+    } else if (t == "spectral_smear" || t == "spectral_delay") {
         L.zero = false;
         L.low = true;
         L.analysisWindow = true;

@@ -18,6 +18,17 @@ FxDescriptor describeSpectralSmear();
 FxDescriptor describeSpectralDelay();
 FxDescriptor describeTimeWarp();
 FxDescriptor describeGlitchScatter();
+// V4 modules (core/src/fx/V4Fx.cpp, V4Spectral.cpp)
+FxDescriptor describeSliceShuffler();
+FxDescriptor describeAttackBody();
+FxDescriptor describeEchoMatrix();
+FxDescriptor describeReversePitchEcho();
+FxDescriptor describeDispersion();
+FxDescriptor describeModalResonator();
+FxDescriptor describeTextureImprint();
+FxDescriptor describeSpectralShatter();
+FxDescriptor describePartialRecomposer();
+FxDescriptor describeSpectralGraft();
 FxDescriptor describeTapeEcho();
 FxDescriptor describeReverb();
 FxDescriptor describeReverse();
