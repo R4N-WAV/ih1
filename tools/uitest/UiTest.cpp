@@ -374,6 +374,50 @@ int main() {
         { const ScopedLock sl(proc->sessionLock()); const auto& c = proc->session().chain(); reordered = c.size() == 2 && c[0].id() == ids[1] && c[1].id() == ids[0]; }
         check(reordered, "dragging along the strip reorders the audio chain");
         (void) deleteVisibleWhileDragging;
+        // V4 Phase 6: a click (no drag) on a committed name bypasses that instance; its values never change; a second
+        // click enables it again; the label greys while bypassed (the item records the state it draws)
+        {
+            ih1::ParamValues before;
+            uint64_t id0;
+            { const ScopedLock sl(proc->sessionLock()); id0 = proc->session().chain()[0].id(); before = proc->session().chain()[0].values(); }
+            d.click(d.toPeer(fv, fv.itemBounds(0).getCentre().toInt()));
+            pump(150);
+            bool off = false, same = false;
+            { const ScopedLock sl(proc->sessionLock()); const auto& c = proc->session().chain(); off = c[0].id() == id0 && !c[0].enabled(); same = c[0].values() == before; }
+            check(off && !fv.itemEnabled(0), "V4: clicking a committed FX name bypasses exactly that instance (label greyed)");
+            check(same, "V4: ...without changing its committed settings");
+            d.click(d.toPeer(fv, fv.itemBounds(0).getCentre().toInt()));
+            pump(150);
+            bool on = false;
+            { const ScopedLock sl(proc->sessionLock()); on = proc->session().chain()[0].enabled() && proc->session().chain()[0].values() == before; }
+            check(on && fv.itemEnabled(0), "V4: a second click enables it again with the same settings");
+        }
+    }
+
+    // ---- V4 Phase 3: None is an ordinary carousel entry: the wheel scrolls into and out of it in both directions ----
+    {
+        proc->uiSelect(-1);
+        pump(150);
+        const auto c = d.toPeer(car, {120, car.getHeight() / 2});
+        d.wheel(c, -0.5f);  // down: the first effect
+        pump(120);
+        const int first = selected(*proc);
+        check(first >= 0 && car.selected() == first, "V4: from None the wheel steps to the next entry");
+        d.wheel(c, 0.5f);  // back up: None again (not skipped, not a ghost)
+        pump(120);
+        check(selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible(), "V4: scrolling back lands on None (no staged FX, settings hidden)");
+        d.wheel(c, 0.5f);  // further up: past None to the last effect
+        pump(120);
+        const int last = selected(*proc);
+        check(last >= 0 && last != first, "V4: scrolling up from None continues to the previous (last) entry");
+        d.wheel(c, -0.5f);
+        pump(120);
+        check(selected(*proc) == -1, "V4: and down again lands on None");
+        int lands = 0;
+        for (int k = 0; k < 12; ++k) { d.wheel(c, k % 2 ? 0.5f : -0.5f); pump(90); lands += (selected(*proc) == car.selected()) ? 1 : 0; }
+        check(lands == 12, "V4: rapid wheel steps: the carousel always shows the staged state (" + String(lands) + "/12)");
+        proc->uiSelect(-1);
+        pump(100);
     }
 
     // ---- 4.15 preset box ----

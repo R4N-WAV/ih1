@@ -40,6 +40,7 @@ struct InstanceInput {
     Rgb colour{0.6f, 0.5f, 1.0f};  // display colour (fxColour of its type and duplicate shade)
     uint32_t seed = 1;
     float level = 0.0f;  // audio RMS at this instance's output (linear)
+    bool enabled = true; // V4: false = bypassed (its part of the field greys and dims, the medium stays continuous)
 };
 
 struct TransferRequest {
@@ -142,6 +143,8 @@ private:
         float grow = 0.0f;          // strand length fraction (grows after arrival)
         float hold = 0.0f;          // seconds until it may grow (packet in flight)
         float bright = 0.0f;        // smoothed audio level
+        bool enabledIn = true;      // V4: committed instance enabled (input)
+        float enabledAmt = 1.0f;    // V4: smoothed enabled amount (0.25 s)
         float levelSlow = 0.0f;     // slower level (per-node onset detection)
         bool inChain = false;
         int index = 0;
@@ -184,6 +187,10 @@ private:
     std::vector<V3> pts_;          // scratch
     float time_ = 0.0f;
     float energy_ = 0.0f, low_ = 0.0f, high_ = 0.0f, balance_ = 0.0f, transient_ = 0.0f;
+    // V4 audio response: mid band, onset density (fine turbulence) and pulses travelling along the whole spine
+    float mid_ = 0.0f, onsetRate_ = 0.0f;
+    struct SpinePulse { float age = 0.0f, amp = 0.0f; };
+    std::vector<SpinePulse> spinePulses_;
     float mono_ = 0.0f;
     float aspect_ = 1.6f;
     float extent_ = 0.5f, extentTarget_ = 0.5f;

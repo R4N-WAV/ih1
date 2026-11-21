@@ -13,13 +13,15 @@ using namespace juce::gl;
 namespace {
 constexpr float kExposure = 2.2f;
 constexpr float kBloomGain = 0.10f;  // V3: bloom is only a faint finishing accent; the field volume carries the light
-constexpr float kHistory = 0.35f;    // V3: temporal accumulation weight of the newest ray-marched frame
+constexpr float kHistory = 0.22f;    // V4: temporal accumulation weight of the newest ray-marched frame (jittered)
 // V3: adaptive cost. Level 0 = half resolution, 64 samples ... level 4 = a quarter resolution, 16 samples. The volume
 // pass is timed every 20th frame; a slow pass steps down, a fast one steps back up. The look stays the same, only
 // sampling density changes (bounded GPU cost on weak / software GL, full quality on real GPUs).
+// V4: the coarsest level is a third of the resolution (never a quarter: the per-texel noise of a quarter-resolution
+// march, magnified 4x, was the "square patches" the owner saw). Fewer steps are traded first, resolution last.
 constexpr int kVolLevels = 5;
-constexpr int kVolStepsAt[kVolLevels] = {64, 44, 32, 24, 16};
-constexpr int kVolDivAt[kVolLevels] = {2, 2, 3, 3, 4};
+constexpr int kVolStepsAt[kVolLevels] = {64, 48, 36, 28, 28};
+constexpr int kVolDivAt[kVolLevels] = {2, 2, 2, 2, 3};
 constexpr int kMaxGlows = 64;
 constexpr double kMaxPixels = 2.4e6;
 constexpr int kMaxSide = 4096;
@@ -68,9 +70,11 @@ void main() {
   }
   o = vec4(s, 1.0);
 })";
-// Mirrors ih1::visual::toneMap (core/src/visual/Formation.cpp): hue-preserving, black stays exactly black.
+// Mirrors ih1::visual::toneMap (core/src/visual/Formation.cpp): hue-preserving. V4: the accumulated volume is
+// reconstructed with a bicubic (Catmull-Rom) filter from 4 bilinear taps (no blocky bilinear magnification of the
+// reduced-resolution march) and the output is dithered (the dark plum gradients never band).
 const char* kCompFS = R"(#version 150
-uniform sampler2D uAccum; uniform sampler2D uBloom; uniform float uExposure; uniform float uBloomGain; in vec2 vUv; out vec4 o;
+uniform sampler2D uAccum; uniform sampler2D uBloom; uniform float uExposure; uniform float uBloomGain; uniform vec2 uSrcSize; uniform float uFrame; in vec2 vUv; out vec4 o;
 vec3 tone(vec3 a) {
   a = max(a, vec3(0.0));
   float m = max(a.r, max(a.g, a.b));
@@ -81,9 +85,23 @@ vec3 tone(vec3 a) {
   float w = u * u * (3.0 - 2.0 * u) * 0.55;
   return mix(c, vec3(0.95, 0.91, 1.0) * t, w);
 }
+vec3 bicubic(sampler2D tex, vec2 uv, vec2 size) {
+  vec2 p = uv * size - 0.5; vec2 f = fract(p); vec2 i = floor(p);
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 s0 = w0 + w1, s1 = w2 + w3;
+  vec2 t0 = (i - 0.5 + w1 / s0) / size, t1 = (i + 1.5 + w3 / s1) / size;
+  return (texture(tex, vec2(t0.x, t0.y)).rgb * s0.x + texture(tex, vec2(t1.x, t0.y)).rgb * s1.x) * s0.y
+       + (texture(tex, vec2(t0.x, t1.y)).rgb * s0.x + texture(tex, vec2(t1.x, t1.y)).rgb * s1.x) * s1.y;
+}
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 void main() {
-  vec3 acc = texture(uAccum, vUv).rgb + uBloomGain * texture(uBloom, vUv).rgb;
-  o = vec4(tone(acc), 1.0);
+  vec3 acc = max(bicubic(uAccum, vUv, uSrcSize), vec3(0.0)) + uBloomGain * texture(uBloom, vUv).rgb;
+  vec3 c = tone(acc);
+  float d = hash12(gl_FragCoord.xy + vec2(uFrame * 17.0, uFrame * 31.0)) - 0.5;
+  o = vec4(c + d / 255.0, 1.0);
 })";
 
 std::unique_ptr<juce::OpenGLShaderProgram> makeProgram(juce::OpenGLContext& ctx, const char* vs, const char* fs) {
@@ -117,7 +135,7 @@ std::vector<visual::InstanceInput> chainInputs(Processor& proc) {
     for (const auto& ci : c) {
         const auto& ids = byType[ci.typeIndex()];
         const int shade = static_cast<int>(std::find(ids.begin(), ids.end(), ci.id()) - ids.begin());
-        out.push_back({ci.id(), visual::fxColour(ci.descriptor().typeId, shade), ci.visualSeed(), 0.0f});
+        out.push_back({ci.id(), visual::fxColour(ci.descriptor().typeId, shade), ci.visualSeed(), 0.0f, ci.enabled()});
     }
     return out;
 }
@@ -332,15 +350,17 @@ void FormationRenderer::renderOpenGL() {
         auto u4 = [pid](const char* name, const float* v, int n) { if (n > 0) glUniform4fv(glGetUniformLocation(pid, name), n, v); };
         u4("uNodeP", P.nodeP.data(), P.nodes); u4("uNodeA", P.nodeA.data(), P.nodes); u4("uNodeU", P.nodeU.data(), P.nodes);
         u4("uNodeV", P.nodeV.data(), P.nodes); u4("uNodeC", P.nodeC.data(), P.nodes);
-        u4("uLinkA", P.linkA.data(), P.links); u4("uLinkB", P.linkB.data(), P.links); u4("uLinkU", P.linkU.data(), P.links); u4("uLinkV", P.linkV.data(), P.links);
+        u4("uSpine", P.spine.data(), P.spineN);
         u4("uPackP", P.packP.data(), P.packets); u4("uPackA", P.packA.data(), P.packets); u4("uPackU", P.packU.data(), P.packets);
         u4("uPackV", P.packV.data(), P.packets); u4("uPackC", P.packC.data(), P.packets);
         glUniform1i(glGetUniformLocation(pid, "uNodes"), P.nodes);
-        glUniform1i(glGetUniformLocation(pid, "uLinks"), P.links);
+        glUniform1i(glGetUniformLocation(pid, "uSpineN"), P.spineN);
         glUniform1i(glGetUniformLocation(pid, "uPackets"), P.packets);
         glUniform1i(glGetUniformLocation(pid, "uSteps"), kVolStepsAt[std::clamp(volLevel_, 0, kVolLevels - 1)]);
         glUniform4fv(glGetUniformLocation(pid, "uCam"), 1, P.cam);
         glUniform4fv(glGetUniformLocation(pid, "uAudio"), 1, P.audio);
+        glUniform4fv(glGetUniformLocation(pid, "uAudio2"), 1, P.audio2);
+        glUniform4fv(glGetUniformLocation(pid, "uPulse"), 1, P.pulse);
         glUniform4fv(glGetUniformLocation(pid, "uBound"), 1, P.bound);
         glUniform2f(glGetUniformLocation(pid, "uRes"), static_cast<float>(rw), static_cast<float>(rh));
         glUniform1f(glGetUniformLocation(pid, "uFrame"), static_cast<float>(frame_ % 1024));
@@ -400,6 +420,8 @@ void FormationRenderer::renderOpenGL() {
     compProg_->setUniform("uBloom", 1);
     compProg_->setUniform("uExposure", kExposure);
     compProg_->setUniform("uBloomGain", kBloomGain);
+    compProg_->setUniform("uSrcSize", static_cast<float>(rw), static_cast<float>(rh));
+    compProg_->setUniform("uFrame", static_cast<float>(frame_ % 4096));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, accum_.tex);
     glActiveTexture(GL_TEXTURE1);
@@ -578,7 +600,7 @@ public:
             }
             if (!have) { wait(50); continue; }
             form_.update(in);
-            visual::renderVolume(form_.scene(), w, h, lin, 24, 1);  // single thread, low priority: never starves the UI
+            visual::renderVolume(form_.scene(), w, h, lin, 24, 1, jitter_++);  // single thread, low priority; jittered per frame
             const juce::SpinLock::ScopedLockType sl(lock_);
             done_.swap(lin);
             dw_ = w;
@@ -588,6 +610,7 @@ public:
     }
 
 private:
+    int jitter_ = 0;
     visual::Formation form_{visual::Quality::Low};
     juce::SpinLock lock_;
     visual::FrameInput in_;
@@ -630,7 +653,8 @@ void FormationView::renderSoftware() {
     // frame is temporally averaged, tone mapped and blitted; the image is scaled up when painted.
     if (!softThread_) return;
     const auto art = artworkArea();
-    const int w = std::clamp(art.getWidth() / 5, 1, 480), h = std::clamp(art.getHeight() / 5, 1, 300);
+    // V4: a third of the artwork (was a fifth), per-frame jitter + history, high-quality upscaling when painted
+    const int w = std::clamp(art.getWidth() / 3, 1, 640), h = std::clamp(art.getHeight() / 3, 1, 400);
     visual::FrameInput in;
     in.chain = chain_;
     fillLevels(proc_, in.chain);
@@ -643,7 +667,7 @@ void FormationView::renderSoftware() {
     if (!softThread_->take(softLin_, fw, fh) || fw <= 0 || fh <= 0 || softLin_.size() != static_cast<size_t>(fw) * static_cast<size_t>(fh) * 3) return;
     if (image_.getWidth() != fw || image_.getHeight() != fh) { image_ = juce::Image(juce::Image::RGB, fw, fh, true); softHist_.clear(); }
     if (softHist_.size() != softLin_.size()) softHist_ = softLin_;
-    else for (size_t k = 0; k < softLin_.size(); ++k) softHist_[k] += 0.5f * (softLin_[k] - softHist_[k]);
+    else for (size_t k = 0; k < softLin_.size(); ++k) softHist_[k] += 0.3f * (softLin_[k] - softHist_[k]);
     juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
     for (int y = 0; y < fh; ++y) {
         auto* line = bd.getLinePointer(y);
@@ -749,7 +773,10 @@ void FormationView::paint(juce::Graphics& g) {
     // GL path: no background, the GL formation shows through. Software fallback: draw the CPU image.
     if (software_) {
         g.fillAll(Colours::field);
-        if (image_.isValid()) g.drawImage(image_, artworkArea().toFloat());
+        if (image_.isValid()) {
+            g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
+            g.drawImage(image_, artworkArea().toFloat());
+        }
     }
     // global control captions
     g.setFont(LookAndFeel::font(9.5f, true).withExtraKerningFactor(0.12f));

@@ -5,7 +5,7 @@
 //   <chain> is a comma-separated list of FX type ids in processing order, e.g. "delay,reverb,harmony",
 //   or a number N for the first N of a built-in mixed list, or "none". Duplicates get duplicate shades.
 //   Add "+commit" to the chain spec to commit the last instance at t = 1 s (transfer animation).
-// Writes PPM frames to outDir every `every` seconds. Env: IH1_EXPOSURE, IH1_QUALITY (0/1/2), IH1_STATS.
+// Writes PPM frames to outDir every `every` seconds. Env: IH1_EXPOSURE, IH1_QUALITY (0/1/2), IH1_STATS, IH1_DISABLE=<index>.
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -83,6 +83,8 @@ int main(int argc, char** argv) {
         // synthetic music: phrase swells
         const float lv = 0.04f + 0.03f * std::sin(t * 1.3f) + 0.02f * std::sin(t * 4.1f);
         for (size_t i = 0; i < in.chain.size(); ++i) in.chain[i].level = lv * (0.8f + 0.4f * std::sin(t * 0.7f + static_cast<float>(i)));
+        // IH1_DISABLE=<index>: show that instance bypassed (V4 Phase 6)
+        if (const char* dis = std::getenv("IH1_DISABLE")) { const size_t di = static_cast<size_t>(std::atoi(dis)); if (di < in.chain.size()) in.chain[di].enabled = false; }
         in.audio.energy = 0.25f + 0.2f * std::sin(t * 1.3f);
         in.audio.low = 0.3f + 0.2f * std::sin(t * 0.5f);
         in.audio.high = 0.2f + 0.15f * std::sin(t * 2.3f);

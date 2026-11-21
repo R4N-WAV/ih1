@@ -29,6 +29,7 @@
 namespace ih1::visual {
 
 constexpr int kMaxFieldNodes = 32;
+constexpr int kMaxSpine = 16;  // V4: control points of the continuous field's spine (the chain, resampled)
 constexpr int kMaxFieldLinks = 32;
 constexpr int kMaxFieldPackets = 4;
 
@@ -41,6 +42,7 @@ struct FieldNode {
     float radius = 0.18f;                      // core radius (world units)
     float influence = 1.0f;                    // reach of the skins (world units)
     float seed = 0.0f;                         // 0..1, stable per instance
+    float enabled = 1.0f;                      // V4: 1 = enabled, 0 = bypassed (its stretch of the field greys and dims)
 };
 struct FieldLink {
     int a = 0, b = 1;
@@ -60,6 +62,10 @@ struct FieldScene {
     std::vector<FieldPacket> packets;
     float yaw = 0.0f, pitch = 0.0f, aspect = 1.6f, time = 0.0f;
     float energy = 0.0f, high = 0.0f;
+    // V4 multi-dimensional audio response: bands, stereo lean, onset density (fine turbulence), travelling pulses
+    float low = 0.0f, mid = 0.0f, balance = 0.0f, turbulence = 0.0f;
+    float pulseS[2] = {-1.0f, -1.0f}, pulseA[2] = {0.0f, 0.0f};
+    float radius = 0.3f;  // V4: base radius of the continuous medium around the spine (grows with the chain)
     float bound[4] = {0, 0, 0, 0};  // bounding sphere centre xyz + radius (radius 0 = nothing to draw)
     void computeBound();
 };
@@ -74,17 +80,24 @@ struct PackedScene {
     std::array<float, 4 * kMaxFieldNodes> nodeP{}, nodeA{}, nodeU{}, nodeV{}, nodeC{};
     std::array<float, 4 * kMaxFieldLinks> linkA{}, linkB{}, linkU{}, linkV{};
     std::array<float, 4 * kMaxFieldPackets> packP{}, packA{}, packU{}, packV{}, packC{};
-    int nodes = 0, links = 0, packets = 0;
+    std::array<float, 4 * kMaxSpine> spine{};  // xyz + spine coordinate s (0 = input, 1 = output)
+    int nodes = 0, links = 0, packets = 0, spineN = 0;
     float cam[4] = {0, 0, 1.6f, 0};    // yaw, pitch, aspect, time
-    float audio[4] = {0, 0, 0, 0};     // energy, high, -, -
+    float audio[4] = {0, 0, 0, 0};     // energy, high, low, mid
+    float audio2[4] = {0, 0, 0.3f, 0}; // balance, turbulence, radius, -
+    float pulse[4] = {-1, 0, -1, 0};   // s0, a0, s1, a1
     float bound[4] = {0, 0, 0, 0};
 };
 PackedScene packScene(const FieldScene& s);
 
+// V4 background: the near-black plum / navy void (linear RGB, before tone mapping), slightly lighter towards the
+// middle of the field area. Never black, never decorated (no stars, dots or nebula).
+void backgroundColour(float u, float v, float energy, float& r, float& g, float& b);
 // CPU reference renderer: linear RGB (3 floats per pixel, row-major, y down). `steps` ray-march samples.
 // threads: 0 = up to 4 worker threads (offline tools, tests); 1 = the calling thread only (the plug-in's software
 // fallback, which must never compete with the UI or audio threads for CPU).
-void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps = 40, int threads = 0);
+// jitterFrame: per-frame sub-pixel / step jitter index (temporal accumulation reconstructs the full resolution).
+void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps = 40, int threads = 0, int jitterFrame = 0);
 
 // GLSL 1.50 fragment shader implementing exactly renderVolume()'s per-pixel function. Inputs: vUv (0..1, y up);
 // uniforms as named in packScene's layout (see the source); output: linear RGB.

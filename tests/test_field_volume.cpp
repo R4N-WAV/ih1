@@ -1,4 +1,4 @@
-// V3 Phase 3A: the field volume (CPU reference of the GL shader).
+// V3 Phase 3A / V4 Phase 5: the field volume (CPU reference of the GL shader).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -28,28 +28,43 @@ std::vector<float> render(const Formation& f, int w = 160, int h = 100) {
 double total(const std::vector<float>& v) { double s = 0; for (float x : v) s += x; return s; }
 }  // namespace
 
-TEST_CASE("V3 field volume: no committed FX = exactly black; FX light up a bounded region; the corners stay black") {
+namespace {
+// V4: the void is the plum / navy background (never pure black, never decorated)
+void bgAt(const std::vector<float>& img, int w, int h, int x, int y, float energy, float* exp3) {
+    (void)img;
+    backgroundColour((x + 0.5f) / w, (y + 0.5f) / h, energy, exp3[0], exp3[1], exp3[2]);
+}
+}  // namespace
+
+TEST_CASE("V4 field volume: no committed FX = only the plum void (not black, no stars); FX light a bounded region") {
     Formation f;
     FrameInput empty;
     empty.aspect = 1.6f;
     f.update(empty);
-    CHECK(total(render(f)) == 0.0);
+    {
+        const auto e = render(f);
+        double mx = 0, mn = 1;
+        for (size_t k = 0; k < e.size(); k += 3) { mx = std::max<double>(mx, e[k + 2]); mn = std::min<double>(mn, e[k + 2]); }
+        CHECK(mn > 0.0);            // never pure black
+        CHECK(mx < 0.04);           // a dark void
+        CHECK(mx < 1.6 * mn);       // smooth, no points of light (no stars, dots or decoration)
+    }
     Formation g;
     auto in = chainOf(6);
     for (int i = 0; i < 90; ++i) g.update(in);
     const auto img = render(g);
     CHECK(total(img) > 1.0);
     for (float v : img) REQUIRE(std::isfinite(v));
-    // the void: the four corner regions are exactly black (rays outside the formation's bound are never marched)
+    // the corners are the plain background (the field fades out well inside its bound: no visible bound edge)
     const int w = 160, h = 100;
-    double corners = 0;
-    for (int y = 0; y < 8; ++y)
-        for (int x = 0; x < 8; ++x)
-            for (int c = 0; c < 3; ++c) {
-                corners += img[static_cast<size_t>((y * w + x) * 3 + c)];
-                corners += img[static_cast<size_t>(((h - 1 - y) * w + (w - 1 - x)) * 3 + c)];
-            }
-    CHECK(corners == 0.0);
+    double dev = 0;
+    for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 6; ++x) {
+            float b[3];
+            bgAt(img, w, h, x, y, g.scene().energy, b);
+            for (int c = 0; c < 3; ++c) dev += std::fabs(img[static_cast<size_t>((y * w + x) * 3 + c)] - b[c]);
+        }
+    CHECK(dev < 1e-3);
 }
 
 TEST_CASE("V3 field volume: deterministic, and the light stays in the accepted palette envelope") {
@@ -88,7 +103,6 @@ TEST_CASE("V3 field volume: an instance that is still transferring contributes n
     const auto& sc = f.scene();
     REQUIRE(sc.nodes.size() == 4);
     CHECK(sc.nodes.back().strength == 0.0f);
-    CHECK(sc.links.back().strength == 0.0f);
     CHECK(sc.packets.size() == 1);
     // after integration the new node has a field of its own
     for (int i = 0; i < 160; ++i) f.update(four);
@@ -98,7 +112,7 @@ TEST_CASE("V3 field volume: an instance that is still transferring contributes n
 
 TEST_CASE("V3 field volume: the GLSL source is generated from the same constants (no placeholders left)") {
     const auto& src = fieldFragmentShader();
-    for (const char* k : {"SKIN", "CORE", "LINK", "ABSORB", "CAMDIST", "SCALE", "FOG", "FLUX", "VEIL"}) CHECK(src.find(k) == std::string::npos);
+    for (const char* k : {"FIL ", "RIB ", "VEILE", "VEILA", "ABSORB", "CAMDIST", "SCALE", "FOG", "HALO", "TENDRIL", "CHROMA", "PACKET"}) CHECK(src.find(k) == std::string::npos);
     CHECK(src.find("#version 150") == 0);
     CHECK(src.find("uniform vec4 uNodeP[32]") != std::string::npos);
 }
@@ -119,7 +133,11 @@ TEST_CASE("V3 field volume: audio energy raises the light smoothly; SOLO turns i
     const auto img = render(m);
     double sat = 0, n = 0;
     for (size_t k = 0; k < img.size(); k += 3) {
-        const float mx = std::max({img[k], img[k + 1], img[k + 2]}), mn = std::min({img[k], img[k + 1], img[k + 2]});
+        float b[3];
+        const int px = static_cast<int>((k / 3) % 160), py = static_cast<int>((k / 3) / 160);
+        bgAt(img, 160, 100, px, py, m.scene().energy, b);
+        const float r = img[k] - b[0], g2 = img[k + 1] - b[1], bl = img[k + 2] - b[2];  // the field's own light
+        const float mx = std::max({r, g2, bl}), mn = std::min({r, g2, bl});
         if (mx < 0.02f) continue;
         sat += (mx - mn) / mx;
         ++n;

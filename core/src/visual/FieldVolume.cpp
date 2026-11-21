@@ -5,29 +5,55 @@
 #include <cstdio>
 #include <thread>
 
+// V4 Phase 5: the formation is ONE continuous force-field medium.
+//
+// V3 lit a magnetic dipole per committed FX (skins, flux body and a defined core around each node) and joined the
+// nodes with twisted link sheets. The owner's V4 feedback: no centre / orb / halo per effect, a whole interconnected
+// web rather than a few strands, material weight instead of fog, vibrancy, no squares, a plum void instead of black.
+// The model is therefore rebuilt around a spine (the committed chain, input lower-left -> output upper-right):
+//   * envelope: a smooth tube around the spine, radius growing with the chain and broken up by slow noise. It is the
+//     MAX (not the sum) over spine segments, so joints between effects never brighten: nothing is radial around a node;
+//   * material, anisotropic along the local flow direction (structures elongate along the spine like a woven web):
+//       - fine filaments: where two thin ridge sheets of a warped noise field intersect;
+//       - ribbons: single thin ridge sheets at a coarser scale (translucent, folded);
+//       - veils: broad, soft density layers that also absorb (depth, shadow, weight);
+//   * colour is blended along the spine coordinate from the FX palette (not radially), its chroma lifted where the
+//     field is energetic; white-lilac only in the hottest filaments; a faint cyan / pink iridescence at filament
+//     edges. A bypassed FX greys and dims its stretch of the field; the medium stays continuous;
+//   * audio: energy = slow overall emission (with a floor: a quiet field stays alive), low band = large-scale veil
+//     motion, mid = ribbon brightness, high = filament brightness, onset density = fine turbulence, transients =
+//     pulses travelling along the spine, stereo balance = lateral lean;
+//   * light: emission + absorption along the ray, depth cools towards indigo, a faint scatter halo around the field.
+// One model, two implementations: CPU reference (software fallback, preview, tests) and generated GLSL.
 namespace ih1::visual {
 
 namespace {
 // Tuning shared by both implementations (the GLSL source below is generated with these values).
-constexpr float kSkinGain = 6.5f;     // emission of the field-line skins
-constexpr float kCoreGain = 3.6f;    // emission of the node cores
-constexpr float kFluxGain = 0.55f;     // flux-density body around each node
-constexpr float kVeilGain = 8.0f;     // creased membranes near each node
-constexpr float kLinkGain = 2.4f;     // emission of the transmission sheets
-constexpr float kAbsorb = 0.55f;      // density per unit of emitted luminance (local occlusion)
-constexpr float kFog = 0.42f;         // depth attenuation beyond the focal plane
+constexpr float kFilGain = 22.0f;      // fine filaments
+constexpr float kRibGain = 4.5f;      // ribbons / sheets
+constexpr float kVeilGain = 0.55f;    // broad veils (emission)
+constexpr float kVeilAbsorb = 1.6f;   // broad veils (absorption: depth and shadow)
+constexpr float kAbsorb = 0.40f;      // density per unit of emitted luminance
+constexpr float kFog = 0.38f;         // depth attenuation beyond the focal plane
+constexpr float kHalo = 0.045f;
+constexpr float kTendril = 3.2f;      // long filaments reaching out of the medium into space       // faint scatter around the field (atmosphere near the formation)
+constexpr float kChroma = 1.45f;      // chroma lift of the FX palette inside the medium (vibrancy)
+constexpr float kPacketGain = 1.0f;   // COMMIT transfer packets
 
 struct V { float x, y, z; };
 inline V add(V a, V b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline V sub(V a, V b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 inline V mul(V a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+inline V vmul(V a, V b) { return {a.x * b.x, a.y * b.y, a.z * b.z}; }
 inline float dot(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline V ld(const float* p) { return {p[0], p[1], p[2]}; }
+inline V vmix(V a, V b, float t) { return add(a, mul(sub(b, a), t)); }
 inline float smooth(float e0, float e1, float x) {
     const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
 inline float lum(V c) { return 0.30f * c.x + 0.55f * c.y + 0.15f * c.z; }
+inline V normv(V a) { const float l = std::sqrt(dot(a, a)); return l > 1e-6f ? mul(a, 1.0f / l) : V{1, 0, 0}; }
 
 // smooth 3-D value noise in [0, 1] (the GLSL source uses the same hash and interpolation)
 inline float hash3(float x, float y, float z) {
@@ -47,103 +73,182 @@ float noise3(V p) {
     return y0 + fz * (y1 - y0);
 }
 
-V warp(V q, float t) {
+V warp(V q, float t, float low, float turb) {
     V w{std::sin(1.3f * q.y + 0.07f * t + 1.1f), std::sin(1.1f * q.z + 0.05f * t + 2.3f), std::sin(1.2f * q.x + 0.06f * t + 0.4f)};
-    V w2{std::sin(3.1f * q.z + 0.11f * t + 0.7f), std::sin(2.9f * q.x + 0.09f * t + 1.9f), std::sin(3.3f * q.y + 0.10f * t + 2.8f)};
     const V qs = mul(q, 2.2f);
     V w3{noise3(add(qs, V{0.0f, 0.0f, 0.013f * t})) - 0.5f, noise3(add(qs, V{5.2f, 1.3f, 0.011f * t})) - 0.5f, noise3(add(qs, V{9.1f, 4.7f, 0.012f * t})) - 0.5f};
-    return add(q, add(add(mul(w, 0.11f), mul(w2, 0.04f)), mul(w3, 0.22f)));
+    return add(q, add(mul(w, 0.10f + 0.10f * low), mul(w3, 0.26f + 0.18f * turb)));
 }
 
-// one dipole's light at q (node or packet)
-V dipole(V q, V p, V axis, V u, V v, V col, float strength, float radius, float infl, float seed, float energy, float t) {
+// One dipole's light at q (COMMIT transfer packets only; the stable formation has no per-effect dipoles any more).
+V packet(V q, V p, V axis, V u, V v, V col, float strength, float radius, float infl, float seed, float t) {
     const V r = sub(q, p);
     const float d2 = dot(r, r);
     if (d2 > infl * infl || strength <= 0.0f) return {0, 0, 0};
     const float d = std::sqrt(d2) + 1e-4f;
     const float ct = dot(r, axis) / d;
     const float s2 = std::max(1.0f - ct * ct, 0.02f);
-    const float L = d / s2;  // dipole L-shell: constant along a field line
-    const float lu = std::log(std::max(L, 1e-3f) / radius);
-    // crumpled sheets: the L-shell phase is displaced by noise, so sheets follow the field but fold and crease
-    const float nq = noise3(add(mul(q, 1.7f), V{seed * 13.0f, seed * 7.0f, 0.015f * t}));
-    const float ush = lu * (1.8f + 1.2f * seed) + seed * 6.2832f - t * 0.035f + 0.9f * nq;
-    const float c0 = 0.5f + 0.5f * std::cos(6.2832f * ush);
-    const float c2 = c0 * c0, shell = c2 * c2 * c2;
+    const float lu = std::log(std::max(d / s2, 1e-3f) / radius);
+    const float c0 = 0.5f + 0.5f * std::cos(6.2832f * (lu * 2.2f + seed * 6.2832f - t * 0.14f));
+    const float c2 = c0 * c0, shell = c2 * c2;
     const float phi = std::atan2(dot(r, v), dot(r, u));
-    const float br = 0.5f + 0.5f * std::cos(3.0f * phi + 1.7f * std::sin(2.3f * lu + seed * 9.0f) + 0.6f * std::sin(5.0f * phi - 1.3f * lu) + 0.05f * t);
-    const float bund = 0.15f + 0.85f * br * br * br;
-    // intermittent skins: slow 3-D patches switch whole regions of a sheet on and off
-    const float pn = std::sin(2.1f * q.x + seed * 5.0f + 0.03f * t) * std::sin(2.4f * q.y - seed * 3.0f) * std::sin(1.9f * q.z + 0.02f * t + seed * 7.0f);
-    const float patch = smooth(-0.15f, 0.45f, pn);
-    const float env = std::exp(-d2 / (0.30f * infl * infl)) * smooth(0.6f * radius, 1.6f * radius, d);
-    const float pole = 0.55f + 0.9f * ct * ct;
-    const float skin = strength * env * shell * bund * (0.3f + 0.7f * patch) * pole * (0.75f + 0.6f * energy) * kSkinGain;
-    // creased membranes: thin ridges where a warped noise field crosses its midpoint, only inside the strong field
-    const float nm = noise3(add(mul(q, 2.6f), V{seed * 31.0f, 0.02f * t, seed * 17.0f}));
-    const float ridge = 1.0f - std::fabs(2.0f * nm - 1.0f);
-    const float r2p = ridge * ridge, r4 = r2p * r2p, r8 = r4 * r4;
-    const float r3 = radius * radius * radius * 2.0f;
-    const float fd = r3 / (d2 * d + r3) * (0.4f + 0.6f * ct * ct);  // |B| ~ 1/r^3: compact, strongest at the poles
-    const float veil = std::exp(-d2 / (0.12f * infl * infl)) * r8 * r8 * (0.4f + 0.6f * ct * ct);
-    const float flux = strength * (fd * (0.55f + 0.45f * pn) * kFluxGain + veil * kVeilGain) * (0.7f + 0.6f * energy);
-    const float cr = radius * 0.6f;
-    const float core = strength * std::exp(-d2 / (cr * cr)) * (2.0f + 1.5f * energy) * kCoreGain;
-    const V coreCol = add(mul(col, 0.35f), mul(V{0.93f, 0.90f, 1.0f}, 0.65f));
-    return add(mul(col, skin + flux), mul(coreCol, core));
+    const float br = 0.5f + 0.5f * std::cos(3.0f * phi + 2.0f * lu + t * 0.2f);
+    const float env = std::exp(-d2 / (0.25f * infl * infl));
+    return mul(col, strength * env * shell * (0.2f + 0.8f * br * br) * 5.0f * kPacketGain);
 }
 
-V link(V q, V a, V b, V u, V v, V ca, V cb, float strength, float pulse, float pulseAmp, float seed, float energy, float t) {
-    if (strength <= 0.0f) return {0, 0, 0};
-    const V ab = sub(b, a);
-    const float L2 = std::max(dot(ab, ab), 1e-6f);
-    const float s = std::clamp(dot(sub(q, a), ab) / L2, 0.0f, 1.0f);
-    const V w = sub(q, add(a, mul(ab, s)));
-    const float dist2 = dot(w, w);
-    const float width = (0.07f + 0.05f * std::sin(3.14159f * s)) * (0.8f + 0.4f * std::sin(s * 9.0f + seed * 6.28f + t * 0.04f));
-    if (dist2 > 9.0f * width * width) return {0, 0, 0};
-    const float ang = std::atan2(dot(w, v), dot(w, u));
-    const float rc = 0.5f + 0.5f * std::cos(2.0f * ang + s * 6.0f + seed * 6.28f + t * 0.06f);
-    const float rib = rc * rc * rc * rc;
-    const float prof = std::exp(-dist2 / (width * width));
-    const float ends = std::sqrt(std::max(0.0f, std::sin(3.14159f * s)));
-    const float pz = (s - pulse) / 0.08f;
-    const float pu = pulse >= 0.0f ? pulseAmp * std::exp(-pz * pz) * 3.0f : 0.0f;
-    const float e = strength * prof * (0.25f + 0.75f * rib) * ends * (0.6f + 0.5f * energy + pu) * kLinkGain;
-    return mul(add(mul(ca, 1.0f - s), mul(cb, s)), e);
-}
+struct Medium {
+    V emit{0, 0, 0};
+    float absorb = 0.0f;
+};
 
-V emission(const PackedScene& P, V q, float t) {
-    const V w = warp(q, t);
-    V e{0, 0, 0};
-    const float en = P.audio[0];
+Medium medium(const PackedScene& P, V q, float t) {
+    Medium m;
+    const float en = P.audio[0], hi = P.audio[1], lo = P.audio[2], mi = P.audio[3];
+    const float bal = P.audio2[0], turb = P.audio2[1], R0 = P.audio2[2];
+    q.x -= bal * 0.12f;  // stereo lean
+    // the whole medium lives in warped space: its outline follows the flow (organic, never a straight tube)
+    const V p = warp(q, t, lo, turb);
+    // ---- spine query on the warped position: envelope (max over segments: joints never brighten), coordinate, tangent
+    float best = 0.0f, broad = 0.0f, sS = 0.0f, sW = 0.0f;
+    V tan{0, 0, 0};
+    const float R = R0 * (0.55f + 1.0f * noise3(add(mul(q, 0.42f), V{0.0f, 0.0f, 0.01f * t})));
+    const float inv = 1.0f / (R * R);
+    for (int j = 0; j + 1 < P.spineN; ++j) {
+        const V a = ld(&P.spine[static_cast<size_t>(4 * j)]), b = ld(&P.spine[static_cast<size_t>(4 * j + 4)]);
+        const V ab = sub(b, a);
+        const float L2 = std::max(dot(ab, ab), 1e-6f);
+        const float u = std::clamp(dot(sub(p, a), ab) / L2, 0.0f, 1.0f);
+        const V w = sub(p, add(a, mul(ab, u)));
+        const float d2 = dot(w, w);
+        const float sj0 = P.spine[static_cast<size_t>(4 * j + 3)], sj1b = P.spine[static_cast<size_t>(4 * j + 7)];
+        const float sm = sj0 + u * (sj1b - sj0) - 0.78f;
+        const float swell = 1.0f + 0.65f * std::exp(-sm * sm / 0.08f);  // the body is fuller around the hot mass
+        const float e = std::exp(-d2 * inv / (swell * swell));
+        best = std::max(best, e);
+        const float eb = std::exp(-d2 * inv * 0.14f / (swell * swell));
+        broad = std::max(broad, eb);
+        const float sj = P.spine[static_cast<size_t>(4 * j + 3)], sj1 = P.spine[static_cast<size_t>(4 * j + 7)];
+        sS += eb * (sj + u * (sj1 - sj));
+        sW += eb;
+        tan = add(tan, mul(ab, eb / std::sqrt(L2)));
+    }
+    // everything fades out well before the ray-march bound (no visible edge of the bounding sphere)
+    {
+        const V bc{P.bound[0], P.bound[1], P.bound[2]};
+        const float rr = std::sqrt(dot(sub(q, bc), sub(q, bc))) / std::max(P.bound[3], 1e-3f);
+        const float fade = 1.0f - smooth(0.6f, 0.95f, rr);
+        best *= fade;
+        broad *= fade;
+    }
+    if (broad < 2e-3f) return m;
+    const V plum{0.42f, 0.30f, 0.62f};
+    m.emit = mul(plum, broad * kHalo * (0.45f + 0.8f * en));  // (the halo is part of the void's atmosphere)
+    const float s = sW > 1e-6f ? sS / sW : 0.5f;
+    const V T = normv(tan);
+    // ---- material: flow-aligned multi-scale structure
+    const float along = dot(p, T);
+    const V pa = add(sub(p, mul(T, along)), mul(T, along * 0.32f));  // compressed along the flow: elongated structure
+    const float n1 = noise3(add(mul(pa, 4.3f), V{0.0f, 0.021f * t, 1.7f}));
+    const float n2 = noise3(add(mul(pa, 6.1f), V{3.1f, 0.6f, 0.017f * t}));
+    const float n3 = noise3(add(mul(pa, 1.9f), V{7.7f, 0.013f * t, 2.9f}));
+    const float n4 = noise3(add(mul(p, 1.05f), V{1.3f, 4.1f, 0.008f * t}));
+    // a second, isotropic filament family crossing the flow-aligned one: tangles instead of parallel streaks
+    const float n5 = noise3(add(mul(p, 5.6f), V{2.2f, 0.019f * t, 5.3f}));
+    const float n6 = noise3(add(mul(p, 8.3f), V{6.4f, 3.3f, 0.023f * t}));
+    const float r1 = 1.0f - std::fabs(2.0f * n1 - 1.0f);
+    const float r2 = 1.0f - std::fabs(2.0f * n2 - 1.0f);
+    const float r3 = 1.0f - std::fabs(2.0f * n3 - 1.0f);
+    const float r1s = r1 * r1, r1q = r1s * r1s, r1e = r1q * r1q;          // r1^8
+    const float r2s = r2 * r2, r2q = r2s * r2s;                           // r2^4
+    const float r5 = 1.0f - std::fabs(2.0f * n5 - 1.0f), r6 = 1.0f - std::fabs(2.0f * n6 - 1.0f);
+    const float r5s = r5 * r5, r5q = r5s * r5s, r6s = r6 * r6, r6q = r6s * r6s;
+    const float fil = r1e * r1s * r2q * r2s + 0.8f * r5q * r5q * r5s * r6q * r6s;  // two families of thin crossing lines
+    const float r3s = r3 * r3, r3q = r3s * r3s;
+    const float rib = r3q * r3s;                                          // r3^6: folded translucent sheets
+    const float tendril = r3q * r3q * r3q * r3q * r1q;                    // r3^16 * r1^4: long thin threads into space
+    const float veil = smooth(0.50f, 0.90f, n4);                          // broad soft layers
+    // the hot region of the whole formation (towards the output, as in the reference), plus travelling pulses
+    float pulse = 0.0f;
+    for (int k = 0; k < 2; ++k) {
+        const float ps = P.pulse[2 * k], pa2 = P.pulse[2 * k + 1];
+        if (ps < 0.0f) continue;
+        const float z = (s - ps) / 0.09f;
+        pulse += pa2 * std::exp(-z * z);
+    }
+    const float massZ = (s - 0.78f) / 0.28f;
+    const float mass = std::exp(-massZ * massZ);
+    const float hot = 0.50f + 0.55f * smooth(0.1f, 1.0f, s) + 0.9f * mass + 1.4f * pulse;
+    const float alive = 0.32f + 0.85f * en;  // a quiet field stays faintly alive
+    // ---- colour and presence along the spine (weighted averages: no gaps, no radial weighting)
+    V col{0, 0, 0};
+    float cw = 0.0f, enabled = 0.0f, strength = 0.0f;
+    const float sig = 0.9f / std::max(1.0f, static_cast<float>(P.nodes));
     for (int i = 0; i < P.nodes; ++i) {
-        const float* np = &P.nodeP[static_cast<size_t>(4 * i)];
-        const float* na = &P.nodeA[static_cast<size_t>(4 * i)];
-        const float* nu = &P.nodeU[static_cast<size_t>(4 * i)];
-        const float* nv = &P.nodeV[static_cast<size_t>(4 * i)];
-        const float* nc = &P.nodeC[static_cast<size_t>(4 * i)];
-        e = add(e, dipole(w, ld(np), ld(na), ld(nu), ld(nv), ld(nc), na[3], np[3], nu[3], nv[3], en, t));
+        const float z = (s - P.nodeP[static_cast<size_t>(4 * i + 3)]) / sig;
+        const float g = std::exp(-z * z) + 1e-6f;
+        const float st = std::max(P.nodeA[static_cast<size_t>(4 * i + 3)], 0.0f);
+        col = add(col, mul(ld(&P.nodeC[static_cast<size_t>(4 * i)]), g * (0.05f + st)));
+        enabled += g * P.nodeC[static_cast<size_t>(4 * i + 3)];
+        strength += g * st;
+        cw += g;
     }
-    for (int i = 0; i < P.links; ++i) {
-        const float* la = &P.linkA[static_cast<size_t>(4 * i)];
-        const float* lb = &P.linkB[static_cast<size_t>(4 * i)];
-        const int a = static_cast<int>(la[0]), b = static_cast<int>(la[1]);
-        if (a < 0 || b < 0 || a >= P.nodes || b >= P.nodes) continue;
-        e = add(e, link(w, ld(&P.nodeP[static_cast<size_t>(4 * a)]), ld(&P.nodeP[static_cast<size_t>(4 * b)]), ld(&P.linkU[static_cast<size_t>(4 * i)]),
-                        ld(&P.linkV[static_cast<size_t>(4 * i)]), ld(&P.nodeC[static_cast<size_t>(4 * a)]), ld(&P.nodeC[static_cast<size_t>(4 * b)]), la[2], la[3],
-                        lb[0], lb[1], en, t));
-    }
+    if (cw <= 1e-5f) return m;
+    const float colW = cw * 0.05f + strength;
+    col = mul(col, 1.0f / std::max(colW, 1e-6f));
+    enabled /= cw;
+    strength = std::min(1.0f, strength / cw);
+    const V grey{0.52f, 0.52f, 0.58f};
+    col = vmix(grey, col, enabled);
+    const float dim = 0.30f + 0.70f * enabled;
+    const float l0 = lum(col);
+    const float chroma = kChroma * (0.85f + 0.3f * en) * (0.4f + 0.6f * enabled);
+    V vivid = add(mul(V{l0, l0, l0}, 1.0f - chroma), mul(col, chroma));
+    vivid = V{std::max(vivid.x, 0.0f), std::max(vivid.y, 0.0f), std::max(vivid.z, 0.0f)};
+    const float edge = smooth(0.55f, 0.75f, r1) * (1.0f - smooth(0.85f, 0.97f, r1));
+    const float ip = std::sin(6.0f * n2 + 3.0f * along + 0.3f * t);
+    const V iris = vmix(V{0.55f, 0.88f, 1.0f}, V{1.0f, 0.62f, 0.90f}, 0.5f + 0.5f * ip);
+    // emission per layer: the body (filaments, ribbons, veils) inside the envelope, threads in the broad halo
+    const float base = strength * dim * hot * alive / (1.0f + 0.05f * static_cast<float>(std::max(0, P.nodes - 1)));
+    const float E = best * base;
+    const float eFil = fil * kFilGain * (0.55f + 0.9f * hi) * (1.0f + 0.8f * mass);
+    const float eRib = rib * kRibGain * (0.45f + 0.8f * mi);
+    const float eVeil = veil * kVeilGain * (0.5f + 0.7f * lo) * (0.6f + 0.8f * mass);
+    const float eTen = tendril * kTendril * broad * (1.0f - 0.6f * best) * base * (0.6f + 0.6f * hi);
+    V c = mul(vivid, E * (eFil + eRib + eVeil) + eTen);
+    // iridescence scales with the colour's own chroma (a greyed SOLO / bypassed field has no stray tints)
+    const float cmax = std::max({col.x, col.y, col.z}), cmin = std::min({col.x, col.y, col.z});
+    const float csat = std::clamp(2.5f * (cmax - cmin) / std::max(cmax, 1e-4f), 0.0f, 1.0f);
+    c = add(c, mul(iris, (E + 0.4f * broad * base) * edge * fil * 2.2f * enabled * csat));
+    m.emit = mul(vmix(grey, plum, csat), broad * kHalo * (0.45f + 0.8f * en));  // the halo greys with the field (SOLO)
+    const float hl = smooth(0.12f, 0.5f, fil * hot * best * (0.6f + en)) * enabled;
+    c = vmix(c, mul(V{0.96f, 0.91f, 1.0f}, lum(c) * 1.25f), hl * 0.55f);
+    m.emit = add(m.emit, c);
+    m.absorb = kAbsorb * lum(c) + kVeilAbsorb * veil * best * strength * 0.5f;
+    return m;
+}
+
+V emissionPackets(const PackedScene& P, V q, float t) {
+    V e{0, 0, 0};
     for (int i = 0; i < P.packets; ++i) {
         const float* pp = &P.packP[static_cast<size_t>(4 * i)];
         const float* pa = &P.packA[static_cast<size_t>(4 * i)];
         const float* pu = &P.packU[static_cast<size_t>(4 * i)];
-        e = add(e, dipole(q, ld(pp), ld(pa), ld(pu), ld(&P.packV[static_cast<size_t>(4 * i)]), ld(&P.packC[static_cast<size_t>(4 * i)]), pa[3] * 1.4f, pp[3],
-                          pp[3] * 4.5f, pu[3], en, t * 4.0f));
+        e = add(e, packet(q, ld(pp), ld(pa), ld(pu), ld(&P.packV[static_cast<size_t>(4 * i)]), ld(&P.packC[static_cast<size_t>(4 * i)]), pa[3] * 1.4f, pp[3], pp[3] * 4.5f, pu[3], t * 4.0f));
     }
     return e;
 }
 }  // namespace
+
+void backgroundColour(float u, float v, float energy, float& r, float& g, float& b) {
+    // near-black plum / navy, a touch lighter towards the middle-right of the field (where the formation lives)
+    const float dx = u - 0.6f, dy = v - 0.48f;
+    const float k = std::exp(-(dx * dx * 1.6f + dy * dy * 2.2f));
+    const float lift = 0.65f + 0.35f * k * (1.0f + 0.25f * std::clamp(energy, 0.0f, 1.2f));
+    r = 0.016f * lift;
+    g = 0.011f * lift;
+    b = 0.026f * lift;
+}
 
 void FieldScene::computeBound() {
     if (nodes.empty() && packets.empty()) { bound[0] = bound[1] = bound[2] = bound[3] = 0.0f; return; }
@@ -157,7 +262,8 @@ void FieldScene::computeBound() {
         const float dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
         r = std::max(r, std::sqrt(dx * dx + dy * dy + dz * dz) + reach);
     };
-    for (const auto& nd : nodes) grow(nd.p, nd.influence + 0.25f);  // + the domain warp's reach
+    // the medium (and its faint halo) reaches ~3 radii from the spine, + the domain warp
+    for (const auto& nd : nodes) grow(nd.p, 5.5f * radius + 0.6f);
     for (const auto& pk : packets) grow(pk.p, pk.radius * 4.5f + 0.25f);
     bound[0] = c[0];
     bound[1] = c[1];
@@ -168,7 +274,8 @@ void FieldScene::computeBound() {
 PackedScene packScene(const FieldScene& s) {
     PackedScene P;
     P.nodes = std::min(static_cast<int>(s.nodes.size()), kMaxFieldNodes);
-    for (int i = 0; i < P.nodes; ++i) {
+    const int N = P.nodes;
+    for (int i = 0; i < N; ++i) {
         const auto& n = s.nodes[static_cast<size_t>(i)];
         const size_t k = static_cast<size_t>(4 * i);
         for (int j = 0; j < 3; ++j) {
@@ -178,23 +285,64 @@ PackedScene packScene(const FieldScene& s) {
             P.nodeV[k + static_cast<size_t>(j)] = n.v[j];
             P.nodeC[k + static_cast<size_t>(j)] = n.col[j];
         }
-        P.nodeP[k + 3] = n.radius;
+        P.nodeP[k + 3] = N > 1 ? static_cast<float>(i) / static_cast<float>(N - 1) : 0.5f;  // spine coordinate
         P.nodeA[k + 3] = n.strength;
         P.nodeU[k + 3] = n.influence;
         P.nodeV[k + 3] = n.seed;
+        P.nodeC[k + 3] = std::clamp(n.enabled, 0.0f, 1.0f);
     }
-    P.links = std::min(static_cast<int>(s.links.size()), kMaxFieldLinks);
-    for (int i = 0; i < P.links; ++i) {
-        const auto& l = s.links[static_cast<size_t>(i)];
-        const size_t k = static_cast<size_t>(4 * i);
-        P.linkA[k] = static_cast<float>(l.a);
-        P.linkA[k + 1] = static_cast<float>(l.b);
-        P.linkA[k + 2] = l.strength;
-        P.linkA[k + 3] = l.pulse;
-        P.linkB[k] = l.pulseAmp;
-        P.linkB[k + 1] = l.seed;
-        for (int j = 0; j < 3; ++j) { P.linkU[k + static_cast<size_t>(j)] = l.u[j]; P.linkV[k + static_cast<size_t>(j)] = l.v[j]; }
+    // spine: the chain in order, resampled to <= kMaxSpine points, extended at both ends; a single effect gets a
+    // short spine along the input -> output direction (a small formation, still no centre)
+    if (N >= 1) {
+        std::vector<V> pts;
+        for (int i = 0; i < N; ++i) pts.push_back(ld(s.nodes[static_cast<size_t>(i)].p));
+        V dir{0.62f, 0.55f, -0.1f};  // world direction input -> output (lower-left to upper-right on screen)
+        if (N >= 2) dir = normv(sub(pts.back(), pts.front()));
+        const float ext = 0.25f + 0.6f * s.radius;
+        std::vector<V> sp;
+        sp.push_back(sub(pts.front(), mul(dir, ext)));
+        if (N <= kMaxSpine - 2) {
+            for (const auto& p : pts) sp.push_back(p);
+        } else {
+            for (int k = 0; k < kMaxSpine - 2; ++k) {
+                const float x = static_cast<float>(k) * static_cast<float>(N - 1) / static_cast<float>(kMaxSpine - 3);
+                const int i0 = std::min(N - 1, static_cast<int>(x));
+                const int i1 = std::min(N - 1, i0 + 1);
+                sp.push_back(vmix(pts[static_cast<size_t>(i0)], pts[static_cast<size_t>(i1)], x - static_cast<float>(i0)));
+            }
+        }
+        sp.push_back(add(pts.back(), mul(dir, ext)));
+        // a gentle S-bend across the whole spine (slowly drifting): the input -> output direction stays a bias,
+        // never a straight diagonal band
+        {
+            const V up{0.0f, 1.0f, 0.0f};
+            V side = normv(V{dir.y * up.z - dir.z * up.y, dir.z * up.x - dir.x * up.z, dir.x * up.y - dir.y * up.x});
+            const V depth = normv(V{dir.y * side.z - dir.z * side.y, dir.z * side.x - dir.x * side.z, dir.x * side.y - dir.y * side.x});
+            const int M = static_cast<int>(sp.size());
+            for (int k = 1; k + 1 < M; ++k) {
+                const float u = static_cast<float>(k) / static_cast<float>(M - 1);
+                const float a = std::sin(3.14159f * u) * (0.18f + 0.35f * s.radius);
+                const float bend = std::sin(2.2f * u * 3.14159f + 0.05f * s.time + 0.7f);
+                const float dz = std::cos(1.7f * u * 3.14159f + 0.04f * s.time);
+                sp[static_cast<size_t>(k)] = add(sp[static_cast<size_t>(k)], add(mul(side, a * bend), mul(depth, 0.6f * a * dz)));
+            }
+        }
+        P.spineN = static_cast<int>(sp.size());
+        // spine coordinate: 0 at the first effect, 1 at the last (ends extend a little outside)
+        const float e0 = N >= 2 ? -ext / std::max(1e-3f, std::sqrt(dot(sub(pts.back(), pts.front()), sub(pts.back(), pts.front())))) : -0.5f;
+        for (int k = 0; k < P.spineN; ++k) {
+            const size_t o = static_cast<size_t>(4 * k);
+            P.spine[o] = sp[static_cast<size_t>(k)].x;
+            P.spine[o + 1] = sp[static_cast<size_t>(k)].y;
+            P.spine[o + 2] = sp[static_cast<size_t>(k)].z;
+            float sv;
+            if (k == 0) sv = N >= 2 ? e0 : 0.0f;
+            else if (k == P.spineN - 1) sv = N >= 2 ? 1.0f - e0 : 1.0f;
+            else sv = N >= 2 ? static_cast<float>(k - 1) / static_cast<float>(P.spineN - 3) : 0.5f;
+            P.spine[o + 3] = sv;
+        }
     }
+    P.links = 0;  // V4: no link sheets (the medium itself connects everything)
     P.packets = std::min(static_cast<int>(s.packets.size()), kMaxFieldPackets);
     for (int i = 0; i < P.packets; ++i) {
         const auto& pk = s.packets[static_cast<size_t>(i)];
@@ -216,27 +364,33 @@ PackedScene packScene(const FieldScene& s) {
     P.cam[3] = s.time;
     P.audio[0] = s.energy;
     P.audio[1] = s.high;
+    P.audio[2] = s.low;
+    P.audio[3] = s.mid;
+    P.audio2[0] = s.balance;
+    P.audio2[1] = s.turbulence;
+    P.audio2[2] = s.radius;
+    for (int k = 0; k < 2; ++k) { P.pulse[2 * k] = s.pulseS[k]; P.pulse[2 * k + 1] = s.pulseA[k]; }
     for (int j = 0; j < 4; ++j) P.bound[j] = s.bound[j];
     return P;
 }
 
 namespace {
-void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<float>& rgb, int steps);
+void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<float>& rgb, int steps, int frame);
 }
 
-void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps, int threads) {
+void renderVolume(const FieldScene& s, int w, int h, std::vector<float>& rgb, int steps, int threads, int jitterFrame) {
     rgb.assign(static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(std::max(0, h)) * 3, 0.0f);
-    if (w <= 0 || h <= 0 || s.bound[3] <= 0.0f) return;
+    if (w <= 0 || h <= 0) return;
     const PackedScene P = packScene(s);
     const int nt = threads > 0 ? threads : std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 4);
-    if (nt == 1 || h < 32) { renderRows(P, w, h, 0, h, rgb, steps); return; }
+    if (nt == 1 || h < 32) { renderRows(P, w, h, 0, h, rgb, steps, jitterFrame); return; }
     std::vector<std::thread> th;
-    for (int k = 0; k < nt; ++k) th.emplace_back([&, k] { renderRows(P, w, h, h * k / nt, h * (k + 1) / nt, rgb, steps); });
+    for (int k = 0; k < nt; ++k) th.emplace_back([&, k] { renderRows(P, w, h, h * k / nt, h * (k + 1) / nt, rgb, steps, jitterFrame); });
     for (auto& t : th) t.join();
 }
 
 namespace {
-void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<float>& rgb, int steps) {
+void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<float>& rgb, int steps, int frame) {
     const float cy = std::cos(P.cam[0]), sy = std::sin(P.cam[0]), cp = std::cos(P.cam[1]), sp = std::sin(P.cam[1]);
     // camera space -> world (inverse of Formation::project's yaw then pitch)
     auto toWorld = [&](V c) {
@@ -249,13 +403,20 @@ void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<
     const float aspect = P.cam[2];
     const float t = P.cam[3];
     const V indigo{0.10f, 0.08f, 0.30f};
+    // per-frame sub-pixel and step jitter (golden-ratio sequence): temporal accumulation reconstructs the image
+    const float jx = std::fmod(0.5f + 0.7548777f * static_cast<float>(frame), 1.0f) - 0.5f;
+    const float jy = std::fmod(0.5f + 0.5698403f * static_cast<float>(frame), 1.0f) - 0.5f;
     for (int py = y0; py < y1; ++py)
         for (int px = 0; px < w; ++px) {
-            const float fx = (static_cast<float>(px) + 0.5f) / static_cast<float>(h);
-            const float fy = (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
+            float* o = &rgb[(static_cast<size_t>(py) * static_cast<size_t>(w) + static_cast<size_t>(px)) * 3];
+            float bgR, bgG, bgB;
+            backgroundColour((static_cast<float>(px) + 0.5f) / static_cast<float>(w), (static_cast<float>(py) + 0.5f) / static_cast<float>(h), P.audio[0], bgR, bgG, bgB);
+            o[0] = bgR; o[1] = bgG; o[2] = bgB;
+            if (br <= 0.0f) continue;
+            const float fx = (static_cast<float>(px) + 0.5f + jx) / static_cast<float>(h);
+            const float fy = (static_cast<float>(py) + 0.5f + jy) / static_cast<float>(h);
             const V dirC{(fx - 0.54f * aspect) / (kFieldCamDist * kFieldScale), -(fy - 0.5f) / (kFieldCamDist * kFieldScale), -1.0f};
             const V dir = toWorld(dirC);  // per unit of depth
-            // ray-sphere: |camW + dir*d - bc| = br
             const V oc = sub(camW, bc);
             const float A = dot(dir, dir), B = 2.0f * dot(oc, dir), C = dot(oc, oc) - br * br;
             const float disc = B * B - 4.0f * A * C;
@@ -266,24 +427,26 @@ void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<
             if (d1 <= d0) continue;
             const float dd = (d1 - d0) / static_cast<float>(steps);
             const float ds = dd * std::sqrt(A);
-            const float jit = hash3(static_cast<float>(px) * 0.731f, static_cast<float>(py) * 1.177f, 3.1f);  // white-noise jitter (no pattern)
+            // interleaved-gradient step jitter (no visible pattern after accumulation)
+            // white-noise step jitter, re-drawn every frame (structured sequences left a visible dot pattern)
+            const float ign = hash3(static_cast<float>(px) * 0.731f + static_cast<float>(frame) * 3.17f, static_cast<float>(py) * 1.177f, 3.1f + static_cast<float>(frame % 64) * 0.37f);
             V col{0, 0, 0};
             float T = 1.0f;
             for (int k = 0; k < steps && T > 0.02f; ++k) {
-                const float d = d0 + (static_cast<float>(k) + jit) * dd;
+                const float d = d0 + (static_cast<float>(k) + ign) * dd;
                 const V q = add(camW, mul(dir, d));
-                V e = emission(P, q, t);
-                const float l = lum(e);
-                if (l <= 1e-6f) continue;
+                Medium m = medium(P, q, t);
+                m.emit = add(m.emit, emissionPackets(P, q, t));
+                const float l = lum(m.emit);
+                if (l <= 1e-7f && m.absorb <= 1e-7f) continue;
                 const float fog = std::exp(-std::max(0.0f, d - kFieldCamDist) * kFog);
-                e = mul(add(mul(e, 0.5f + 0.5f * fog), mul(indigo, l * (0.5f - 0.5f * fog))), fog);
+                const V e = mul(add(mul(m.emit, 0.5f + 0.5f * fog), mul(indigo, l * (0.5f - 0.5f * fog))), fog);
                 col = add(col, mul(e, T * ds));
-                T *= std::exp(-kAbsorb * l * ds);
+                T *= std::exp(-m.absorb * ds);
             }
-            float* o = &rgb[(static_cast<size_t>(py) * static_cast<size_t>(w) + static_cast<size_t>(px)) * 3];
-            o[0] = col.x;
-            o[1] = col.y;
-            o[2] = col.z;
+            o[0] = bgR * T + col.x;
+            o[1] = bgG * T + col.y;
+            o[2] = bgB * T + col.z;
         }
 }
 }  // namespace
@@ -295,10 +458,10 @@ const std::string& fieldFragmentShader() {
 in vec2 vUv;
 out vec4 o;
 uniform vec4 uNodeP[32]; uniform vec4 uNodeA[32]; uniform vec4 uNodeU[32]; uniform vec4 uNodeV[32]; uniform vec4 uNodeC[32];
-uniform vec4 uLinkA[32]; uniform vec4 uLinkB[32]; uniform vec4 uLinkU[32]; uniform vec4 uLinkV[32];
+uniform vec4 uSpine[16];
 uniform vec4 uPackP[4]; uniform vec4 uPackA[4]; uniform vec4 uPackU[4]; uniform vec4 uPackV[4]; uniform vec4 uPackC[4];
-uniform int uNodes; uniform int uLinks; uniform int uPackets; uniform int uSteps;
-uniform vec4 uCam; uniform vec4 uAudio; uniform vec4 uBound; uniform vec2 uRes; uniform float uFrame;
+uniform int uNodes; uniform int uSpineN; uniform int uPackets; uniform int uSteps;
+uniform vec4 uCam; uniform vec4 uAudio; uniform vec4 uAudio2; uniform vec4 uPulse; uniform vec4 uBound; uniform vec2 uRes; uniform float uFrame;
 float smoothF(float e0, float e1, float x) { float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
 float lumF(vec3 c) { return 0.30 * c.x + 0.55 * c.y + 0.15 * c.z; }
 float hash3(float x, float y, float z) { float h = sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return h - floor(h); }
@@ -310,115 +473,177 @@ float noise3(vec3 p) {
   float x11 = mix(hash3(i.x, i.y + 1.0, i.z + 1.0), hash3(i.x + 1.0, i.y + 1.0, i.z + 1.0), f.x);
   return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
 }
-vec3 warp(vec3 q, float t) {
+vec3 warpF(vec3 q, float t, float low, float turb) {
   vec3 w = vec3(sin(1.3 * q.y + 0.07 * t + 1.1), sin(1.1 * q.z + 0.05 * t + 2.3), sin(1.2 * q.x + 0.06 * t + 0.4));
-  vec3 w2 = vec3(sin(3.1 * q.z + 0.11 * t + 0.7), sin(2.9 * q.x + 0.09 * t + 1.9), sin(3.3 * q.y + 0.10 * t + 2.8));
   vec3 qs = q * 2.2;
   vec3 w3 = vec3(noise3(qs + vec3(0.0, 0.0, 0.013 * t)) - 0.5, noise3(qs + vec3(5.2, 1.3, 0.011 * t)) - 0.5, noise3(qs + vec3(9.1, 4.7, 0.012 * t)) - 0.5);
-  return q + w * 0.11 + w2 * 0.04 + w3 * 0.22;
+  return q + w * (0.10 + 0.10 * low) + w3 * (0.26 + 0.18 * turb);
 }
-vec3 dipole(vec3 q, vec3 p, vec3 axis, vec3 u, vec3 v, vec3 col, float strength, float radius, float infl, float seed, float energy, float t) {
+vec3 packetE(vec3 q, vec3 p, vec3 axis, vec3 u, vec3 v, vec3 col, float strength, float radius, float infl, float seed, float t) {
   vec3 r = q - p; float d2 = dot(r, r);
   if (d2 > infl * infl || strength <= 0.0) return vec3(0.0);
   float d = sqrt(d2) + 1e-4; float ct = dot(r, axis) / d; float s2 = max(1.0 - ct * ct, 0.02);
-  float L = d / s2; float lu = log(max(L, 1e-3) / radius);
-  float nq = noise3(q * 1.7 + vec3(seed * 13.0, seed * 7.0, 0.015 * t));
-  float ush = lu * (1.8 + 1.2 * seed) + seed * 6.2832 - t * 0.035 + 0.9 * nq;
-  float c0 = 0.5 + 0.5 * cos(6.2832 * ush); float c2 = c0 * c0; float shell = c2 * c2 * c2;
+  float lu = log(max(d / s2, 1e-3) / radius);
+  float c0 = 0.5 + 0.5 * cos(6.2832 * (lu * 2.2 + seed * 6.2832 - t * 0.14)); float c2 = c0 * c0; float shell = c2 * c2;
   float phi = atan(dot(r, v), dot(r, u));
-  float br = 0.5 + 0.5 * cos(3.0 * phi + 1.7 * sin(2.3 * lu + seed * 9.0) + 0.6 * sin(5.0 * phi - 1.3 * lu) + 0.05 * t);
-  float bund = 0.15 + 0.85 * br * br * br;
-  float pn = sin(2.1 * q.x + seed * 5.0 + 0.03 * t) * sin(2.4 * q.y - seed * 3.0) * sin(1.9 * q.z + 0.02 * t + seed * 7.0);
-  float patchv = smoothF(-0.15, 0.45, pn);
-  float env = exp(-d2 / (0.30 * infl * infl)) * smoothF(0.6 * radius, 1.6 * radius, d);
-  float pole = 0.55 + 0.9 * ct * ct;
-  float skin = strength * env * shell * bund * (0.3 + 0.7 * patchv) * pole * (0.75 + 0.6 * energy) * SKIN;
-  float nm = noise3(q * 2.6 + vec3(seed * 31.0, 0.02 * t, seed * 17.0));
-  float ridge = 1.0 - abs(2.0 * nm - 1.0); float r2p = ridge * ridge; float r4 = r2p * r2p; float r8 = r4 * r4;
-  float r3 = radius * radius * radius * 2.0;
-  float fd = r3 / (d2 * d + r3) * (0.4 + 0.6 * ct * ct);
-  float veil = exp(-d2 / (0.12 * infl * infl)) * r8 * r8 * (0.4 + 0.6 * ct * ct);
-  float flux = strength * (fd * (0.55 + 0.45 * pn) * FLUX + veil * VEIL) * (0.7 + 0.6 * energy);
-  float cr = radius * 0.6;
-  float core = strength * exp(-d2 / (cr * cr)) * (2.0 + 1.5 * energy) * CORE;
-  vec3 coreCol = col * 0.35 + vec3(0.93, 0.90, 1.0) * 0.65;
-  return col * (skin + flux) + coreCol * core;
+  float br = 0.5 + 0.5 * cos(3.0 * phi + 2.0 * lu + t * 0.2);
+  float env = exp(-d2 / (0.25 * infl * infl));
+  return col * (strength * env * shell * (0.2 + 0.8 * br * br) * 5.0 * PACKET);
 }
-vec3 linkE(vec3 q, vec3 a, vec3 b, vec3 u, vec3 v, vec3 ca, vec3 cb, float strength, float pulse, float pulseAmp, float seed, float energy, float t) {
-  if (strength <= 0.0) return vec3(0.0);
-  vec3 ab = b - a; float L2 = max(dot(ab, ab), 1e-6);
-  float s = clamp(dot(q - a, ab) / L2, 0.0, 1.0);
-  vec3 w = q - (a + ab * s); float dist2 = dot(w, w);
-  float width = (0.07 + 0.05 * sin(3.14159 * s)) * (0.8 + 0.4 * sin(s * 9.0 + seed * 6.28 + t * 0.04));
-  if (dist2 > 9.0 * width * width) return vec3(0.0);
-  float ang = atan(dot(w, v), dot(w, u));
-  float rc = 0.5 + 0.5 * cos(2.0 * ang + s * 6.0 + seed * 6.28 + t * 0.06); float rib = rc * rc * rc * rc;
-  float prof = exp(-dist2 / (width * width));
-  float ends = sqrt(max(0.0, sin(3.14159 * s)));
-  float pz = (s - pulse) / 0.08;
-  float pu = pulse >= 0.0 ? pulseAmp * exp(-pz * pz) * 3.0 : 0.0;
-  float e = strength * prof * (0.25 + 0.75 * rib) * ends * (0.6 + 0.5 * energy + pu) * LINK;
-  return mix(ca, cb, s) * e;
-}
-vec3 emission(vec3 q, float t) {
-  vec3 w = warp(q, t); vec3 e = vec3(0.0); float en = uAudio.x;
-  for (int i = 0; i < uNodes; ++i)
-    e += dipole(w, uNodeP[i].xyz, uNodeA[i].xyz, uNodeU[i].xyz, uNodeV[i].xyz, uNodeC[i].xyz, uNodeA[i].w, uNodeP[i].w, uNodeU[i].w, uNodeV[i].w, en, t);
-  for (int i = 0; i < uLinks; ++i) {
-    int a = int(uLinkA[i].x + 0.5), b = int(uLinkA[i].y + 0.5);
-    if (a < 0 || b < 0 || a >= uNodes || b >= uNodes) continue;
-    e += linkE(w, uNodeP[a].xyz, uNodeP[b].xyz, uLinkU[i].xyz, uLinkV[i].xyz, uNodeC[a].xyz, uNodeC[b].xyz, uLinkA[i].z, uLinkA[i].w, uLinkB[i].x, uLinkB[i].y, en, t);
+// returns emission (rgb) and absorption (a)
+vec4 medium(vec3 q, float t) {
+  float en = uAudio.x, hi = uAudio.y, lo = uAudio.z, mi = uAudio.w;
+  float bal = uAudio2.x, turb = uAudio2.y, R0 = uAudio2.z;
+  q.x -= bal * 0.12;
+  vec3 p = warpF(q, t, lo, turb);
+  float best = 0.0, broad = 0.0, sS = 0.0, sW = 0.0; vec3 tan = vec3(0.0);
+  float R = R0 * (0.55 + 1.0 * noise3(q * 0.42 + vec3(0.0, 0.0, 0.01 * t)));
+  float inv = 1.0 / (R * R);
+  for (int j = 0; j < 15; ++j) {
+    if (j + 1 >= uSpineN) break;
+    vec3 a = uSpine[j].xyz, b = uSpine[j + 1].xyz; vec3 ab = b - a;
+    float L2 = max(dot(ab, ab), 1e-6);
+    float u = clamp(dot(p - a, ab) / L2, 0.0, 1.0);
+    vec3 w = p - (a + ab * u); float d2 = dot(w, w);
+    float sm = mix(uSpine[j].w, uSpine[j + 1].w, u) - 0.78;
+    float swell = 1.0 + 0.65 * exp(-sm * sm / 0.08);
+    float e = exp(-d2 * inv / (swell * swell));
+    best = max(best, e);
+    float eb = exp(-d2 * inv * 0.14 / (swell * swell));
+    broad = max(broad, eb);
+    sS += eb * mix(uSpine[j].w, uSpine[j + 1].w, u);
+    sW += eb;
+    tan += ab * (eb / sqrt(L2));
   }
-  for (int i = 0; i < uPackets; ++i)
-    e += dipole(q, uPackP[i].xyz, uPackA[i].xyz, uPackU[i].xyz, uPackV[i].xyz, uPackC[i].xyz, uPackA[i].w * 1.4, uPackP[i].w, uPackP[i].w * 4.5, uPackU[i].w, en, t * 4.0);
-  return e;
+  float rr = length(q - uBound.xyz) / max(uBound.w, 1e-3);
+  float fadeB = 1.0 - smoothF(0.6, 0.95, rr);
+  best *= fadeB; broad *= fadeB;
+  if (broad < 2e-3) return vec4(0.0);
+  vec3 emit = vec3(0.42, 0.30, 0.62) * (broad * HALO * (0.45 + 0.8 * en));
+  float s = sW > 1e-6 ? sS / sW : 0.5;
+  vec3 T = length(tan) > 1e-6 ? normalize(tan) : vec3(1.0, 0.0, 0.0);
+  float along = dot(p, T);
+  vec3 pa = (p - T * along) + T * (along * 0.32);
+  float n1 = noise3(pa * 4.3 + vec3(0.0, 0.021 * t, 1.7));
+  float n2 = noise3(pa * 6.1 + vec3(3.1, 0.6, 0.017 * t));
+  float n3 = noise3(pa * 1.9 + vec3(7.7, 0.013 * t, 2.9));
+  float n4 = noise3(p * 1.05 + vec3(1.3, 4.1, 0.008 * t));
+  float n5 = noise3(p * 5.6 + vec3(2.2, 0.019 * t, 5.3));
+  float n6 = noise3(p * 8.3 + vec3(6.4, 3.3, 0.023 * t));
+  float r1 = 1.0 - abs(2.0 * n1 - 1.0), r2 = 1.0 - abs(2.0 * n2 - 1.0), r3 = 1.0 - abs(2.0 * n3 - 1.0);
+  float r5 = 1.0 - abs(2.0 * n5 - 1.0), r6 = 1.0 - abs(2.0 * n6 - 1.0);
+  float r5s = r5 * r5, r5q = r5s * r5s, r6s = r6 * r6, r6q = r6s * r6s;
+  float r1s = r1 * r1, r1q = r1s * r1s, r1e = r1q * r1q, r2s = r2 * r2, r2q = r2s * r2s, r3s = r3 * r3, r3q = r3s * r3s;
+  float fil = r1e * r1s * r2q * r2s + 0.8 * r5q * r5q * r5s * r6q * r6s;
+  float rib = r3q * r3s;
+  float tendril = r3q * r3q * r3q * r3q * r1q;
+  float veil = smoothF(0.50, 0.90, n4);
+  float pulse = 0.0;
+  if (uPulse.x >= 0.0) { float z = (s - uPulse.x) / 0.09; pulse += uPulse.y * exp(-z * z); }
+  if (uPulse.z >= 0.0) { float z = (s - uPulse.z) / 0.09; pulse += uPulse.w * exp(-z * z); }
+  float massZ = (s - 0.78) / 0.28; float mass = exp(-massZ * massZ);
+  float hot = 0.50 + 0.55 * smoothF(0.1, 1.0, s) + 0.9 * mass + 1.4 * pulse;
+  float alive = 0.32 + 0.85 * en;
+  vec3 col = vec3(0.0); float cw = 0.0, enabled = 0.0, strength = 0.0;
+  float sig = 0.9 / max(1.0, float(uNodes));
+  for (int i = 0; i < 32; ++i) {
+    if (i >= uNodes) break;
+    float z = (s - uNodeP[i].w) / sig;
+    float g = exp(-z * z) + 1e-6;
+    float st = max(uNodeA[i].w, 0.0);
+    col += uNodeC[i].xyz * (g * (0.05 + st)); enabled += g * uNodeC[i].w; strength += g * st; cw += g;
+  }
+  if (cw <= 1e-5) return vec4(emit, 0.0);
+  float colW = cw * 0.05 + strength;
+  col /= max(colW, 1e-6); enabled /= cw; strength = min(1.0, strength / cw);
+  col = mix(vec3(0.52, 0.52, 0.58), col, enabled);
+  float dim = 0.30 + 0.70 * enabled;
+  float l0 = lumF(col);
+  float chroma = CHROMA * (0.85 + 0.3 * en) * (0.4 + 0.6 * enabled);
+  vec3 vivid = max(vec3(l0) * (1.0 - chroma) + col * chroma, vec3(0.0));
+  float edge = smoothF(0.55, 0.75, r1) * (1.0 - smoothF(0.85, 0.97, r1));
+  float ip = sin(6.0 * n2 + 3.0 * along + 0.3 * t);
+  vec3 iris = mix(vec3(0.55, 0.88, 1.0), vec3(1.0, 0.62, 0.90), 0.5 + 0.5 * ip);
+  float base = strength * dim * hot * alive / (1.0 + 0.05 * float(max(0, uNodes - 1)));
+  float E = best * base;
+  float eFil = fil * FIL * (0.55 + 0.9 * hi) * (1.0 + 0.8 * mass);
+  float eRib = rib * RIB * (0.45 + 0.8 * mi);
+  float eVeil = veil * VEILE * (0.5 + 0.7 * lo) * (0.6 + 0.8 * mass);
+  float eTen = tendril * TENDRIL * broad * (1.0 - 0.6 * best) * base * (0.6 + 0.6 * hi);
+  vec3 c = vivid * (E * (eFil + eRib + eVeil) + eTen);
+  float cmax = max(col.x, max(col.y, col.z)), cmin = min(col.x, min(col.y, col.z));
+  float csat = clamp(2.5 * (cmax - cmin) / max(cmax, 1e-4), 0.0, 1.0);
+  c += iris * ((E + 0.4 * broad * base) * edge * fil * 2.2 * enabled * csat);
+  emit = mix(vec3(0.52, 0.52, 0.58), vec3(0.42, 0.30, 0.62), csat) * (broad * HALO * (0.45 + 0.8 * en));
+  float hl = smoothF(0.12, 0.5, fil * hot * best * (0.6 + en)) * enabled;
+  c = mix(c, vec3(0.96, 0.91, 1.0) * (lumF(c) * 1.25), hl * 0.55);
+  emit += c;
+  return vec4(emit, ABSORB * lumF(c) + VEILA * veil * best * strength * 0.5);
 }
 vec3 toWorld(vec3 c, float cy, float sy, float cp, float sp) {
   float y = cp * c.y + sp * c.z; float z1 = -sp * c.y + cp * c.z;
   return vec3(cy * c.x - sy * z1, y, sy * c.x + cy * z1);
 }
+vec3 background(vec2 uv, float energy) {
+  float dx = uv.x - 0.6, dy = uv.y - 0.48;
+  float k = exp(-(dx * dx * 1.6 + dy * dy * 2.2));
+  float lift = 0.65 + 0.35 * k * (1.0 + 0.25 * clamp(energy, 0.0, 1.2));
+  return vec3(0.016, 0.011, 0.026) * lift;
+}
 void main() {
-  if (uBound.w <= 0.0) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 pix = vec2(vUv.x * uRes.x, (1.0 - vUv.y) * uRes.y);
+  vec3 bg = background(vec2(vUv.x, 1.0 - vUv.y), uAudio.x);
+  if (uBound.w <= 0.0) { o = vec4(bg, 1.0); return; }
   float cy = cos(uCam.x), sy = sin(uCam.x), cp = cos(uCam.y), sp = sin(uCam.y);
   float aspect = uCam.z, t = uCam.w;
-  vec2 pix = vec2(vUv.x * uRes.x, (1.0 - vUv.y) * uRes.y);
-  float fx = vUv.x * aspect, fy = 1.0 - vUv.y;
+  // per-frame sub-pixel jitter (golden-ratio sequence): the temporal accumulation reconstructs a stable image
+  vec2 jit = vec2(fract(0.5 + 0.7548777 * uFrame), fract(0.5 + 0.5698403 * uFrame)) - 0.5;
+  float fx = (vUv.x + jit.x / uRes.x) * aspect, fy = 1.0 - vUv.y + jit.y / uRes.y;
   vec3 camW = toWorld(vec3(0.0, 0.0, CAMDIST), cy, sy, cp, sp);
   vec3 dir = toWorld(vec3((fx - 0.54 * aspect) / (CAMDIST * SCALE), -(fy - 0.5) / (CAMDIST * SCALE), -1.0), cy, sy, cp, sp);
   vec3 oc = camW - uBound.xyz;
   float A = dot(dir, dir), B = 2.0 * dot(oc, dir), C = dot(oc, oc) - uBound.w * uBound.w;
   float disc = B * B - 4.0 * A * C;
-  if (disc <= 0.0) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  if (disc <= 0.0) { o = vec4(bg, 1.0); return; }
   float sq = sqrt(disc);
   float d0 = max((-B - sq) / (2.0 * A), 0.3), d1 = (-B + sq) / (2.0 * A);
-  if (d1 <= d0) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  if (d1 <= d0) { o = vec4(bg, 1.0); return; }
   float dd = (d1 - d0) / float(uSteps); float ds = dd * sqrt(A);
-  float jit = fract(hash3(floor(pix.x) * 0.731, floor(pix.y) * 1.177, 3.1) + uFrame * 0.618034);
+  // white-noise step jitter, re-drawn every frame (averages out in the temporal accumulation)
+  float ign = hash3(floor(pix.x) * 0.731 + uFrame * 3.17, floor(pix.y) * 1.177, 3.1 + mod(uFrame, 64.0) * 0.37);
   vec3 col = vec3(0.0); float T = 1.0; vec3 indigo = vec3(0.10, 0.08, 0.30);
   for (int k = 0; k < 96; ++k) {
     if (k >= uSteps || T <= 0.02) break;
-    float d = d0 + (float(k) + jit) * dd;
-    vec3 e = emission(camW + dir * d, t);
-    float l = lumF(e);
-    if (l <= 1e-6) continue;
+    float d = d0 + (float(k) + ign) * dd;
+    vec3 q = camW + dir * d;
+    vec4 m = medium(q, t);
+    for (int i = 0; i < 4; ++i) {
+      if (i >= uPackets) break;
+      m.rgb += packetE(q, uPackP[i].xyz, uPackA[i].xyz, uPackU[i].xyz, uPackV[i].xyz, uPackC[i].xyz, uPackA[i].w * 1.4, uPackP[i].w, uPackP[i].w * 4.5, uPackU[i].w, t * 4.0);
+    }
+    float l = lumF(m.rgb);
+    if (l <= 1e-7 && m.a <= 1e-7) continue;
     float fog = exp(-max(0.0, d - CAMDIST) * FOG);
-    e = (e * (0.5 + 0.5 * fog) + indigo * (l * (0.5 - 0.5 * fog))) * fog;
+    vec3 e = (m.rgb * (0.5 + 0.5 * fog) + indigo * (l * (0.5 - 0.5 * fog))) * fog;
     col += e * (T * ds);
-    T *= exp(-ABSORB * l * ds);
+    T *= exp(-m.a * ds);
   }
-  o = vec4(col, 1.0);
+  o = vec4(bg * T + col, 1.0);
 }
 )";
         auto rep = [&](const std::string& k, const std::string& v) { for (size_t p; (p = s.find(k)) != std::string::npos;) s.replace(p, k.size(), v); };
-        rep("SKIN", f(kSkinGain));
-        rep("CORE", f(kCoreGain));
-        rep("LINK", f(kLinkGain));
+        rep("PACKET", f(kPacketGain));
+        rep("FIL", f(kFilGain));
+        rep("RIB", f(kRibGain));
+        rep("VEILE", f(kVeilGain));
+        rep("VEILA", f(kVeilAbsorb));
         rep("ABSORB", f(kAbsorb));
+        rep("HALO", f(kHalo));
+        rep("TENDRIL", f(kTendril));
+        rep("CHROMA", f(kChroma));
         rep("CAMDIST", f(kFieldCamDist));
         rep("SCALE", f(kFieldScale));
         rep("FOG", f(kFog));
-        rep("FLUX", f(kFluxGain));
-        rep("VEIL", f(kVeilGain));
         return s;
     }();
     return src;

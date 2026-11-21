@@ -246,6 +246,7 @@ void Formation::layout(const FrameInput& in) {
         c.index = static_cast<int>(order_.size()) - 1;
         auto ch = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.5f; };
         c.colour = {ch(ii.colour.r), ch(ii.colour.g), ch(ii.colour.b)};
+        c.enabledIn = ii.enabled;
         if (fresh || c.seed != ii.seed || c.strands.empty()) {
             c.id = ii.id;
             c.seed = ii.seed ? ii.seed : 1u;
@@ -509,6 +510,7 @@ void Formation::update(const FrameInput& in) {
     follow(low_, safe(in.audio.low, 0.0f, 1.5f), dt, 0.25f, 1.2f);
     follow(high_, safe(in.audio.high, 0.0f, 1.5f), dt, 0.05f, 0.4f);
     follow(balance_, safe(in.audio.balance, -1.0f, 1.0f), dt, 0.4f, 0.8f);
+    follow(mid_, safe(in.audio.mid, 0.0f, 1.5f), dt, 0.1f, 0.6f);
     const float tr = safe(in.audio.transient, 0.0f, 1.0f);
     const bool onset = tr > 0.3f && transient_ < 0.15f;
     transient_ = std::max(tr, transient_ - dt * 4.0f);
@@ -562,6 +564,12 @@ void Formation::update(const FrameInput& in) {
         if (c.bright - c.levelSlow > 0.22f && c.pulses.size() < 3 && (c.pulses.empty() || c.pulses.back().age > 0.25f))
             c.pulses.push_back({0.0f, std::clamp((c.bright - c.levelSlow) * 2.5f, 0.3f, 1.0f), true});
     }
+    // V4: onset density (fine turbulence) and a pulse that travels the whole spine from input to output
+    onsetRate_ += ((onset ? 1.0f / std::max(dt, 1e-3f) : 0.0f) - onsetRate_) * (1.0f - std::exp(-dt / 1.5f));
+    for (auto& sp : spinePulses_) sp.age += dt;
+    spinePulses_.erase(std::remove_if(spinePulses_.begin(), spinePulses_.end(), [](const SpinePulse& p) { return p.age > 1.6f; }), spinePulses_.end());
+    if (onset && spinePulses_.size() < 4) spinePulses_.push_back({0.0f, std::clamp(tr, 0.35f, 1.0f)});
+    for (auto& kv : insts_) follow(kv.second.enabledAmt, kv.second.enabledIn ? 1.0f : 0.0f, dt, 0.25f, 0.25f);
     if (onset && !order_.empty()) {
         Inst& c = insts_[order_.front()];
         if (c.pulses.size() < 4) c.pulses.push_back({0.0f, std::clamp(tr, 0.4f, 1.0f), true});
@@ -656,6 +664,7 @@ void Formation::buildScene() {
         n.radius = 0.16f + 0.05f * c.bright;
         n.influence = infl;
         n.seed = static_cast<float>(c.seed % 9973u) / 9973.0f;
+        n.enabled = c.enabledAmt;
         S.nodes.push_back(n);
     }
     for (size_t i = 0; i + 1 < S.nodes.size() && S.links.size() < static_cast<size_t>(kMaxFieldLinks); ++i) {
@@ -701,6 +710,20 @@ void Formation::buildScene() {
     S.time = time_;
     S.energy = energy_;
     S.high = high_;
+    S.low = low_;
+    S.mid = mid_;
+    S.balance = balance_;
+    S.turbulence = std::clamp(onsetRate_ / 6.0f, 0.0f, 1.0f);
+    // more FX = a bigger, fuller formation (UI sketch); one FX = a small one
+    S.radius = 0.19f + 0.16f * extent_;
+    for (int k = 0; k < 2; ++k) { S.pulseS[k] = -1.0f; S.pulseA[k] = 0.0f; }
+    {
+        int k = 0;
+        for (auto it = spinePulses_.rbegin(); it != spinePulses_.rend() && k < 2; ++it, ++k) {
+            S.pulseS[k] = -0.1f + it->age / 1.3f;
+            S.pulseA[k] = it->amp * (1.0f - smooth01((it->age - 1.0f) / 0.6f));
+        }
+    }
     S.computeBound();
 }
 

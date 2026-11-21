@@ -111,6 +111,10 @@ public:
     void requestTransfer(uint64_t id, float originYInField);
     juce::Rectangle<int> artworkArea() const;  // the part of this component the formation is drawn in
     static constexpr int kStripH = 46;
+    bool itemEnabled(int chainIndex) const {  // tests: the enabled state the strip draws
+        for (const auto& it : items_) if (it.index == chainIndex) return it.enabled;
+        return false;
+    }
     juce::Rectangle<float> itemBounds(int chainIndex) const {  // tests
         for (const auto& it : items_) if (it.index == chainIndex) return it.r;
         return {};
