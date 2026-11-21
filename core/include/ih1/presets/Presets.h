@@ -9,6 +9,10 @@
 
 namespace ih1 {
 
+// Init (V3 Phase 7.1): pinned first in the factory list. It has an empty chain; loading it calls
+// Session::initialise() (no committed FX, staged None, drafts at defaults) instead of a chain recall.
+constexpr const char* kInitPresetId = "init";
+
 struct PresetFx {
     std::string type;                                 // FX type id (registry)
     std::vector<std::pair<std::string, float>> params;  // parameter id -> plain value; others = defaults

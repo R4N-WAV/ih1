@@ -74,6 +74,7 @@ void GrainEngine::reset() {
     lastMode_ = -1;
     lastFreeze_ = false;
     latched_ = false;
+    holding_ = false;
     heard_ = 0;
     retrigCount_ = 0.0;
     energy_ = 0.0f;
@@ -214,15 +215,20 @@ void GrainEngine::spawn(const Params& p, int chan, bool forced) {
 
     // keep the whole grain inside recorded audio, behind the write head for its whole life
     const double travel = static_cast<double>(len) * ratio;
-    const double headGain = p.freeze ? 0.0 : static_cast<double>(len);  // how far the head moves meanwhile
+    // how far the write head moves during the grain's life. V3 fix: Loop holds the head exactly like Freeze; using
+    // p.freeze alone let a forward grain at pitch > 1x in Loop run past the held head into stale ring data (a hard
+    // discontinuity measured by ih1_grain_clicks).
+    const double headGain = holding_ ? 0.0 : static_cast<double>(len);
+    // the oldest region is overwritten while the head moves: stay ahead of that front too (V3 fix)
+    const double safeOldest = oldest + headGain + kGuardFade;
     if (!rev) {
         const double latest = head - kMinLag - std::max(0.0, travel - headGain);
         start = std::min(start, latest);
-        start = std::max(start, oldest);
+        start = std::max(start, safeOldest);
         if (start > latest) return;  // not enough audio captured yet
     } else {
         start = std::min(start, head - kMinLag);
-        if (start - travel < oldest) start = oldest + travel;
+        if (start - travel < safeOldest) start = safeOldest + travel;
         if (start > head - kMinLag) return;
     }
     if (p.align && !rev && newest && (scan || p.freeze) && std::fabs(newest->inc - ratio) < 1e-3)
@@ -236,6 +242,7 @@ void GrainEngine::spawn(const Params& p, int chan, bool forced) {
     g->win = std::clamp(p.window, 0, kWindows - 1);
     g->chan = chan;
     g->order = ++spawnOrder_;
+    g->fade = 0;
     float pan = std::clamp(p.spread, 0.0f, 1.0f) * rng_.bipolar();
     if (chan == 0) pan = -std::fabs(pan);
     else if (chan == 1) pan = std::fabs(pan);
@@ -260,6 +267,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
     const int64_t need = p.mode == Loop ? static_cast<int64_t>(loopLen) : static_cast<int64_t>(0.75 * sr);
     if (wantHold && !latched_ && heard_ >= need) latched_ = true;
     const bool hold = wantHold && latched_;
+    holding_ = hold;
 
     if (p.fbHp != lastHp_ || p.fbLp != lastLp_) {
         for (int c = 0; c < 2; ++c) {
@@ -333,13 +341,28 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         }
         // ---- grains ----
         float l = 0.0f, r = 0.0f, e = 0.0f, ind = 0.0f;
+        // valid read region relative to the write head, and how fast the head (and the overwrite front) moves
+        const double headV = holding_ ? 0.0 : 1.0;
+        const double hiRel = -kMinLag;
+        const double loRel = -static_cast<double>(std::min<int64_t>(filled_, mask_ - 64)) + 8.0;
+        const double headPos = static_cast<double>(head_);
         for (auto& g : grains_) {
             if (!g.active) continue;
+            if (g.fade == 0) {
+                const double future = (g.pos - headPos) + (g.inc - headV) * kGuardFade;
+                const double nowRel = g.pos - headPos;
+                if (future > hiRel - 2.0 || future < loRel + 1.0 || nowRel > hiRel || nowRel < loRel) g.fade = kGuardFade;
+            }
             const float ph = g.t / g.len;
             const float fi = ph * kWinSize;
             const int ii = std::min(static_cast<int>(fi), kWinSize - 1);
             const auto& w = win_[static_cast<size_t>(g.win)];
-            const float a = w[static_cast<size_t>(ii)] + (fi - static_cast<float>(ii)) * (w[static_cast<size_t>(ii + 1)] - w[static_cast<size_t>(ii)]);
+            float a = w[static_cast<size_t>(ii)] + (fi - static_cast<float>(ii)) * (w[static_cast<size_t>(ii + 1)] - w[static_cast<size_t>(ii)]);
+            if (g.fade > 0) {
+                const float f = static_cast<float>(g.fade) / kGuardFade;
+                a *= f * f * (3.0f - 2.0f * f);  // smoothstep to 0
+                if (--g.fade == 0) g.active = false;
+            }
             float gl, gr;
             if (g.chan < 0) {
                 gl = a * g.gl * readCh(0, g.pos);
@@ -355,7 +378,8 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             e += a * a;
             g.pos += g.inc;
             g.t += 1.0f;
-            if (g.t >= g.len) g.active = false;
+            if (g.t >= g.len) { g.active = false; g.fade = 0; }
+            if (!g.active) g.fade = 0;
         }
         energy_ += energyA_ * (e - energy_);
         sumPow_ += coherA_ * (l * l + r * r - sumPow_);

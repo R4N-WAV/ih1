@@ -113,6 +113,7 @@ public:
     juce::Component* confirmDialog() const;
     // Phase 15 / 16 (tests): the discreet chain utility and the clear-chain confirmation
     juce::Rectangle<float> chainMenuBounds() const { return chainMenu_; }
+    juce::Rectangle<float> meterBounds() const { return meter_; }
     void showChainMenu();
     void openClearConfirm();
     juce::Button* confirmButton() const;
@@ -139,8 +140,11 @@ private:
     FormationRenderer& renderer_;
     uint64_t seenRevision_ = 0;
     std::vector<Item> items_;
-    juce::Rectangle<float> strip_, deleteZone_, chainMenu_, status_;
+    juce::Rectangle<float> strip_, deleteZone_, chainMenu_, status_, meter_;
     Processor::LatencyStatus latency_;
+    Processor::SafetyStatus safety_;
+    float meterPeak_ = 0.0f, meterGr_ = 0.0f;  // UI-smoothed output peak (linear) and safety gain reduction (dB)
+    bool riskWarned_ = false;
     // drag state (the dragged instance is tracked by id, never by a stale index)
     uint64_t dragId_ = 0;
     bool pressed_ = false, dragging_ = false, deleteHover_ = false;

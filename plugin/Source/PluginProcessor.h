@@ -71,6 +71,18 @@ public:
         bool degraded = false;      // the requested mode could not be met fully
     };
     LatencyStatus latencyStatus();
+    // Output Safety (V3 Phase 8.5). Message thread.
+    struct SafetyStatus {
+        int requested = 1, running = 1;   // dsp::OutputSafety::Mode
+        float ceilingDb = -0.5f;
+        int latencySamples = 0;           // added by the running mode (TruePeak lookahead), included in the host report
+        bool zeroFallback = false;        // TruePeak requested in Zero latency mode: Guard runs instead
+        bool riskyWhileOff = false;       // Off while the chain / staged FX uses high feedback or drive
+        juce::String headline, detail;
+    };
+    SafetyStatus safetyStatus();
+    void uiSetSafetyMode(int mode);
+    void uiSetSafetyCeiling(float db);
     uint64_t revision() const { return revision_.load(); }
 
     // ---- presets (message thread) -------------------------------------------------------------
@@ -112,6 +124,14 @@ private:
     std::atomic<float>* pIn_ = nullptr;
     std::atomic<float>* pOut_ = nullptr;
     std::atomic<float>* pMix_ = nullptr;
+    std::atomic<float>* pSafetyMode_ = nullptr;
+    std::atomic<float>* pSafetyCeil_ = nullptr;
+    std::atomic<int> safetyRun_{1};   // effective safety mode for the audio thread
+    int lastSafetyReq_ = -1;
+    int effectiveSafetyMode() const;  // lock held
+    bool chainIsRisky() const;        // lock held
+    void applyRecallHostState();      // lock held: SOLO / MUTE off, staged macros re-synced, host told
+    void resetGlobalsToNeutral();     // Init: input / output gain, mix, safety to their defaults
     std::array<juce::RangedAudioParameter*, kNumMacros> macros_{};
     std::array<float, kNumMacros> lastMacro_{};
     bool lastSolo_ = false, lastMute_ = false;

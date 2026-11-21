@@ -47,7 +47,11 @@ public:
     void service();
 
     // ---- staged / carousel ---------------------------------------------------------------
-    int selected() const { return selected_; }       // registry index or -1 (nothing staged)
+    // `None` (V3 Phase 1/2) is a first-class selection: no uncommitted effect is auditioned and no staged processor
+    // exists in the audio program. It is never a registry index, so it can never alias the first FX.
+    static constexpr int kNone = -1;
+    bool hasStaged() const { return selected_ != kNone && staged_ != nullptr; }
+    int selected() const { return selected_; }       // registry index or kNone
     const FxProcessor* stagedProcessor() const { return staged_; }  // message thread only (display read-outs)
     void select(int typeIndex);                       // -1 clears the staged FX
     void step(int direction);                         // carousel up (-1) / down (+1)
@@ -62,6 +66,11 @@ public:
     bool move(int from, int to);  // reorder (changes DSP order)
     bool remove(uint64_t id);     // delete one instance (confirmation is the UI's job)
     void clearChain();
+    // Init (V3 Phase 7.1): the explicit clean starting state. No committed FX, staged = None, every draft back to its
+    // defaults (the staged cache is cleared only here and by RESET), SOLO / MUTE off. Every processor is retired,
+    // so no loop, freeze, feedback or modulation memory survives. The latency mode is a host-latency preference and
+    // is kept.
+    void initialise();
 
     // ---- routing ----------------------------------------------------------------------------
     void setSolo(bool on);  // mutually exclusive with MUTE
@@ -85,9 +94,13 @@ public:
     uint64_t revision() const { return revision_; }  // bumps on any model change (for the UI)
 
     // ---- state ---------------------------------------------------------------------------
-    // includeSession = DAW project state (drafts, selection, SOLO/MUTE). false = user preset.
+    // includeSession = DAW project state (drafts, latency mode). false = user preset.
     std::string toJson(bool includeSession) const;
     // On failure the current state is left untouched and `error` says why.
+    // V3 Phase 1: every recall (factory / user preset, host program or project state) applies the chain and sets the
+    // staged selection to None, so what is heard is exactly the recalled chain. Uncommitted drafts are kept (a preset
+    // never touches them; a project state restores the drafts it saved), so a previously staged FX still has its
+    // cached settings when the user returns to it.
     bool fromJson(const std::string& text, bool includeSession, std::string* error = nullptr);
 
     double sampleRate() const { return sampleRate_; }

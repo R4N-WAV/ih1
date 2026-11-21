@@ -207,6 +207,8 @@ class Saturation final : public FxBase {
         mix_.reset();
         rmsIn_ = rmsOut_ = 1e-6f;
         autoG_ = 1.0f;
+        primed_ = false;
+        warm_ = static_cast<int>(0.04 * sr_);
     }
     void applyParams(bool snap) override {
         for (int c = 0; c < 2; ++c) {
@@ -246,13 +248,26 @@ class Saturation final : public FxBase {
             os_[c].down(hi, x, n);
             for (int i = 0; i < n; ++i) x[i] = post_[c].process(x[i]);
         }
-        // auto gain: sample-ordered RMS tracking (block-size independent)
+        // auto gain: sample-ordered RMS tracking (block-size independent).
+        // V3 safety fix: a freshly staged / reset Saturation used to start at unity gain with empty 300 ms RMS
+        // trackers, so the first ~0.3 s played the full drive gain (+9 dB at defaults, +23 dB measured with a hot
+        // cached draft, hitting the engine's +12 dBFS clamp). Now the gain starts at a conservative 1 / drive, and
+        // for the first 40 ms of real signal (warm-up) both trackers run at 5 ms and the gain follows within 1 ms.
+        // After that, reductions are still tracked fast (5 ms) and increases slowly (42 ms): auto gain may lag
+        // downwards, never upwards into a spike.
+        const float fastDown = 1.0f - std::exp(-1.0f / (0.005f * srf()));
+        const float aWarm = 1.0f - std::exp(-1.0f / (0.005f * srf()));
+        const float gWarm = 1.0f - std::exp(-1.0f / (0.001f * srf()));
+        if (autoGain && !primed_) { autoG_ = std::clamp(1.0f / std::max(1.0f, drive_.current()), 0.05f, 1.0f); primed_ = true; }
         for (int i = 0; i < n; ++i) {
             const float outPow = 0.5f * (ch[0][i] * ch[0][i] + ch[1][i] * ch[1][i]);
-            rmsIn_ += aRms * (inPow_[static_cast<size_t>(i)] - rmsIn_);
-            rmsOut_ += aRms * (outPow - rmsOut_);
+            const bool warm = warm_ > 0;
+            if (warm && inPow_[static_cast<size_t>(i)] > 1e-10f) --warm_;
+            const float a = warm ? aWarm : aRms;
+            rmsIn_ += a * (inPow_[static_cast<size_t>(i)] - rmsIn_);
+            rmsOut_ += a * (outPow - rmsOut_);
             const float target = autoGain ? std::clamp(std::sqrt(rmsIn_ / std::max(rmsOut_, 1e-10f)), 0.05f, 4.0f) : 1.0f;
-            autoG_ += 0.0005f * (target - autoG_);
+            autoG_ += (warm ? gWarm : (target < autoG_ ? fastDown : 0.0005f)) * (target - autoG_);
             const float g = autoG_ * out_.next();
             ch[0][i] *= g;
             ch[1][i] *= g;
@@ -269,6 +284,8 @@ class Saturation final : public FxBase {
     std::vector<float> work_, inPow_;
     MixStage mix_;
     float rmsIn_ = 1e-6f, rmsOut_ = 1e-6f, autoG_ = 1.0f;
+    bool primed_ = false;
+    int warm_ = 0;
 };
 
 // ==================================================================================== Stereo Width

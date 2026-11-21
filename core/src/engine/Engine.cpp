@@ -15,6 +15,7 @@ constexpr float kSoloMs = 250.0f;
 constexpr float kMuteMs = 30.0f;
 constexpr float kBypassMs = 20.0f;
 constexpr float kGainMs = 20.0f;
+constexpr float kFreshInMs = 12.0f;  // raised-cosine input fade for a freshly built processor
 constexpr float kSafetyLimit = 4.0f;  // +12 dBFS hard safety ceiling
 constexpr int kCompMask = Engine::kCompSize - 1;
 
@@ -81,6 +82,37 @@ void Engine::prepare(double sampleRate, int maxBlock) {
     mixAmt_ = std::clamp(mix_.load(), 0.0f, 1.0f);
     trans_ = Transition::None;
     bandLowState_[0] = bandLowState_[1] = bandHighState_[0] = bandHighState_[1] = 0.0f;
+    safety_.setMode(safetyMode_.load());
+    safety_.setCeilingDb(safetyCeil_.load());
+    safety_.prepare(sampleRate_, maxBlock_);
+    slotInRamp_.fill(1.0f);
+    stagedInRamp_ = 1.0f;
+}
+
+void Engine::markFresh(const Program* old, const Program* p) {
+    // A processor is fresh when the outgoing program did not run it (new instance, preset load, RESET, latency
+    // mode rebuild). COMMIT hands the staged processor over to the chain: not fresh, it keeps playing.
+    auto known = [old](const FxProcessor* fx) {
+        if (!old || !fx) return false;
+        if (old->staged == fx) return true;
+        for (int i = 0; i < old->chainSize; ++i) if (old->chain[static_cast<size_t>(i)] == fx) return true;
+        return false;
+    };
+    std::array<float, kMaxChain> next{};
+    next.fill(1.0f);
+    for (int i = 0; i < p->chainSize; ++i) {
+        const FxProcessor* fx = p->chain[static_cast<size_t>(i)];
+        if (known(fx)) {
+            // carry an in-progress fade along with its processor across a reorder
+            for (int j = 0; old && j < old->chainSize; ++j)
+                if (old->chain[static_cast<size_t>(j)] == fx) next[static_cast<size_t>(i)] = slotInRamp_[static_cast<size_t>(j)];
+            if (old && old->staged == fx) next[static_cast<size_t>(i)] = stagedInRamp_;
+        } else {
+            next[static_cast<size_t>(i)] = 0.0f;
+        }
+    }
+    slotInRamp_ = next;
+    stagedInRamp_ = (p->staged && !(old && old->staged == p->staged)) ? 0.0f : 1.0f;
 }
 
 bool Engine::post(Program* p) {
@@ -97,6 +129,8 @@ void Engine::installDirect(Program* p, std::vector<Program*>& released) {
     overflowCount_ = 0;
     if (active_) released.push_back(active_);
     active_ = p;
+    slotInRamp_.fill(1.0f);
+    stagedInRamp_ = 1.0f;
     for (int i = 0; i < p->chainSize; ++i) p->chain[static_cast<size_t>(i)]->setParams(p->chainValues[static_cast<size_t>(i)], true);
     trans_ = Transition::None;
     transGain_ = 1.0f;
@@ -125,6 +159,7 @@ void Engine::installNow(Program* p) {
     for (int i = 0; i < p->chainSize; ++i) p->chain[static_cast<size_t>(i)]->setParams(p->chainValues[static_cast<size_t>(i)], false);
     // retire the old one
     Program* old = active_;
+    markFresh(old, p);
     active_ = p;
     if (old) {
         // flush overflow first to preserve order
@@ -267,11 +302,21 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
 
     // --- committed chain ------------------------------------------------------------------
     float* cbuf[2] = {cL, cR};
+    const float freshStep = stepFor(kFreshInMs);
+    auto fadeIn = [n, freshStep](float& ramp, float* a, float* b) {
+        for (int i = 0; i < n && ramp < 1.0f; ++i) {
+            const float g = 0.5f - 0.5f * std::cos(3.14159265f * ramp);
+            a[i] *= g;
+            b[i] *= g;
+            ramp = std::min(1.0f, ramp + freshStep);
+        }
+    };
     for (int s = 0; s < p.chainSize; ++s) {
         FxProcessor* fx = p.chain[static_cast<size_t>(s)];
+        if (slotInRamp_[static_cast<size_t>(s)] < 1.0f) fadeIn(slotInRamp_[static_cast<size_t>(s)], cL, cR);
         fx->process(cbuf, n, ctx);
         const bool bad = sanitize(cL, n, 32.0f) | sanitize(cR, n, 32.0f);
-        if (bad) fx->reset();
+        if (bad) { fx->reset(); slotInRamp_[static_cast<size_t>(s)] = 0.0f; tele_.faults.fetch_add(1, std::memory_order_relaxed); }
         double sq = 0.0;
         for (int i = 0; i < n; ++i) sq += 0.5 * (static_cast<double>(cL[i]) * cL[i] + static_cast<double>(cR[i]) * cR[i]);
         tele_.slotRms[static_cast<size_t>(s)].store(static_cast<float>(std::sqrt(sq / n)), std::memory_order_relaxed);
@@ -303,9 +348,10 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
     std::memcpy(tR, sR, sizeof(float) * static_cast<size_t>(n));
     if (hasStaged) {
         float* tbuf[2] = {tL, tR};
+        if (stagedInRamp_ < 1.0f) fadeIn(stagedInRamp_, tL, tR);
         p.staged->process(tbuf, n, ctx);
         const bool bad = sanitize(tL, n, 32.0f) | sanitize(tR, n, 32.0f);
-        if (bad) p.staged->reset();
+        if (bad) { p.staged->reset(); stagedInRamp_ = 0.0f; tele_.faults.fetch_add(1, std::memory_order_relaxed); }
         double sq = 0.0;
         for (int i = 0; i < n; ++i) sq += 0.5 * (static_cast<double>(tL[i]) * tL[i] + static_cast<double>(tR[i]) * tR[i]);
         tele_.stagedRms.store(static_cast<float>(std::sqrt(sq / n)), std::memory_order_relaxed);
@@ -355,6 +401,16 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
         lowSq += lo * lo;
         midSq += mid * mid;
         highSq += hi * hi;
+    }
+    // --- Output Safety (final stage) -------------------------------------------------------
+    tele_.preSafetyPeak.store(peak, std::memory_order_relaxed);
+    safety_.setMode(safetyMode_.load(std::memory_order_relaxed));
+    safety_.setCeilingDb(safetyCeil_.load(std::memory_order_relaxed));
+    {
+        const float g = safety_.process(L, R, n);
+        tele_.safetyGainReduction.store(g < 1.0f ? -20.0f * std::log10(std::max(g, 1e-6f)) : 0.0f, std::memory_order_relaxed);
+        tele_.safetyMode.store(safety_.mode(), std::memory_order_relaxed);
+        peak = safety_.lastPeak();
     }
     bandLowState_[0] = dsp::flushTiny(bandLowState_[0]);
     bandHighState_[0] = dsp::flushTiny(bandHighState_[0]);

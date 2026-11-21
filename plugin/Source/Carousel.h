@@ -12,6 +12,7 @@ namespace ih1::plugin {
 
 class Carousel final : public juce::Component, private juce::Timer {
 public:
+    static constexpr int kNoneMenuId = 1 << 20;  // menu id of the "None" row (FX rows use registry index + 1)
     Carousel();
     void setSelected(int typeIndex);  // registry index or -1
     int selected() const { return selected_; }

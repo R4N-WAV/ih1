@@ -186,7 +186,14 @@ class DeEsser final : public FxBase {
 enum { tsAttack, tsSustain, tsSpeed, tsOut, tsMix };
 class TransientShaper final : public FxBase {
     void onPrepare() override { mix_.prepare(sr_, maxBlock_, 0, MixLaw::Linear); out_.prepare(sr_, 30.0f); }
-    void reset() override { fa_ = sa_ = fr_ = sr2_ = -120.0f; g_ = 0.0f; mix_.reset(); }
+    // V3 safety fix: the detectors used to start (and fall back after digital silence) at -120 dB, so the first
+    // signal read as a ~100 dB "attack" and was boosted by the full +24 dB clamp for tens of ms (+14 dB measured
+    // when landing on the default Transient Shaper). The detectors now start at the first sample's level and never
+    // fall below kFloorDb, and the boost is limited to +-18 dB.
+    static constexpr float kFloorDb = -60.0f;
+    // A 20 ms warm-up after reset follows the level without detecting anything: a processor that has just been
+    // staged receives the engine's 12 ms de-click fade-in, which must not read as a giant attack.
+    void reset() override { fa_ = sa_ = fr_ = sr2_ = kFloorDb; g_ = 0.0f; warm_ = false; warmLeft_ = static_cast<int>(0.02 * sr_); mix_.reset(); }
     void applyParams(bool snap) override { mix_.setMix(pct(tsMix), snap); out_.setTarget(dsp::dbToGain(fp(tsOut))); if (snap) out_.snap(out_.target()); }
     void process(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
@@ -196,7 +203,9 @@ class TransientShaper final : public FxBase {
         const float P = fp(tsAttack) * 0.01f, S = fp(tsSustain) * 0.01f;
         const float gs = coef(1.0f, sr_);
         for (int i = 0; i < n; ++i) {
-            const float x = toDb(std::max(std::fabs(ch[0][i]), std::fabs(ch[1][i])));
+            const float x = std::max(kFloorDb, toDb(std::max(std::fabs(ch[0][i]), std::fabs(ch[1][i]))));
+            if (!warm_ && x > kFloorDb) warm_ = true;
+            if (warm_ && warmLeft_ > 0) { --warmLeft_; fa_ = sa_ = fr_ = sr2_ = std::max(fa_ - 0.002f, x); }
             // attack detector: fast vs slow rise; sustain detector: slow vs fast fall (all in dB: level-independent)
             fa_ += (x > fa_ ? aFast : rFast) * (x - fa_);
             sa_ += (x > sa_ ? aSlowA : rFast) * (x - sa_);
@@ -204,7 +213,7 @@ class TransientShaper final : public FxBase {
             sr2_ += (x > sr2_ ? aFast : rSlow) * (x - sr2_);
             const float att = std::max(0.0f, fa_ - sa_);
             const float sus = std::max(0.0f, sr2_ - fr_);
-            const float tgt = std::clamp(P * att + S * sus, -24.0f, 24.0f);
+            const float tgt = std::clamp(P * att + S * sus, -18.0f, 18.0f);
             g_ += gs * (tgt - g_);
             const float g = dsp::dbToGain(g_) * out_.next();
             ch[0][i] *= g;
@@ -212,7 +221,9 @@ class TransientShaper final : public FxBase {
         }
         mix_.apply(ch, n);
     }
-    float fa_ = -120, sa_ = -120, fr_ = -120, sr2_ = -120, g_ = 0;
+    float fa_ = kFloorDb, sa_ = kFloorDb, fr_ = kFloorDb, sr2_ = kFloorDb, g_ = 0;
+    bool warm_ = false;
+    int warmLeft_ = 0;
     dsp::Smoother out_;
     MixStage mix_;
 };

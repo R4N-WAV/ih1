@@ -324,18 +324,26 @@ TEST_CASE("state: preset holds the chain only, session holds drafts; round trip 
         CHECK(h2.session.chain()[i].values() == h.session.chain()[i].values());
         CHECK(h2.session.chain()[i].visualSeed() == h.session.chain()[i].visualSeed());
     }
-    CHECK(h2.session.selected() == T("test_latency"));
+    // V3 Phase 1 (supersedes V2.1): a host state recall lands on None, so only the recalled chain is heard; the
+    // drafts it saved are restored, so returning to the FX finds its cached settings.
+    CHECK(h2.session.selected() == Session::kNone);
+    CHECK_FALSE(h2.session.hasStaged());
     CHECK(h2.session.draft(T("test_latency"))[1] == doctest::Approx(1234.0f));
-    CHECK(h2.session.mute());
-    CHECK(h2.session.toJson(true) == full);
+    CHECK_FALSE(h2.session.mute());
+    // the saved drafts and chain round-trip exactly
+    Harness h2b;
+    REQUIRE(h2b.session.fromJson(h2.session.toJson(true), true));
+    CHECK(h2b.session.toJson(true) == h2.session.toJson(true));
 
-    // a user preset replaces the chain but leaves the staged draft alone
+    // a user preset replaces the chain, deselects the staged FX (None) and keeps its draft cached
     Harness h3;
     h3.session.select(T("test_gain"));
     h3.session.setDraftParam(0, 5.0f);
     REQUIRE(h3.session.fromJson(preset, false));
     CHECK(h3.session.chain().size() == 2);
-    CHECK(h3.session.selected() == T("test_gain"));
+    CHECK(h3.session.selected() == Session::kNone);
+    CHECK(h3.session.draft(T("test_gain"))[0] == doctest::Approx(5.0f));
+    h3.session.select(T("test_gain"));
     CHECK(h3.session.draft(T("test_gain"))[0] == doctest::Approx(5.0f));
 }
 

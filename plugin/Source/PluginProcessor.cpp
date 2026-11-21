@@ -23,6 +23,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout Processor::createLayout() {
     l.add(std::make_unique<AudioParameterFloat>(ParameterID{"mix", 1}, "Global Mix", NormalisableRange<float>(0.0f, 100.0f, 0.01f), 100.0f, AudioParameterFloatAttributes().withLabel("%")));
     for (int k = 0; k < kNumMacros; ++k)
         l.add(std::make_unique<AudioParameterFloat>(ParameterID{macroId(k), 1}, "Staged Control " + String(k + 1), NormalisableRange<float>(0.0f, 1.0f), 0.0f));
+    // V3 (appended, version hint 2): final Output Safety. Existing ids above are unchanged.
+    l.add(std::make_unique<AudioParameterChoice>(ParameterID{"safety_mode", 2}, "Output Safety", StringArray{"Off", "Guard", "True Peak"}, 1));
+    l.add(std::make_unique<AudioParameterFloat>(ParameterID{"safety_ceiling", 2}, "Safety Ceiling", NormalisableRange<float>(-24.0f, 0.0f, 0.1f), -0.5f, AudioParameterFloatAttributes().withLabel("dB")));
     return l;
 }
 
@@ -39,6 +42,8 @@ Processor::Processor()
     pIn_ = apvts_.getRawParameterValue("in_gain");
     pOut_ = apvts_.getRawParameterValue("out_gain");
     pMix_ = apvts_.getRawParameterValue("mix");
+    pSafetyMode_ = apvts_.getRawParameterValue("safety_mode");
+    pSafetyCeil_ = apvts_.getRawParameterValue("safety_ceiling");
     for (int k = 0; k < kNumMacros; ++k) {
         macros_[static_cast<size_t>(k)] = apvts_.getParameter(macroId(k));
         lastMacro_[static_cast<size_t>(k)] = 0.0f;
@@ -80,6 +85,7 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
     engine_.setInputGainDb(pIn_->load());
     engine_.setOutputGainDb(pOut_->load());
     engine_.setMix(pMix_->load() * 0.01f);
+    engine_.setSafety(safetyRun_.load(std::memory_order_relaxed), pSafetyCeil_->load());
 
     midi_.clear();
     for (const auto meta : midi) {
@@ -122,8 +128,18 @@ void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&
 
 // ---- message-thread model operations ----------------------------------------------------------
 
+int Processor::effectiveSafetyMode() const {
+    const int req = juce::jlimit(0, 2, static_cast<int>(std::lround(pSafetyMode_->load())));
+    // Zero latency means no lookahead: the TruePeak limiter cannot run, the zero-latency Guard does (and says so)
+    if (req == dsp::OutputSafety::TruePeak && session_->latencyMode() == LatencyMode::Zero) return dsp::OutputSafety::Guard;
+    return req;
+}
+
 void Processor::afterModelChange() {
-    const int lat = session_->latencySamples();
+    const int run = effectiveSafetyMode();
+    safetyRun_.store(run);
+    lastSafetyReq_ = juce::jlimit(0, 2, static_cast<int>(std::lround(pSafetyMode_->load())));
+    const int lat = session_->latencySamples() + (run == dsp::OutputSafety::TruePeak ? engine_.safetyTruePeakLatency() : 0);
     if (lat != reportedLatency_) {
         reportedLatency_ = lat;
         setLatencySamples(lat);
@@ -259,6 +275,7 @@ Processor::LatencyStatus Processor::latencyStatus() {
     const juce::ScopedLock sl(lock_);
     st.mode = session_->latencyMode();
     st.samples = session_->latencySamples();
+    const int safetyLat = effectiveSafetyMode() == dsp::OutputSafety::TruePeak ? engine_.safetyTruePeakLatency() : 0;
     const double sr = session_->sampleRate() > 0 ? session_->sampleRate() : 48000.0;
     auto ms = [sr](int n) { return juce::String(1000.0 * n / sr, 1) + " ms"; };
     const auto contributors = session_->latencyContributors();
@@ -294,8 +311,92 @@ Processor::LatencyStatus Processor::latencyStatus() {
         if (session_->selected() >= 0) addNote(session_->selected());
         if (!notes.isEmpty()) detail << "\n\nTrade-offs in this mode:\n" << notes.joinIntoString("\n");
     }
+    if (safetyLat > 0) {
+        detail << "\n\nOutput Safety (True Peak): " << safetyLat << " samples of lookahead (" << ms(safetyLat) << "), included in the host report.";
+        st.samples += safetyLat;
+        st.headline = modeName + "  " + juce::String(st.samples) + " samples (" + ms(st.samples) + ")";
+        if (st.mode == LatencyMode::Zero) st.degraded = true;
+    }
     st.detail = detail;
     return st;
+}
+
+bool Processor::chainIsRisky() const {
+    // high feedback / regeneration or heavy drive anywhere in the committed chain or the staged FX
+    auto risky = [](const FxDescriptor& d, const ParamValues& v) {
+        for (size_t i = 0; i < d.params.size(); ++i) {
+            const auto& sp = d.params[i];
+            const juce::String id(sp.id);
+            const float n = sp.toNormalised(v[i]);
+            if ((id.contains("feedback") || id.contains("regen") || id == "intensity") && n >= 0.7f) return true;
+            if (id == "drive" && sp.unit == "dB" && v[i] >= 24.0f) return true;
+        }
+        return false;
+    };
+    for (const auto& ci : session_->chain()) if (risky(ci.descriptor(), ci.values())) return true;
+    const int sel = session_->selected();
+    return sel >= 0 && risky(fxRegistry()[static_cast<size_t>(sel)], session_->draft(sel));
+}
+
+Processor::SafetyStatus Processor::safetyStatus() {
+    SafetyStatus st;
+    const juce::ScopedLock sl(lock_);
+    st.requested = juce::jlimit(0, 2, static_cast<int>(std::lround(pSafetyMode_->load())));
+    st.running = effectiveSafetyMode();
+    st.ceilingDb = pSafetyCeil_->load();
+    st.latencySamples = st.running == dsp::OutputSafety::TruePeak ? engine_.safetyTruePeakLatency() : 0;
+    st.zeroFallback = st.requested == dsp::OutputSafety::TruePeak && st.running != st.requested;
+    st.riskyWhileOff = st.requested == dsp::OutputSafety::Off && chainIsRisky();
+    const juce::String ceil = juce::String(st.ceilingDb, 1) + " dB";
+    switch (st.running) {
+        case dsp::OutputSafety::Off: st.headline = "Safety off"; break;
+        case dsp::OutputSafety::Guard: st.headline = "Guard " + ceil; break;
+        default: st.headline = "True Peak " + ceil + "TP"; break;
+    }
+    juce::String d;
+    d << "Output Safety, the last stage after every effect and the output gain.\n";
+    d << "Off: no limiting (internal fault guards stay on).\n";
+    d << "Guard: zero latency; no sample leaves above the ceiling. It cannot see inter-sample peaks, so it is not true-peak protection.\n";
+    d << "True Peak: 1.5 ms lookahead with a 4x oversampled peak estimate; adds latency (reported to the host).\n";
+    if (st.zeroFallback) d << "\nTrue Peak needs lookahead, which Zero Latency mode forbids: Guard is running instead.";
+    if (st.riskyWhileOff) d << "\nWarning: safety is off while this chain uses high feedback or drive. Keep your monitor level low.";
+    d << "\n\nNo plug-in can guarantee speaker or hearing safety: interface, amplifier and monitor gain are outside IH1.";
+    st.detail = d;
+    return st;
+}
+
+void Processor::uiSetSafetyMode(int mode) {
+    auto* p = apvts_.getParameter("safety_mode");
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(juce::jlimit(0, 2, mode))));
+    p->endChangeGesture();
+    const juce::ScopedLock sl(lock_);
+    afterModelChange();
+}
+
+void Processor::uiSetSafetyCeiling(float db) {
+    auto* p = apvts_.getParameter("safety_ceiling");
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(juce::jlimit(-24.0f, 0.0f, db)));
+    p->endChangeGesture();
+    revision_.fetch_add(1);
+}
+
+void Processor::applyRecallHostState() {
+    // V3 Phase 1 / 10: a recall lands on None. SOLO / MUTE (host parameters) go off, the eight staged-control
+    // parameters re-sync to "nothing staged", and the host is told that a program changed.
+    apvts_.getParameter("solo")->setValueNotifyingHost(0.0f);
+    apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
+    lastSolo_ = lastMute_ = false;
+    syncMacrosFromDraft();
+    updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withProgramChanged(true).withParameterInfoChanged(false));
+}
+
+void Processor::resetGlobalsToNeutral() {
+    for (const char* id : {"in_gain", "out_gain", "mix", "safety_mode", "safety_ceiling", "bypass"}) {
+        auto* p = apvts_.getParameter(id);
+        p->setValueNotifyingHost(p->getDefaultValue());
+    }
 }
 
 void Processor::pullHostParams(bool enforceExclusive) {
@@ -341,7 +442,7 @@ void Processor::timerCallback() {
     const juce::ScopedLock sl(lock_);
     session_->service();
     pullHostParams(true);
-    afterModelChange();
+    afterModelChange();  // also picks up a host-automated Output Safety mode (latency re-reported here, never from processBlock)
 }
 
 // ---- state ------------------------------------------------------------------------------------
@@ -401,9 +502,10 @@ void Processor::setStateInformation(const void* data, int size) {
         const int w = static_cast<int>(ed.get("w").asNumber(0)), h = static_cast<int>(ed.get("h").asNumber(0));
         if (w >= 600 && w <= 8000 && h >= 400 && h <= 8000) { editorW_.store(w); editorH_.store(h); }
     }
+    // V3 Phase 1: the restored state is auditioned with nothing staged (None)
+    applyRecallHostState();
     for (int k = 0; k < kNumMacros; ++k) lastMacro_[static_cast<size_t>(k)] = macros_[static_cast<size_t>(k)]->getValue();
-    lastSolo_ = pSolo_->load() > 0.5f;
-    lastMute_ = pMute_->load() > 0.5f;
+    lastSolo_ = lastMute_ = false;
     afterModelChange();
 }
 
@@ -482,12 +584,26 @@ bool Processor::applyPresetJson(const std::string& text, const juce::String& key
         presetKey_ = key;
         presetName_ = name;
         presetSig_ = chainSignature();
+        applyRecallHostState();
     }
     afterModelChange();
     return ok;
 }
 
 bool Processor::loadPresetKey(const juce::String& key, juce::String& message) {
+    if (key == "f:" + juce::String(kInitPresetId)) {
+        // Init (V3 Phase 7.1): the explicit clean state, not a preset with a bypassed module
+        const juce::ScopedLock sl(lock_);
+        session_->initialise();
+        resetGlobalsToNeutral();
+        presetKey_ = key;
+        presetName_ = "Init";
+        presetSig_ = chainSignature();
+        applyRecallHostState();
+        afterModelChange();
+        message.clear();
+        return true;
+    }
     if (key.startsWith("f:")) {
         const int i = factoryPresetIndex(key.substring(2).toStdString());
         if (i < 0) { message = "Unknown factory preset."; return false; }

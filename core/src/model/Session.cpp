@@ -260,6 +260,18 @@ void Session::clearChain() {
     collectGarbage();
 }
 
+void Session::initialise() {
+    chain_.clear();
+    selected_ = kNone;
+    staged_ = nullptr;
+    solo_ = mute_ = false;
+    const auto& reg = fxRegistry();
+    for (size_t t = 0; t < reg.size(); ++t) drafts_[t] = reg[t].defaults();
+    syncRouting();
+    rebuild(false);
+    collectGarbage();
+}
+
 void Session::setSolo(bool on) {
     if (on && !staged_) on = false;  // nothing to audition
     solo_ = on;
@@ -435,19 +447,15 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
         FxProcessor* p = adopt(makeProcessor(ni.type, ni.v));
         chain_.emplace_back(id, ni.type, ni.v, seed, p);
     }
-    if (includeSession) {
-        drafts_ = newDrafts;
-        selected_ = newSelected;
-        if (selected_ >= 0) staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
-        solo_ = staged_ ? newSolo : false;
-        mute_ = staged_ ? newMute : false;
-    } else {
-        // loading a user preset replaces the committed chain; the staged draft stays staged
-        if (selected_ >= 0) staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
-    }
+    // V3 Phase 1: a recall always lands on None. The old staged processor is retired with the old program (crossfaded
+    // out by the engine's program hand-over), so the recalled chain is heard alone. Drafts are a separate cache.
+    (void)newSelected; (void)newSolo; (void)newMute;
+    if (includeSession) drafts_ = newDrafts;
+    selected_ = kNone;
+    staged_ = nullptr;
+    solo_ = mute_ = false;
     syncRouting();
     rebuild(false);
-    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
     collectGarbage();
     if (error) *error = warnings;
     return true;

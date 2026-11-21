@@ -124,8 +124,10 @@ int main() {
             total += n;
             cats += n > 0;
         }
-        check(menu.itemCount() == cats && total == static_cast<int>(fxCarouselOrder().size()),
-              "the list shows " + String(menu.itemCount()) + " categories holding all " + String(total) + " effects");
+        // V3 Phase 2: "None" is the first row, above the categories
+        check(menu.itemCount() == cats + 1 && total == static_cast<int>(fxCarouselOrder().size()),
+              "the list shows None + " + String(menu.itemCount() - 1) + " categories holding all " + String(total) + " effects");
+        check(menu.indexOfText("None") == 0, "None is the first row of the right-click list");
     }
     check(selected(*proc) == -1, "opening the list stages nothing");
     d.key(KeyPress(KeyPress::escapeKey));
@@ -156,6 +158,29 @@ int main() {
     check(selected(*proc) == reverb, "choosing Reverb stages Reverb");
     check(chainSize(*proc) == 0, "...and never commits");
     check(ed->settings().isVisible(), "the settings panel appears once an effect is staged");
+    // V3 Phase 2: choosing None from the right-click list un-stages through the same path as the wheel's None
+    {
+        proc->uiSetParam(fxRegistry()[static_cast<size_t>(reverb)].paramIndex("decay"), 7.5f);
+        d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
+        d.click(menu.rowBounds(menu.indexOfText("None")).getCentre().toFloat());
+        pump(150);
+        check(selected(*proc) == -1 && car.selected() == -1, "choosing None un-stages the effect (carousel reads None)");
+        check(!ed->settings().isVisible(), "...and hides the settings panel");
+        float decay;
+        {
+            const ScopedLock sl(proc->sessionLock());
+            decay = proc->session().draft(reverb)[static_cast<size_t>(fxRegistry()[static_cast<size_t>(reverb)].paramIndex("decay"))];
+        }
+        check(std::abs(decay - 7.5f) < 1e-3f, "...and keeps Reverb's cached draft");
+        for (int k = 0; k < 6; ++k) {  // rapid repeated None / Reverb selection through the menu
+            d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
+            d.click(menu.rowBounds(menu.indexOfText("None")).getCentre().toFloat());
+            pump(20);
+        }
+        check(selected(*proc) == -1 && !menu.isOpen(), "rapid None selections stay on None and close the list");
+        proc->uiSelect(reverb);
+        pump(150);
+    }
     // resting on another category switches the submenu (hover intent)
     {
         d.clickOn(car, rc, ModifierKeys::rightButtonModifier);
@@ -413,6 +438,57 @@ int main() {
         }
         check(wrong == 0, "preset arrows: 120 rapid clicks (incl. double-clicks, zone edges) -> " + String(120 - wrong) + " exact single steps" + (log.isEmpty() ? String() : " mismatches " + log));
         check(bar.steps() >= 120, "every press was handled (" + String(bar.steps()) + ")");
+    }
+
+    // ---- V3 Phase 1: every preset route lands the wheel on None; the stage is never left audible ----
+    {
+        String msg;
+        auto& bar = ed->presetBar();
+        const int sat = fxTypeIndex("saturation");
+        const int driveIdx = fxRegistry()[static_cast<size_t>(sat)].paramIndex("drive");
+        int okArrow = 0, okLoad = 0;
+        for (int k = 0; k < 10; ++k) {
+            proc->uiSelect(k % 2 ? sat : delay);
+            if (k % 2) proc->uiSetParam(driveIdx, 21.0f);
+            proc->uiSetSolo(k % 3 == 0);
+            pump(40);
+            const auto zone = bar.nextArea();
+            const auto pp = d.toPeer(bar, zone.getCentre());
+            d.t += 400;
+            d.press(pp);
+            d.release(pp);
+            pump(60);
+            okArrow += selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible() &&
+                       proc->params().getRawParameterValue("solo")->load() < 0.5f;
+        }
+        check(okArrow == 10, "preset arrow with an FX staged (and SOLO on): wheel None, settings hidden, SOLO off (" + String(okArrow) + "/10)");
+        for (int k = 0; k < 5; ++k) {
+            proc->uiSelect(sat);
+            pump(20);
+            proc->loadPresetKey(proc->presetList()[static_cast<size_t>(3 + k * 5)].key, msg);  // the browser's load path
+            pump(40);
+            okLoad += selected(*proc) == -1 && car.selected() == -1;
+        }
+        check(okLoad == 5, "loading from the browser path lands on None (" + String(okLoad) + "/5)");
+        float drive;
+        {
+            const ScopedLock sl(proc->sessionLock());
+            drive = proc->session().draft(sat)[static_cast<size_t>(driveIdx)];
+        }
+        check(std::abs(drive - 21.0f) < 1e-3f, "the staged Saturation draft is still cached after preset changes");
+        // Init: completely empty, None, drafts reset, globals neutral
+        proc->uiSelect(sat);
+        proc->params().getParameter("out_gain")->setValueNotifyingHost(0.9f);
+        check(proc->loadPresetKey("f:init", msg), "Init loads");
+        pump(60);
+        {
+            const ScopedLock sl(proc->sessionLock());
+            drive = proc->session().draft(sat)[static_cast<size_t>(driveIdx)];
+        }
+        check(chainSize(*proc) == 0 && selected(*proc) == -1 && car.selected() == -1, "Init: empty chain and None");
+        check(std::abs(drive - fxRegistry()[static_cast<size_t>(sat)].params[static_cast<size_t>(driveIdx)].defaultValue) < 1e-4f, "Init: drafts back to defaults");
+        check(std::abs(proc->params().getRawParameterValue("out_gain")->load()) < 1e-4f, "Init: output gain back to 0 dB");
+        check(proc->presetList().front().key == "f:init", "Init is pinned first in the preset list");
     }
 
     // ---- V2.1 Phase 15: discreet Clear FX Chain with confirmation ----

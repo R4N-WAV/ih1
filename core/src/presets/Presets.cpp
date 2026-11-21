@@ -12,7 +12,7 @@ namespace ih1 {
 
 const std::vector<std::string>& presetCategories() {
     // V2.1 categories (feedback 7). The last one, "User", holds user presets.
-    static const std::vector<std::string> c = {"Essentials", "Granular Motion", "Stretch & Smear", "Glitch & Rhythm", "Vocal Transformations",
+    static const std::vector<std::string> c = {"Init / Utility", "Essentials", "Granular Motion", "Stretch & Smear", "Glitch & Rhythm", "Vocal Transformations",
                                                "Atmospheres", "Harmonic & Tonal", "Movement & Width", "Character & Dirt", "Experimental", "User"};
     return c;
 }
@@ -29,6 +29,8 @@ std::vector<FactoryPreset> build() {
     auto addT = [&](const char* id, const char* name, const char* cat, const char* tags, const char* desc, std::vector<PresetFx> chain) {
         v.push_back({id, name, cat, desc, 1, std::move(chain), tags});
     };
+
+    addT(kInitPresetId, "Init", "Init / Utility", "any source", "The clean starting state: no committed FX, nothing staged, every setting at its default.", {});
 
     // ------------------------------------------------------------------ Atmospheres
     add("atm.slow_horizon", "Slow Horizon", "Atmospheres", "A vast, darkened cathedral that blooms slowly behind the source and opens wide.",
@@ -350,7 +352,7 @@ int factoryPresetIndex(const std::string& id) {
 bool validatePreset(const FactoryPreset& p, std::string* error) {
     auto fail = [&](const std::string& m) { if (error) *error = p.id + ": " + m; return false; };
     if (p.id.empty() || p.name.empty() || p.category.empty()) return fail("missing metadata");
-    if (p.chain.empty()) return fail("empty chain");
+    if (p.chain.empty() && p.id != kInitPresetId) return fail("empty chain");
     if (static_cast<int>(p.chain.size()) > kMaxChain) return fail("chain too long");
     for (const auto& fx : p.chain) {
         const int t = fxTypeIndex(fx.type);

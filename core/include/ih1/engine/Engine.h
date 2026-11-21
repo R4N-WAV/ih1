@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "ih1/dsp/OutputSafety.h"
 #include "ih1/engine/Spsc.h"
 #include "ih1/fx/FxProcessor.h"
 
@@ -36,6 +37,11 @@ struct Telemetry {
     std::array<std::atomic<uint64_t>, kMaxChain> slotIds{};
     std::atomic<int> chainSize{0};
     std::atomic<float> soloAmount{0}, muteAmount{0};      // current ramp positions (0..1)
+    // Output Safety (V3 Phase 8.5)
+    std::atomic<float> preSafetyPeak{0};                  // sample peak entering the safety stage (linear)
+    std::atomic<float> safetyGainReduction{0};            // dB (>= 0) of the deepest reduction in the last block
+    std::atomic<int> safetyMode{1};                       // mode actually running (OutputSafety::Mode)
+    std::atomic<uint32_t> faults{0};                      // non-finite samples caught by the internal guards
 };
 
 class Engine {
@@ -63,6 +69,10 @@ public:
     void setInputGainDb(float db) { inGainDb_.store(db); }
     void setOutputGainDb(float db) { outGainDb_.store(db); }
     void setMix(float m01) { mix_.store(m01); }
+    // Output Safety: mode (OutputSafety::Mode) and ceiling. The caller resolves Zero-latency sessions to Guard.
+    void setSafety(int mode, float ceilingDb) { safetyMode_.store(mode); safetyCeil_.store(ceilingDb); }
+    // Latency the TruePeak safety mode adds at the prepared rate (for host reporting on the message thread).
+    int safetyTruePeakLatency() const { return safety_.truePeakLatency(); }
     Telemetry& telemetry() { return tele_; }
     int activeLatency() const { return activeLatency_.load(); }
 
@@ -76,6 +86,7 @@ private:
     void beginTransitionIfPending();
     void installNow(Program* p);
     void applyStagedParamsIfChanged();
+    void markFresh(const Program* old, const Program* p);
 
     enum class Transition { None, OutputFadeOut, OutputFadeIn, StagedFadeOut, StagedFadeIn };
 
@@ -95,6 +106,13 @@ private:
 
     std::atomic<bool> solo_{false}, mute_{false}, bypass_{false};
     std::atomic<float> inGainDb_{0}, outGainDb_{0}, mix_{1};
+    std::atomic<int> safetyMode_{dsp::OutputSafety::Guard};
+    std::atomic<float> safetyCeil_{0.0f};
+    dsp::OutputSafety safety_;
+    // De-click for freshly built processors (V3 Phase 8.2): a new processor's delay lines, latency buffers and
+    // envelopes are empty, so its first delayed copy would start mid-waveform. Its input is faded in instead.
+    std::array<float, kMaxChain> slotInRamp_{};
+    float stagedInRamp_ = 1.0f;
 
     // ramps (per-sample linear)
     float soloAmt_ = 0, muteAmt_ = 0, bypassAmt_ = 0, transGain_ = 1, stagedFade_ = 1;

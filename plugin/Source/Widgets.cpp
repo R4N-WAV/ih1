@@ -219,6 +219,10 @@ void MenuOverlay::paintLevel(juce::Graphics& g, const Level& L, bool isRoot) con
             g.drawText(it.text.toUpperCase(), r.withTrimmedLeft(12).withTrimmedTop(6), juce::Justification::centredLeft);
             continue;
         }
+        if (it.divider) {
+            g.setColour(Colours::border.withAlpha(0.55f));
+            g.fillRect(r.getX() + 12, r.getBottom() - 1, r.getWidth() - 24, 1);
+        }
         const bool parentOpen = isRoot && sub_.open && i == subParent_;
         const bool hot = i == L.hot || parentOpen;
         if (hot && it.enabled) {

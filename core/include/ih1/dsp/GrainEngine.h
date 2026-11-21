@@ -112,7 +112,12 @@ private:
         int win = 0;
         int chan = -1;      // -1 = stereo (linked), 0/1 = single channel (independent streams)
         uint32_t order = 0; // spawn order (for alignment: the most recent grain)
+        int fade = 0;       // > 0: forced fade-out in progress (samples left), see kGuardFade
     };
+    // V3 click guard: a grain whose read position would leave the valid capture region within kGuardFade samples
+    // (the write head stopped by Freeze/Loop under a fast grain, or new writes overwriting the oldest audio after an
+    // un-freeze) is faded out over exactly that many samples, so it never reads across the ring seam.
+    static constexpr int kGuardFade = 128;
 
     float readCh(int c, double pos) const;   // 4-point Hermite
     float readMono(double pos) const { return 0.5f * (readCh(0, pos) + readCh(1, pos)); }
@@ -134,6 +139,7 @@ private:
     double loopStart_ = 0.0, loopLen_ = 0.0;
     int lastMode_ = -1;
     bool lastFreeze_ = false;
+    bool holding_ = false;   // capture is held this block (Freeze or a latched Loop): the write head does not move
     bool latched_ = false;   // Loop / Freeze: armed until enough real signal has been captured
     int64_t heard_ = 0;      // non-silent samples captured (since reset)
     double retrigCount_ = 0.0;

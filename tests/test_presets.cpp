@@ -37,10 +37,10 @@ TEST_CASE("factory library: at least 50 distinct presets across the categories, 
             sig += "}>";
         }
         CHECK_MESSAGE(chains.insert(sig).second, p.id << " repeats another preset's chain " << sig);
-        CHECK_MESSAGE(p.chain.size() >= 2, p.id << " should combine effects");
+        if (p.id != kInitPresetId) CHECK_MESSAGE(p.chain.size() >= 2, p.id << " should combine effects");
     }
     for (const auto& c : presetCategories())
-        if (c != "User") CHECK_MESSAGE(perCat[c] >= 3, c << " has only " << perCat[c]);
+        if (c != "User") CHECK_MESSAGE(perCat[c] >= (c == "Init / Utility" ? 1 : 3), c << " has only " << perCat[c]);
     // presets are listed grouped by category, in category order (the browser and prev/next rely on it)
     int lastCat = -1;
     for (const auto& p : all) {
@@ -79,7 +79,7 @@ TEST_CASE("every factory preset loads as one atomic chain with exact order and v
         REQUIRE_MESSAGE(session.fromJson(presetToJson(p), false, &err), p.id << ": " << err);
         CHECK_MESSAGE(err.empty(), p.id << " warnings: " << err);
         REQUIRE(session.chain().size() == p.chain.size());
-        CHECK(session.selected() == fxTypeIndex("delay"));  // staged draft untouched
+        CHECK(session.selected() == Session::kNone);  // V3: the preset is auditioned alone (staged -> None)
         for (size_t i = 0; i < p.chain.size(); ++i) {
             const auto& ci = session.chain()[i];
             CHECK(ci.descriptor().typeId == p.chain[i].type);

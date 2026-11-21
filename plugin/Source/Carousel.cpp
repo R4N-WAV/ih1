@@ -163,6 +163,16 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
     // V2.1: categories (data-driven from the registry) each open a submenu of their effects, every name in its
     // family colour; choosing stages the effect (never commits). The mouse wheel / arrow carousel is unchanged.
     std::vector<MenuItem> items;
+    // V3 Phase 2: a permanent "None" at the top. It uses the same path as the wheel's None (onSelect(-1)): no staged
+    // audition, the settings panel hides, every per-effect draft stays cached until RESET.
+    {
+        MenuItem none;
+        none.id = kNoneMenuId;
+        none.text = "None";
+        none.ticked = selected_ < 0;
+        none.divider = true;
+        items.push_back(std::move(none));
+    }
     const auto& reg = fxRegistry();
     for (int cat = 0; cat < kNumCategories; ++cat) {
         MenuItem parent;
@@ -189,7 +199,8 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
     o.maxVisibleRows = 22;
     o.rowHeight = 25;
     ov->open(std::move(items), o, [safe = juce::Component::SafePointer<Carousel>(this)](int id) {
-        if (safe != nullptr && id > 0 && safe->onSelect) safe->onSelect(id - 1);
+        if (safe == nullptr || id <= 0 || !safe->onSelect) return;
+        safe->onSelect(id == kNoneMenuId ? -1 : id - 1);
     }, this);
 }
 

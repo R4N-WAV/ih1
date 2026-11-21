@@ -422,7 +422,8 @@ TEST_CASE("clear chain: removes every committed FX (incl. duplicates), keeps the
     // a preset can load straight after a clear
     REQUIRE(s.fromJson(R"({"format":"ih1-state","version":1,"chain":[{"type":"reverb"},{"type":"delay"}]})", false));
     CHECK(s.chain().size() == 2);
-    CHECK(s.selected() == typeOf("granular"));
+    CHECK(s.selected() == Session::kNone);  // V3 Phase 1: a preset recall lands on None ...
+    CHECK(s.draft(typeOf("granular"))[0] == doctest::Approx(200.0f));  // ... and keeps the draft cached
 }
 
 // =============================================================================================== DSP quality

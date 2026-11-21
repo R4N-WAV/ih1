@@ -587,8 +587,10 @@ void FormationView::layoutStrip() {
     const float y = strip_.getY() + 12.0f;
     // right end of the strip: the discreet chain utility (···) and a quiet latency status
     chainMenu_ = {static_cast<float>(getWidth()) - pad - 26.0f, y, 26.0f, 22.0f};
+    // V3: compact output meter (peak + Output Safety gain reduction) just left of the chain utility
+    meter_ = {chainMenu_.getX() - 10.0f - 54.0f, y + 6.0f, 54.0f, 10.0f};
     const float statusW = std::min(330.0f, std::max(0.0f, static_cast<float>(getWidth()) * 0.34f));
-    status_ = {chainMenu_.getX() - 8.0f - statusW, y, statusW, 22.0f};
+    status_ = {meter_.getX() - 12.0f - statusW, y, statusW, 22.0f};
     const float maxX = status_.getX() - pad;
     bool overflow = false;
     for (auto& it : items_) {
@@ -605,7 +607,18 @@ void FormationView::timerCallback() {
         seenRevision_ = proc_.revision();
         syncChain();
         latency_ = proc_.latencyStatus();
+        safety_ = proc_.safetyStatus();
+        if (safety_.riskyWhileOff && !riskWarned_) showToast("Output Safety is off and this chain uses high feedback or drive. Keep monitors low.");
+        riskWarned_ = safety_.riskyWhileOff;
         repaint();
+    }
+    {
+        // meter: instant attack, ~300 ms decay (UI only, read from telemetry atomics)
+        auto& t = proc_.telemetry();
+        const float pk = t.outPeak.load(std::memory_order_relaxed), gr = t.safetyGainReduction.load(std::memory_order_relaxed);
+        meterPeak_ = pk > meterPeak_ ? pk : meterPeak_ * 0.86f;
+        meterGr_ = gr > meterGr_ ? gr : meterGr_ * 0.80f;
+        repaint(meter_.expanded(2.0f).toNearestInt());
     }
     if (software_ && cpuForm_ && getWidth() > 0) { renderSoftware(); repaint(artworkArea()); }
     const double age = juce::Time::getMillisecondCounterHiRes() - toastMs_;
@@ -696,6 +709,28 @@ void FormationView::paint(juce::Graphics& g) {
         g.setColour(open ? Colours::accent : (hot ? Colours::textDim : Colours::textFaint));
         const float cy = chainMenu_.getCentreY();
         for (int k = -1; k <= 1; ++k) g.fillEllipse(chainMenu_.getCentreX() + 6.0f * static_cast<float>(k) - 1.5f, cy - 1.5f, 3.0f, 3.0f);
+    }
+    // output meter: a hairline track, the peak (dBFS, -48..+6) and the safety gain reduction drawn from the right
+    {
+        const auto m = meter_;
+        g.setColour(Colours::border.withAlpha(0.6f));
+        g.fillRect(m.withHeight(1.0f).withY(m.getCentreY()));
+        const float db = meterPeak_ > 1e-6f ? 20.0f * std::log10(meterPeak_) : -96.0f;
+        const float x = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 54.0f);
+        const float zero = 48.0f / 54.0f;
+        g.setColour((db > 0.0f ? Colours::accent2 : Colours::textDim).withAlpha(0.85f));  // red stays reserved for destructive actions
+        g.fillRect(m.withWidth(m.getWidth() * x).withHeight(3.0f).withY(m.getCentreY() - 1.0f));
+        g.setColour(Colours::textFaint);
+        g.fillRect(m.getX() + m.getWidth() * zero, m.getY() + 1.0f, 1.0f, m.getHeight() - 2.0f);  // 0 dBFS tick
+        if (meterGr_ > 0.05f) {
+            const float w = juce::jlimit(0.0f, 1.0f, meterGr_ / 12.0f) * m.getWidth();
+            g.setColour(Colours::accent.withAlpha(0.9f));
+            g.fillRect(juce::Rectangle<float>(m.getRight() - w, m.getBottom() - 2.0f, w, 2.0f));
+        }
+        if (safety_.requested == 0) {  // safety off: a small hollow marker so it is never silently off
+            g.setColour(Colours::textDim);
+            g.drawRect(juce::Rectangle<float>(m.getX() - 7.0f, m.getCentreY() - 2.5f, 5.0f, 5.0f), 1.0f);
+        }
     }
     // quiet latency status (names the effect that prevents strict zero latency)
     const double age = juce::Time::getMillisecondCounterHiRes() - toastMs_;
@@ -868,6 +903,36 @@ void FormationView::showChainMenu() {
         it.ticked = mode == modes[i];
         items.push_back(it);
     }
+    // V3 Phase 8.5: Output Safety
+    const auto ss = proc_.safetyStatus();
+    MenuItem hs;
+    hs.header = true;
+    hs.text = "Output Safety";
+    items.push_back(hs);
+    const char* sNames[3] = {"Off", "Guard", "True Peak"};
+    const char* sHints[3] = {"no limiting", "0 latency, sample peak", ss.zeroFallback ? "needs lookahead" : "1.5 ms lookahead"};
+    for (int i = 0; i < 3; ++i) {
+        MenuItem it;
+        it.id = 20 + i;
+        it.text = sNames[i];
+        it.hint = sHints[i];
+        it.ticked = ss.requested == i;
+        items.push_back(it);
+    }
+    {
+        MenuItem ceil;
+        ceil.text = "Ceiling";
+        ceil.hint = juce::String(ss.ceilingDb, 1) + " dB";
+        const float opts[6] = {0.0f, -0.3f, -0.5f, -1.0f, -3.0f, -6.0f};
+        for (int i = 0; i < 6; ++i) {
+            MenuItem c;
+            c.id = 30 + i;
+            c.text = juce::String(opts[i], 1) + " dB";
+            c.ticked = std::fabs(ss.ceilingDb - opts[i]) < 0.05f;
+            ceil.sub.push_back(c);
+        }
+        items.push_back(ceil);
+    }
     MenuItem h2;
     h2.header = true;
     h2.text = "Chain";
@@ -888,6 +953,16 @@ void FormationView::showChainMenu() {
             safe->refreshLatencyStatus();
         } else if (id == 10) {
             safe->openClearConfirm();
+        } else if (id >= 20 && id <= 22) {
+            safe->proc_.uiSetSafetyMode(id - 20);
+            safe->safety_ = safe->proc_.safetyStatus();
+            safe->refreshLatencyStatus();
+            if (safe->safety_.zeroFallback) safe->showToast("True Peak needs lookahead; Zero Latency runs Guard instead");
+        } else if (id >= 30 && id <= 35) {
+            const float opts[6] = {0.0f, -0.3f, -0.5f, -1.0f, -3.0f, -6.0f};
+            safe->proc_.uiSetSafetyCeiling(opts[id - 30]);
+            safe->safety_ = safe->proc_.safetyStatus();
+            safe->repaint();
         }
     }, this);
 }
@@ -935,8 +1010,12 @@ juce::String FormationView::describe(uint64_t id) {
 juce::String FormationView::getTooltip() {
     if (dragging_ || confirm_) return {};
     const auto m = getMouseXYRelative().toFloat();
-    if (chainMenu_.expanded(6.0f, 8.0f).contains(m)) return "Chain options: latency mode, and Clear FX Chain (asks first).";
+    if (chainMenu_.expanded(6.0f, 8.0f).contains(m)) return "Chain options: latency mode, Output Safety, and Clear FX Chain (asks first).";
     if (status_.contains(m)) return latency_.detail;
+    if (meter_.expanded(8.0f, 8.0f).contains(m)) {
+        const float db = meterPeak_ > 1e-6f ? 20.0f * std::log10(meterPeak_) : -96.0f;
+        return "Output peak " + juce::String(db, 1) + " dBFS, safety reduction " + juce::String(meterGr_, 1) + " dB. " + safety_.headline + ".\n\n" + safety_.detail;
+    }
     const int i = hitItem(getMouseXYRelative().toFloat());
     return i >= 0 ? describe(items_[static_cast<size_t>(i)].id) : juce::String();
 }

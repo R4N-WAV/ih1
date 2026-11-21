@@ -28,6 +28,7 @@ struct MenuItem {
     bool enabled = true;
     bool ticked = false;      // current value
     juce::String hint;        // small right-aligned detail text
+    bool divider = false;     // faint hairline under this row (V3: separates "None" from the categories)
     std::vector<MenuItem> sub;  // non-empty: this row opens a nested submenu (one level deep)
 };
 
