@@ -599,7 +599,7 @@ void Formation::update(const FrameInput& in) {
     for (size_t i = 0; i < order_.size(); ++i) {
         Inst& c = insts_[order_[i]];
         const float frac = smooth01(c.grow);
-        if (frac > 0.0f) {
+        if (frac > 0.0f && traceStrands_) {
             const int count = std::min(perNode, static_cast<int>(c.strands.size()));
             for (int k = 0; k < count; ++k) {
                 emitStrand(c, static_cast<int>(i), k, frac, dt);
@@ -627,7 +627,81 @@ void Formation::update(const FrameInput& in) {
     }
     // dying instances (deleted / cleared) fade out without ghosts: their strands are simply not drawn once
     // they leave the chain, and the record is erased when the fade completes.
+    buildScene();
     first_ = false;
+}
+
+void Formation::buildScene() {
+    FieldScene& S = scene_;
+    S.nodes.clear();
+    S.links.clear();
+    S.packets.clear();
+    auto frame = [](const V3& a, float* u, float* v) {
+        const V3 ref = std::fabs(a.y) < 0.9f ? V3{0, 1, 0} : V3{1, 0, 0};
+        const V3 uu = norm(cross(a, ref)), vv = norm(cross(a, uu));
+        u[0] = uu.x; u[1] = uu.y; u[2] = uu.z;
+        v[0] = vv.x; v[1] = vv.y; v[2] = vv.z;
+    };
+    const float infl = 0.75f + 0.35f * extent_;
+    for (size_t i = 0; i < order_.size() && S.nodes.size() < static_cast<size_t>(kMaxFieldNodes); ++i) {
+        const Inst& c = insts_[order_[i]];
+        FieldNode n;
+        n.p[0] = c.anchor.x; n.p[1] = c.anchor.y; n.p[2] = c.anchor.z;
+        n.axis[0] = c.axis.x; n.axis[1] = c.axis.y; n.axis[2] = c.axis.z;
+        frame(c.axis, n.u, n.v);
+        const Rgb col = shade(c.colour);
+        n.col[0] = col.r; n.col[1] = col.g; n.col[2] = col.b;
+        // only an integrated instance has a field (V3 Phase 3: nothing before its transfer completes)
+        n.strength = c.life == Life::Integrated ? c.presence * (0.8f + 0.5f * c.bright) : 0.0f;
+        n.radius = 0.16f + 0.05f * c.bright;
+        n.influence = infl;
+        n.seed = static_cast<float>(c.seed % 9973u) / 9973.0f;
+        S.nodes.push_back(n);
+    }
+    for (size_t i = 0; i + 1 < S.nodes.size() && S.links.size() < static_cast<size_t>(kMaxFieldLinks); ++i) {
+        const Inst& c = insts_[order_[i]];
+        const Inst& d = insts_[order_[i + 1]];
+        FieldLink l;
+        l.a = static_cast<int>(i);
+        l.b = static_cast<int>(i + 1);
+        const bool ok = c.life == Life::Integrated && d.life == Life::Integrated;
+        l.strength = ok ? std::min(c.presence, d.presence) * std::min(1.0f, 0.5f + 0.5f * std::min(c.grow, d.grow)) : 0.0f;
+        const V3 ab = norm(sub(d.anchor, c.anchor));
+        frame(ab, l.u, l.v);
+        l.seed = static_cast<float>((c.seed ^ d.seed) % 7919u) / 7919.0f;
+        for (const auto& p : c.pulses)  // the youngest pulse travelling from c to d
+            if (p.age < kPulseTravel) { l.pulse = p.age / kPulseTravel; l.pulseAmp = p.strength; }
+        S.links.push_back(l);
+    }
+    for (const auto& kv : insts_) {
+        const Inst& c = kv.second;
+        if (!c.transfer || S.packets.size() >= static_cast<size_t>(kMaxFieldPackets)) continue;
+        const float tt = c.tTransfer;
+        if (tt > kTransferDur + 0.25f) continue;
+        const float u = easeInOut(std::min(1.0f, tt / kTransferDur));
+        const V3 a = c.origin, b = c.anchor;
+        const V3 ctrl = add(mul(add(a, b), 0.5f), {0.0f, 0.45f, 0.35f});
+        auto bez = [&](float t) { return add(add(mul(a, (1 - t) * (1 - t)), mul(ctrl, 2 * (1 - t) * t)), mul(b, t * t)); };
+        const V3 q = bez(u), q2 = bez(std::min(1.0f, u + 0.02f));
+        const V3 ax = len(sub(q2, q)) > 1e-5f ? norm(sub(q2, q)) : c.axis;
+        FieldPacket pk;
+        pk.p[0] = q.x; pk.p[1] = q.y; pk.p[2] = q.z;
+        pk.axis[0] = ax.x; pk.axis[1] = ax.y; pk.axis[2] = ax.z;
+        frame(ax, pk.u, pk.v);
+        const Rgb col = shade(c.colour);
+        pk.col[0] = col.r; pk.col[1] = col.g; pk.col[2] = col.b;
+        pk.env = smooth01(tt / 0.12f) * (1.0f - smooth01((tt - kTransferDur) / 0.25f));
+        pk.radius = 0.07f + 0.05f * (1.0f - u);
+        pk.seed = static_cast<float>(c.seed % 9973u) / 9973.0f;
+        S.packets.push_back(pk);
+    }
+    S.yaw = yaw_;
+    S.pitch = pitch_;
+    S.aspect = aspect_;
+    S.time = time_;
+    S.energy = energy_;
+    S.high = high_;
+    S.computeBound();
 }
 
 

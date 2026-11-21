@@ -458,8 +458,12 @@ int main() {
             d.press(pp);
             d.release(pp);
             pump(60);
-            okArrow += selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible() &&
-                       proc->params().getRawParameterValue("solo")->load() < 0.5f;
+            const bool okK = selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible() &&
+                             proc->params().getRawParameterValue("solo")->load() < 0.5f;
+            if (!okK)
+                std::printf("   iteration %d: selected %d carousel %d settings %d solo %.1f preset %s\n", k, selected(*proc), car.selected(),
+                            ed->settings().isVisible() ? 1 : 0, proc->params().getRawParameterValue("solo")->load(), proc->currentPresetKey().toRawUTF8());
+            okArrow += okK;
         }
         check(okArrow == 10, "preset arrow with an FX staged (and SOLO on): wheel None, settings hidden, SOLO off (" + String(okArrow) + "/10)");
         for (int k = 0; k < 5; ++k) {

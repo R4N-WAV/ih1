@@ -12,7 +12,14 @@ using namespace juce::gl;
 
 namespace {
 constexpr float kExposure = 2.2f;
-constexpr float kBloomGain = 0.45f;  // V2.1: bloom is a secondary halo; the filament cores carry the image
+constexpr float kBloomGain = 0.10f;  // V3: bloom is only a faint finishing accent; the field volume carries the light
+constexpr float kHistory = 0.35f;    // V3: temporal accumulation weight of the newest ray-marched frame
+// V3: adaptive cost. Level 0 = half resolution, 64 samples ... level 4 = a quarter resolution, 16 samples. The volume
+// pass is timed every 20th frame; a slow pass steps down, a fast one steps back up. The look stays the same, only
+// sampling density changes (bounded GPU cost on weak / software GL, full quality on real GPUs).
+constexpr int kVolLevels = 5;
+constexpr int kVolStepsAt[kVolLevels] = {64, 44, 32, 24, 16};
+constexpr int kVolDivAt[kVolLevels] = {2, 2, 3, 3, 4};
 constexpr int kMaxGlows = 64;
 constexpr double kMaxPixels = 2.4e6;
 constexpr int kMaxSide = 4096;
@@ -43,7 +50,11 @@ void main() {
   vec4 s = texture(uTex, vUv) * w[0];
   for (int i = 1; i < 5; ++i) { s += texture(uTex, vUv + uDir * float(i) * 1.5) * w[i]; s += texture(uTex, vUv - uDir * float(i) * 1.5) * w[i]; }
   o = s; })";
-// The formation-coupled field response: soft Gaussian glows (field coordinates), added into the bloom target.
+// V3: pass-through (temporal accumulation is done with constant-alpha blending)
+const char* kPassFS = R"(#version 150
+uniform sampler2D uTex; in vec2 vUv; out vec4 o;
+void main() { o = vec4(texture(uTex, vUv).rgb, 1.0); })";
+// (V2.1, unused since V3) The formation-coupled field response: soft Gaussian glows, added into the bloom target.
 const char* kGlowFS = R"(#version 150
 uniform vec4 uGlow[64]; uniform vec3 uGlowCol[64]; uniform int uCount; uniform float uAspect; in vec2 vUv; out vec4 o;
 void main() {
@@ -176,22 +187,21 @@ void FormationRenderer::newOpenGLContextCreated() {
         failed_ = true;
         return;
     }
-    lineProg_ = makeProgram(ctx_, kLineVS, kLineFS);
-    decayProg_ = makeProgram(ctx_, kQuadVS, kDecayFS);
+    // V3: the field volume shader (generated from the same model as the CPU reference, core/visual/FieldVolume)
+    volProg_ = makeProgram(ctx_, kQuadVS, visual::fieldFragmentShader().c_str());
+    passProg_ = makeProgram(ctx_, kQuadVS, kPassFS);
     copyProg_ = makeProgram(ctx_, kQuadVS, kCopyFS);
     blurProg_ = makeProgram(ctx_, kQuadVS, kBlurFS);
     compProg_ = makeProgram(ctx_, kQuadVS, kCompFS);
-    glowProg_ = makeProgram(ctx_, kQuadVS, kGlowFS);
-    if (!lineProg_ || !decayProg_ || !copyProg_ || !blurProg_ || !compProg_ || !glowProg_) { failed_ = true; return; }
-    glowPos_.reserve(kMaxGlows * 4);
-    glowCol_.reserve(kMaxGlows * 3);
+    if (!volProg_ || !passProg_ || !copyProg_ || !blurProg_ || !compProg_) { failed_ = true; return; }
+    formation_.setTraceStrands(false);  // the volume needs only the simulation, not the V2.1 strand tracing
+    frame_ = 0;
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &lineVbo_);
     glGenBuffers(1, &quadVbo_);
     const float quad[12] = {-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
     glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
-    verts_.reserve(400000);
     lastMs_ = juce::Time::getMillisecondCounterHiRes();
     wantW_ = wantH_ = 0;
 }
@@ -231,6 +241,7 @@ void FormationRenderer::freeTarget(Target& t) {
 
 void FormationRenderer::freeAll() {
     freeTarget(accum_);
+    freeTarget(volA_);
     freeTarget(bloomA_);
     freeTarget(bloomB_);
 }
@@ -274,8 +285,13 @@ void FormationRenderer::renderOpenGL() {
     if (tw != wantW_ || th != wantH_) { wantW_ = tw; wantH_ = th; sizeChangedMs_ = now; }
     const bool haveTargets = accum_.fbo != 0;
     const bool settled = now - sizeChangedMs_ >= kResizeSettleMs;
-    if (!haveTargets || (settled && (accum_.w != tw || accum_.h != th))) {
-        if (!ensureTarget(accum_, tw, th) || !ensureTarget(bloomA_, std::max(1, tw / 4), std::max(1, th / 4)) ||
+    // V3: the volume is ray-marched at a reduced resolution (vol + history; adaptive), bloom at a quarter
+    const int div = kVolDivAt[std::clamp(volLevel_, 0, kVolLevels - 1)];
+    const int vw = std::max(1, tw / div), vh = std::max(1, th / div);
+    bool fresh = false;
+    if (!haveTargets || (settled && (accum_.w != vw || accum_.h != vh))) {
+        fresh = true;
+        if (!ensureTarget(accum_, vw, vh) || !ensureTarget(volA_, vw, vh) || !ensureTarget(bloomA_, std::max(1, tw / 4), std::max(1, th / 4)) ||
             !ensureTarget(bloomB_, std::max(1, tw / 4), std::max(1, th / 4))) {
             freeAll();
             failed_ = true;  // the editor switches to the software formation; audio is unaffected
@@ -302,48 +318,59 @@ void FormationRenderer::renderOpenGL() {
     if (sim > 12.0) { if (++slowFrames_ > 30 && formation_.quality() != visual::Quality::Low) { formation_.setQuality(visual::Quality::Low); slowFrames_ = 0; } }
     else slowFrames_ = 0;
 
-    // ---- accumulate lines ----
+    // ---- V3: ray-march the field volume (half resolution), then accumulate it temporally ----
     glBindVertexArray(vao_);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, accum_.fbo);
-    glViewport(0, 0, rw, rh);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ZERO, GL_SRC_COLOR);  // multiply: light persistence
-    decayProg_->use();
-    decayProg_->setUniform("uDecay", formation_.decay(in.dt));
-    drawQuad();
-    const auto& segs = formation_.segments();
-    verts_.clear();
-    const float px = 1.0f / static_cast<float>(std::max(1, rh));  // one pixel in field units
-    for (const auto& s : segs) {
-        if (s.r + s.g + s.b <= 0.0f) continue;  // parked strand ends draw nothing
-        verts_.insert(verts_.end(), {s.x0, s.y0, s.r, s.g, s.b, s.x1, s.y1, s.r, s.g, s.b});
-        if (s.w >= 1.5f) {  // near / bright filament: a 2-px core
-            float dx = s.x1 - s.x0, dy = s.y1 - s.y0;
-            const float l = std::sqrt(dx * dx + dy * dy);
-            if (l > 1e-9f) {
-                const float ox = -dy / l * px, oy = dx / l * px;
-                verts_.insert(verts_.end(), {s.x0 + ox, s.y0 + oy, s.r * 0.8f, s.g * 0.8f, s.b * 0.8f, s.x1 + ox, s.y1 + oy, s.r * 0.8f, s.g * 0.8f, s.b * 0.8f});
-            }
-        }
-    }
-    if (!verts_.empty()) {
-        glBlendFunc(GL_ONE, GL_ONE);  // additive light
-        lineProg_->use();
-        lineProg_->setUniform("uAspect", in.aspect);
-        lineProg_->setUniform("uGain", static_cast<float>(std::sqrt(juce::jlimit(0.36, 2.6, 860.0 / rh))));
-        glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts_.size() * sizeof(float)), verts_.data(), GL_STREAM_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), reinterpret_cast<void*>(2 * sizeof(float)));
-        glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(verts_.size() / 5));
-    }
     glDisable(GL_BLEND);
+    {
+        const auto P = visual::packScene(formation_.scene());
+        glBindFramebuffer(GL_FRAMEBUFFER, volA_.fbo);
+        glViewport(0, 0, rw, rh);
+        volProg_->use();
+        const auto pid = volProg_->getProgramID();
+        auto u4 = [pid](const char* name, const float* v, int n) { if (n > 0) glUniform4fv(glGetUniformLocation(pid, name), n, v); };
+        u4("uNodeP", P.nodeP.data(), P.nodes); u4("uNodeA", P.nodeA.data(), P.nodes); u4("uNodeU", P.nodeU.data(), P.nodes);
+        u4("uNodeV", P.nodeV.data(), P.nodes); u4("uNodeC", P.nodeC.data(), P.nodes);
+        u4("uLinkA", P.linkA.data(), P.links); u4("uLinkB", P.linkB.data(), P.links); u4("uLinkU", P.linkU.data(), P.links); u4("uLinkV", P.linkV.data(), P.links);
+        u4("uPackP", P.packP.data(), P.packets); u4("uPackA", P.packA.data(), P.packets); u4("uPackU", P.packU.data(), P.packets);
+        u4("uPackV", P.packV.data(), P.packets); u4("uPackC", P.packC.data(), P.packets);
+        glUniform1i(glGetUniformLocation(pid, "uNodes"), P.nodes);
+        glUniform1i(glGetUniformLocation(pid, "uLinks"), P.links);
+        glUniform1i(glGetUniformLocation(pid, "uPackets"), P.packets);
+        glUniform1i(glGetUniformLocation(pid, "uSteps"), kVolStepsAt[std::clamp(volLevel_, 0, kVolLevels - 1)]);
+        glUniform4fv(glGetUniformLocation(pid, "uCam"), 1, P.cam);
+        glUniform4fv(glGetUniformLocation(pid, "uAudio"), 1, P.audio);
+        glUniform4fv(glGetUniformLocation(pid, "uBound"), 1, P.bound);
+        glUniform2f(glGetUniformLocation(pid, "uRes"), static_cast<float>(rw), static_cast<float>(rh));
+        glUniform1f(glGetUniformLocation(pid, "uFrame"), static_cast<float>(frame_ % 1024));
+        const bool timeIt = (frame_++ % 20) == 0;
+        const double v0 = timeIt ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        drawQuad();
+        if (timeIt) {
+            glFinish();  // only on timed frames: the measurement must include the GPU work
+            const double ms = juce::Time::getMillisecondCounterHiRes() - v0;
+            if (ms > 10.0 && volLevel_ < kVolLevels - 1) ++volLevel_;
+            else if (ms < 3.0 && volLevel_ > 0) --volLevel_;
+            volMs_.store(ms);
+        }
+        // history: accum = mix(accum, vol, kHistory). A fresh target takes the new frame as it is.
+        glBindFramebuffer(GL_FRAMEBUFFER, accum_.fbo);
+        glViewport(0, 0, rw, rh);
+        if (!fresh) {
+            glEnable(GL_BLEND);
+            glBlendColor(0.0f, 0.0f, 0.0f, kHistory);
+            glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
+        }
+        passProg_->use();
+        passProg_->setUniform("uTex", 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, volA_.tex);
+        drawQuad();
+        glDisable(GL_BLEND);
+    }
 
-    // ---- bloom (quarter resolution): the smoky wisps around the strands ----
+    // ---- bloom (quarter resolution): a faint finishing accent only (V3) ----
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomA_.fbo);
     glViewport(0, 0, bloomA_.w, bloomA_.h);
@@ -363,34 +390,6 @@ void FormationRenderer::renderOpenGL() {
         glBindTexture(GL_TEXTURE_2D, bloomB_.tex);
         blurProg_->setUniform("uDir", 0.0f, 1.0f / static_cast<float>(bloomA_.h));
         drawQuad();
-    }
-
-    // ---- the field response in empty space: Gaussian glows added at bloom resolution ----
-    {
-        const auto& gl = formation_.glows();
-        const int n = std::min(kMaxGlows, static_cast<int>(gl.size()));
-        if (n > 0) {
-            glowPos_.clear();
-            glowCol_.clear();
-            for (int i = 0; i < n; ++i) {
-                const auto& g = gl[static_cast<size_t>(i)];
-                glowPos_.insert(glowPos_.end(), {g.x, g.y, g.radius, 0.0f});
-                // the composite multiplies the bloom target by kBloomGain: pre-divide so glows keep their level
-                glowCol_.insert(glowCol_.end(), {g.r / kBloomGain, g.g / kBloomGain, g.b / kBloomGain});
-            }
-            glBindFramebuffer(GL_FRAMEBUFFER, bloomA_.fbo);
-            glViewport(0, 0, bloomA_.w, bloomA_.h);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE);
-            glowProg_->use();
-            const auto pid = glowProg_->getProgramID();
-            glUniform4fv(glGetUniformLocation(pid, "uGlow"), n, glowPos_.data());
-            glUniform3fv(glGetUniformLocation(pid, "uGlowCol"), n, glowCol_.data());
-            glUniform1i(glGetUniformLocation(pid, "uCount"), n);
-            glUniform1f(glGetUniformLocation(pid, "uAspect"), in.aspect);
-            drawQuad();
-            glDisable(GL_BLEND);
-        }
     }
 
     // ---- composite to screen ----
@@ -421,7 +420,7 @@ void FormationRenderer::openGLContextClosing() {
     if (quadVbo_) glDeleteBuffers(1, &quadVbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
     lineVbo_ = quadVbo_ = vao_ = 0;
-    lineProg_.reset(); decayProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset(); glowProg_.reset();
+    volProg_.reset(); passProg_.reset(); copyProg_.reset(); blurProg_.reset(); compProg_.reset();
     wantW_ = wantH_ = 0;
 }
 
@@ -514,7 +513,71 @@ FormationView::FormationView(Processor& p, FormationRenderer& r) : proc_(p), ren
     startTimerHz(30);
 }
 
-FormationView::~FormationView() { stopTimer(); }
+// V3 software volume renderer: simulation + CPU field volume on a background thread (never on the message thread)
+class FormationView::SoftThread final : public juce::Thread {
+public:
+    SoftThread() : juce::Thread("IH1 software formation") { form_.setTraceStrands(false); }
+    ~SoftThread() override { stopThread(3000); }
+    // message thread: post this frame's inputs (dropped if the renderer is still busy with the previous ones)
+    void post(visual::FrameInput in, int w, int h) {
+        {
+            const juce::SpinLock::ScopedLockType sl(lock_);
+            for (auto& t : pendingTransfers_) in.transfers.push_back(t);
+            pendingTransfers_.clear();
+            in_ = std::move(in);
+            w_ = w;
+            h_ = h;
+            has_ = true;
+        }
+        notify();
+    }
+    void addTransfer(visual::TransferRequest t) { const juce::SpinLock::ScopedLockType sl(lock_); pendingTransfers_.push_back(t); }
+    // message thread: take the newest finished frame (linear RGB); false if none since the last call
+    bool take(std::vector<float>& out, int& w, int& h) {
+        const juce::SpinLock::ScopedLockType sl(lock_);
+        if (!ready_) return false;
+        out.swap(done_);
+        w = dw_;
+        h = dh_;
+        ready_ = false;
+        return true;
+    }
+    void run() override {
+        std::vector<float> lin;
+        while (!threadShouldExit()) {
+            visual::FrameInput in;
+            int w = 0, h = 0;
+            bool have;
+            {
+                const juce::SpinLock::ScopedLockType sl(lock_);
+                have = has_;
+                if (have) { in = std::move(in_); w = w_; h = h_; has_ = false; }
+            }
+            if (!have) { wait(50); continue; }
+            form_.update(in);
+            visual::renderVolume(form_.scene(), w, h, lin, 28);
+            const juce::SpinLock::ScopedLockType sl(lock_);
+            done_.swap(lin);
+            dw_ = w;
+            dh_ = h;
+            ready_ = true;
+        }
+    }
+
+private:
+    visual::Formation form_{visual::Quality::Low};
+    juce::SpinLock lock_;
+    visual::FrameInput in_;
+    std::vector<visual::TransferRequest> pendingTransfers_;
+    std::vector<float> done_;
+    int w_ = 0, h_ = 0, dw_ = 0, dh_ = 0;
+    bool has_ = false, ready_ = false;
+};
+
+FormationView::~FormationView() {
+    stopTimer();
+    softThread_.reset();  // joins the render thread before anything it could touch is destroyed
+}
 
 juce::Rectangle<int> FormationView::artworkArea() const { return getLocalBounds().withTrimmedBottom(kStripH); }
 
@@ -522,6 +585,10 @@ void FormationView::setSoftwareFallback(bool on) {
     software_ = on;
     setOpaque(on);
     if (on && !cpuForm_) cpuForm_ = std::make_unique<visual::Formation>(visual::Quality::Low);
+    if (on && !softThread_) {
+        softThread_ = std::make_unique<SoftThread>();
+        softThread_->startThread(juce::Thread::Priority::low);
+    }
     repaint();
 }
 
@@ -530,33 +597,39 @@ void FormationView::requestTransfer(uint64_t id, float originY) {
     // request until its instance arrives, so ordering can never lose the animation
     syncChain();
     seenRevision_ = proc_.revision();
-    if (software_) softTransfers_.push_back({id, originY});
+    if (software_ && softThread_) softThread_->addTransfer({id, originY});
     else renderer_.requestTransfer(id, originY);
 }
 
 void FormationView::renderSoftware() {
+    // V3: the same field volume as the GL path (CPU reference, core/visual/FieldVolume) at a quarter of the artwork's
+    // resolution, rendered on SoftThread. Here (message thread) only the inputs are posted and the newest finished
+    // frame is temporally averaged, tone mapped and blitted; the image is scaled up when painted.
+    if (!softThread_) return;
     const auto art = artworkArea();
-    const int w = std::clamp(art.getWidth() / 2, 1, 1600), h = std::clamp(art.getHeight() / 2, 1, 1000);
-    if (canvas_.width() != w || canvas_.height() != h) { canvas_.resize(w, h); image_ = juce::Image(juce::Image::RGB, w, h, true); }
+    const int w = std::clamp(art.getWidth() / 4, 1, 640), h = std::clamp(art.getHeight() / 4, 1, 400);
     visual::FrameInput in;
     in.chain = chain_;
     fillLevels(proc_, in.chain);
-    in.transfers.swap(softTransfers_);
     in.dt = 1.0f / 30.0f;
     softAnalyser_.update(proc_.telemetry(), in.dt, in.audio);
     in.monochrome = juce::jlimit(0.0f, 1.0f, proc_.telemetry().soloAmount.load(std::memory_order_relaxed));
     in.aspect = static_cast<float>(w) / static_cast<float>(h);
-    cpuForm_->update(in);
-    canvas_.decay(cpuForm_->decay(in.dt));
-    canvas_.draw(cpuForm_->segments(), static_cast<float>(h), std::sqrt(juce::jlimit(0.36f, 2.6f, 860.0f / static_cast<float>(h))));
-    canvas_.composite(rgb_, kExposure, kBloomGain, &cpuForm_->glows(), static_cast<float>(h));
+    softThread_->post(std::move(in), w, h);
+    int fw = 0, fh = 0;
+    if (!softThread_->take(softLin_, fw, fh) || fw <= 0 || fh <= 0 || softLin_.size() != static_cast<size_t>(fw) * static_cast<size_t>(fh) * 3) return;
+    if (image_.getWidth() != fw || image_.getHeight() != fh) { image_ = juce::Image(juce::Image::RGB, fw, fh, true); softHist_.clear(); }
+    if (softHist_.size() != softLin_.size()) softHist_ = softLin_;
+    else for (size_t k = 0; k < softLin_.size(); ++k) softHist_[k] += 0.5f * (softLin_[k] - softHist_[k]);
     juce::Image::BitmapData bd(image_, juce::Image::BitmapData::writeOnly);
-    for (int y = 0; y < h; ++y) {
+    for (int y = 0; y < fh; ++y) {
         auto* line = bd.getLinePointer(y);
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* s = &rgb_[static_cast<size_t>((y * w + x) * 3)];
+        for (int x = 0; x < fw; ++x) {
+            const float* c = &softHist_[static_cast<size_t>((y * fw + x) * 3)];
+            const visual::Rgb o = visual::toneMap({c[0], c[1], c[2]}, kExposure);
             auto* px = reinterpret_cast<juce::PixelRGB*>(line + x * bd.pixelStride);
-            px->setARGB(255, s[0], s[1], s[2]);
+            px->setARGB(255, static_cast<uint8_t>(juce::jlimit(0.0f, 255.0f, o.r * 255.0f + 0.5f)), static_cast<uint8_t>(juce::jlimit(0.0f, 255.0f, o.g * 255.0f + 0.5f)),
+                        static_cast<uint8_t>(juce::jlimit(0.0f, 255.0f, o.b * 255.0f + 0.5f)));
         }
     }
 }

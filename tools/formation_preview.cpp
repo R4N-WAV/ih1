@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ih1/visual/Formation.h"
+#include "ih1/visual/FieldVolume.h"
 #include "ih1/visual/Raster.h"
 
 using namespace ih1::visual;
@@ -34,6 +35,9 @@ int main(int argc, char** argv) {
     const float bloom = std::getenv("IH1_BLOOM") ? static_cast<float>(std::atof(std::getenv("IH1_BLOOM"))) : 0.45f;
     const float mono = std::getenv("IH1_MONO") ? static_cast<float>(std::atof(std::getenv("IH1_MONO"))) : 0.0f;
     const int q = std::getenv("IH1_QUALITY") ? std::atoi(std::getenv("IH1_QUALITY")) : 1;
+    // V3: the field volume is the default; IH1_STRANDS=1 renders the V2.1 strands for comparison
+    const bool volume = !std::getenv("IH1_STRANDS");
+    const int steps = std::getenv("IH1_STEPS") ? std::atoi(std::getenv("IH1_STEPS")) : 64;
 
     bool commitLast = false;
     if (const auto p = spec.find("+commit"); p != std::string::npos) { commitLast = true; spec.erase(p); }
@@ -50,6 +54,7 @@ int main(int argc, char** argv) {
     }
 
     Formation form(static_cast<Quality>(std::clamp(q, 0, 2)));
+    form.setTraceStrands(!volume);
     Canvas canvas(W, H);
     FrameInput in;
     in.aspect = static_cast<float>(W) / static_cast<float>(H);
@@ -86,10 +91,25 @@ int main(int argc, char** argv) {
         const auto t0 = std::chrono::steady_clock::now();
         form.update(in);
         simMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        canvas.decay(form.decay(in.dt));
-        canvas.draw(form.segments(), static_cast<float>(H), std::sqrt(std::clamp(860.0f / static_cast<float>(H), 0.36f, 2.6f)));
+        if (!volume) {
+            canvas.decay(form.decay(in.dt));
+            canvas.draw(form.segments(), static_cast<float>(H), std::sqrt(std::clamp(860.0f / static_cast<float>(H), 0.36f, 2.6f)));
+        }
         if (fr % saveEvery == saveEvery - 1) {
-            canvas.composite(rgb, exposure, bloom, &form.glows(), static_cast<float>(H));
+            if (volume) {
+                // V3: the field volume (the same function the GL shader runs), hue-preserving tone map, no bloom
+                std::vector<float> lin;
+                renderVolume(form.scene(), W, H, lin, steps);
+                rgb.resize(static_cast<size_t>(W) * H * 3);
+                for (size_t k = 0; k < static_cast<size_t>(W) * H; ++k) {
+                    const Rgb o = toneMap({lin[k * 3], lin[k * 3 + 1], lin[k * 3 + 2]}, exposure);
+                    rgb[k * 3] = static_cast<uint8_t>(std::clamp(o.r * 255.0f + 0.5f, 0.0f, 255.0f));
+                    rgb[k * 3 + 1] = static_cast<uint8_t>(std::clamp(o.g * 255.0f + 0.5f, 0.0f, 255.0f));
+                    rgb[k * 3 + 2] = static_cast<uint8_t>(std::clamp(o.b * 255.0f + 0.5f, 0.0f, 255.0f));
+                }
+            } else {
+                canvas.composite(rgb, exposure, bloom, &form.glows(), static_cast<float>(H));
+            }
             char name[64];
             std::snprintf(name, sizeof name, "/f%03d.ppm", saved++);
             if (FILE* f = std::fopen((out + name).c_str(), "wb")) {

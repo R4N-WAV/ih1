@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ih1/engine/Engine.h"
+#include "ih1/visual/FieldVolume.h"
 #include "ih1/visual/Formation.h"
 #include "ih1/visual/Raster.h"
 #include "PluginProcessor.h"
@@ -49,6 +50,8 @@ public:
     void requestTransfer(uint64_t id, float originY);
     bool glFailed() const { return failed_.load(); }
     double lastSimMs() const { return simMs_.load(); }
+    double lastVolumeMs() const { return volMs_.load(); }  // last timed volume pass (GPU), tests / diagnostics
+    int volumeLevel() const { return volLevel_; }
 
     void newOpenGLContextCreated() override;
     void renderOpenGL() override;
@@ -70,11 +73,14 @@ private:
     std::vector<visual::InstanceInput> chain_;
     std::vector<visual::TransferRequest> transfers_;
 
-    std::unique_ptr<juce::OpenGLShaderProgram> lineProg_, decayProg_, copyProg_, blurProg_, compProg_, glowProg_;
+    std::unique_ptr<juce::OpenGLShaderProgram> volProg_, passProg_, copyProg_, blurProg_, compProg_;
     AudioAnalyser analyser_;
     std::vector<float> glowPos_, glowCol_;
     unsigned vao_ = 0, lineVbo_ = 0, quadVbo_ = 0;
-    Target accum_, bloomA_, bloomB_;
+    Target accum_, volA_, bloomA_, bloomB_;  // V3: accum_ = temporal history of the half-resolution volume (volA_)
+    unsigned frame_ = 0;
+    int volLevel_ = 0;              // adaptive volume quality (0 = best)
+    std::atomic<double> volMs_{0.0};
     int wantW_ = 0, wantH_ = 0;
     double sizeChangedMs_ = 0.0;
     std::vector<float> verts_;
@@ -159,6 +165,10 @@ private:
     bool software_ = false;
     std::unique_ptr<visual::Formation> cpuForm_;
     visual::Canvas canvas_;
+    std::vector<float> softLin_, softHist_;  // V3 software volume (linear) and its temporal average
+    // V3: the software volume renders on its own thread; the message thread only posts inputs and blits the result
+    class SoftThread;
+    std::unique_ptr<SoftThread> softThread_;
     std::vector<uint8_t> rgb_;
     juce::Image image_;
     std::vector<visual::InstanceInput> chain_;

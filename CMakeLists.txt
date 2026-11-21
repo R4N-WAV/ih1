@@ -17,6 +17,8 @@ include(FetchContent)
 file(GLOB_RECURSE IH1_CORE_SOURCES CONFIGURE_DEPENDS core/src/*.cpp)
 add_library(ih1_core STATIC ${IH1_CORE_SOURCES})
 target_include_directories(ih1_core PUBLIC core/include)
+find_package(Threads REQUIRED)
+target_link_libraries(ih1_core PUBLIC Threads::Threads)  # V3: the CPU field-volume reference renders on worker threads
 if(MSVC)
     target_compile_options(ih1_core PRIVATE /W4 /permissive- /fp:fast)
 else()

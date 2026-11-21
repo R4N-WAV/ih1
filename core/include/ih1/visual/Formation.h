@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ih1/visual/FieldVolume.h"
 #include "ih1/visual/Palette.h"
 
 namespace ih1::visual {
@@ -89,6 +90,10 @@ public:
     // Persistence of the accumulation buffer for this frame's dt (light temporal smoothing only).
     float decay(float dt) const;
 
+    // V3 Phase 3A: the field-volume description of this frame (see FieldVolume.h). Always produced.
+    const FieldScene& scene() const { return scene_; }
+    // The V2.1 strand tracing (segments()) is only needed by tests and comparisons now; renderers switch it off.
+    void setTraceStrands(bool on) { traceStrands_ = on; }
     int strandCount() const { return strands_; }
     int instanceCount() const { return static_cast<int>(insts_.size()); }
     bool transferActive() const;
@@ -171,6 +176,9 @@ private:
     std::vector<Node> nodes_;      // per frame, chain order
     std::vector<Pending> pending_;
     int integratedCount_ = 0;
+    FieldScene scene_;
+    bool traceStrands_ = true;
+    void buildScene();
     std::vector<Segment> segs_;
     std::vector<Glow> glows_;
     std::vector<V3> pts_;          // scratch
