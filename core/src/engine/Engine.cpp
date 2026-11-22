@@ -210,7 +210,8 @@ void Engine::installDirect(Program* p, std::vector<Program*>& released) {
     activeLatency_.store(p->chainLatency + p->stagedLatency);
 }
 
-void Engine::publishStagedParams(int typeIndex, const ParamValues& v) {
+void Engine::publishStagedParams(int typeIndex, const ParamValues& v, const FxProcessor* target) {
+    stagedParamTarget_.store(target, std::memory_order_relaxed);
     for (int i = 0; i < kMaxParams; ++i) stagedParams_[static_cast<size_t>(i)].store(v[static_cast<size_t>(i)], std::memory_order_relaxed);
     stagedParamType_.store(typeIndex, std::memory_order_relaxed);
     stagedParamVersion_.fetch_add(1, std::memory_order_release);
@@ -220,6 +221,10 @@ void Engine::applyStagedParamsIfChanged() {
     const uint32_t v = stagedParamVersion_.load(std::memory_order_acquire);
     if (v == appliedVersion_ || !active_->staged) return;
     if (stagedParamType_.load(std::memory_order_relaxed) != active_->stagedType) return;  // not for us (yet)
+    {
+        const FxProcessor* t = stagedParamTarget_.load(std::memory_order_relaxed);
+        if (t && t != active_->staged) return;  // V5: for the next staged processor (still in the mailbox)
+    }
     ParamValues vals;
     for (int i = 0; i < kMaxParams; ++i) vals[static_cast<size_t>(i)] = stagedParams_[static_cast<size_t>(i)].load(std::memory_order_relaxed);
     appliedVersion_ = v;
@@ -263,6 +268,12 @@ void Engine::installNow(Program* p) {
     appliedVersion_ = stagedParamVersion_.load() - 1u;  // force re-apply of staged params
     activeLatency_.store(p->chainLatency + p->stagedLatency);
     if (!old || old->staged != p->staged) { haveLastStaged_ = false; switchPending_ = false; switchAmt_ = 1.0f; }
+    if (p->stagedStartsMuted && p->staged && mute_.load(std::memory_order_relaxed)) {
+        // V5 Phase 7: the freshly staged copy is silent from its first sample. The MUTE flag itself belongs to the
+        // message thread (the session sets it with the COMMIT); if the user already un-muted before this program
+        // arrived, the copy simply starts audible (with its fresh-input ramp).
+        muteAmt_ = 1.0f;
+    }
     macroApplied_.fill(-1.0f);
     applyMacros(false);
 }
@@ -284,7 +295,10 @@ void Engine::beginTransitionIfPending() {
 
     // COMMIT hand-over: identical prefix + old staged appended, nothing staged after. Seamless when the
     // staged FX was fully audible (no SOLO, no MUTE, no fade in progress).
-    bool handover = p->commitHandover && a->staged != nullptr && p->staged == nullptr &&
+    // V5: the program may also carry a fresh staged processor (same type, defaults) that starts muted; it is seamless
+    // only when that processor adds no latency (otherwise the chain output would move in time).
+    const bool newStagedSilent = p->staged == nullptr || (p->stagedStartsMuted && p->stagedLatency == 0);
+    bool handover = p->commitHandover && a->staged != nullptr && newStagedSilent &&
                     p->chainSize == a->chainSize + 1 && p->chain[static_cast<size_t>(a->chainSize)] == a->staged &&
                     soloAmt_ == 0.0f && muteAmt_ == 0.0f && stagedFade_ == 1.0f && transGain_ == 1.0f;
     for (int i = 0; handover && i < a->chainSize; ++i) handover = p->chain[static_cast<size_t>(i)] == a->chain[static_cast<size_t>(i)];
@@ -474,7 +488,14 @@ void Engine::processChunk(float* L, float* R, int n, const ProcessContext& ctx) 
     ramp(bypassAmt_, bypass_.load(std::memory_order_relaxed) ? 1.0f : 0.0f, stepFor(kBypassMs), rampBypass_.data(), n);
     const bool hasStaged = p.staged != nullptr;
     const bool soloOn = solo_.load(std::memory_order_relaxed) && hasStaged;
-    const bool muteOn = mute_.load(std::memory_order_relaxed) && !soloOn;
+    bool muteOn = mute_.load(std::memory_order_relaxed) && !soloOn;
+    if (muteOn && muteAmt_ == 0.0f) {
+        // V5 Phase 7: the host MUTE parameter can rise a block before the COMMIT program is picked up. While that
+        // program waits, the outgoing staged effect (the one being committed) stays fully audible, so the hand-over
+        // stays seamless; the new staged copy is installed muted.
+        const Program* q = mailbox_.load(std::memory_order_acquire);
+        if (q && q->commitHandover && q->stagedStartsMuted) muteOn = false;
+    }
     ramp(soloAmt_, soloOn ? 1.0f : 0.0f, stepFor(kSoloMs), rampSolo_.data(), n);
     {
         float tgt = (trans_ == Transition::OutputFadeOut) ? 0.0f : 1.0f;

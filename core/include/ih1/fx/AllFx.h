@@ -29,6 +29,16 @@ FxDescriptor describeTextureImprint();
 FxDescriptor describeSpectralShatter();
 FxDescriptor describePartialRecomposer();
 FxDescriptor describeSpectralGraft();
+// V5 (atmosphere: V5Atmos.cpp; rhythm / drums / hybrid: V5Drums.cpp)
+FxDescriptor describeCloudChamber();
+FxDescriptor describeReflectionSculptor();
+FxDescriptor describeReverseBloom();
+FxDescriptor describeSwell();
+FxDescriptor describePulseShaper();
+FxDescriptor describeDrumCrush();
+FxDescriptor describeDrumSpace();
+FxDescriptor describeBandTransients();
+FxDescriptor describeHitMelody();
 FxDescriptor describeTapeEcho();
 FxDescriptor describeReverb();
 FxDescriptor describeReverse();

@@ -49,7 +49,7 @@ SettingsPanel::~SettingsPanel() { ctls_.clear(); }
 
 void SettingsPanel::sync() {
     int sel;
-    bool solo, mute;
+    bool solo, mute, standby;
     FxDisplay disp;
     bool hasDisp = false;
     {
@@ -57,6 +57,7 @@ void SettingsPanel::sync() {
         sel = proc_.session().selected();
         solo = proc_.session().solo();
         mute = proc_.session().mute();
+        standby = proc_.session().standby();
         if (const auto* sp = proc_.session().stagedProcessor()) hasDisp = sp->readDisplay(disp);
     }
     if (sel != type_) rebuild(sel);
@@ -64,8 +65,15 @@ void SettingsPanel::sync() {
     graph_.setDisplay(hasDisp ? &disp : nullptr);
     solo_.setToggleState(solo, juce::dontSendNotification);
     mute_.setToggleState(mute, juce::dontSendNotification);
-    if (mute != muted_) {
-        muted_ = mute;
+    // V5 Phase 7: after COMMIT the fresh copy is muted ("standby"). It is shown muted (MUTE lit, controls dimmed,
+    // a plain note in place of the description) but stays editable: editing a control or pressing M auditions it.
+    const bool hardMute = mute && !standby;
+    if (hardMute != muted_ || standby != standby_) {
+        muted_ = hardMute;
+        standby_ = standby;
+        desc_.setText(standby_ ? juce::String("Committed. This fresh copy is muted (M), so you hear the committed one alone. Touch a control or press M to audition it.")
+                               : descText_, juce::dontSendNotification);
+        desc_.setColour(juce::Label::textColourId, standby_ ? Colours::accent : Colours::textDim);
         refreshValues();
         repaint();
     }
@@ -93,7 +101,8 @@ void SettingsPanel::rebuild(int typeIndex) {
     const auto accent = readable(fxColourForIndex(typeIndex), 0.8f);
     showGraph_ = FxGraph::hasGraph(d.typeId);
     graph_.setVisible(showGraph_);
-    desc_.setText(d.tooltip, juce::dontSendNotification);
+    descText_ = d.tooltip;
+    if (!standby_) desc_.setText(descText_, juce::dontSendNotification);
     for (size_t i = 0; i < d.params.size(); ++i) {
         const auto& spec = d.params[i];
         auto c = std::make_unique<Ctl>();
@@ -231,7 +240,7 @@ void SettingsPanel::applyEnablement(const ParamValues& v, bool muted) {
                                       static_cast<juce::Component*>(c->value.get())}) {
             if (!comp) continue;
             comp->setEnabled(active);
-            comp->setAlpha(active ? 1.0f : 0.32f);
+            comp->setAlpha(active ? (standby_ ? 0.6f : 1.0f) : 0.32f);
             if (auto* tc = dynamic_cast<juce::SettableTooltipClient*>(comp); tc && comp != c->value.get())
                 tc->setTooltip(c->slider && dep && !muted ? tip + "\n\nDrag to change. Double-click to reset; double-click the value to type one." : tip);
         }
@@ -241,7 +250,7 @@ void SettingsPanel::applyEnablement(const ParamValues& v, bool muted) {
         c->active = active;
     }
     for (juce::Component* comp : {static_cast<juce::Component*>(&desc_), static_cast<juce::Component*>(&graph_), static_cast<juce::Component*>(&advHeading_)})
-        comp->setAlpha(muted ? 0.32f : 1.0f);
+        comp->setAlpha(muted ? 0.32f : (standby_ && comp != &desc_ ? 0.6f : 1.0f));
     graph_.setEnabled(!muted);
 }
 

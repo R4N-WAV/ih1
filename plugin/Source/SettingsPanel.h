@@ -58,6 +58,8 @@ private:
     juce::TextButton solo_{"S"}, mute_{"M"};
     juce::Label desc_, advHeading_;
     bool muted_ = false;
+    bool standby_ = false;  // V5: muted by COMMIT; controls stay usable and editing one starts the audition
+    juce::String descText_;
 };
 
 }  // namespace ih1::plugin

@@ -32,7 +32,7 @@ Editor::Editor(Processor& p)
     commit_.getProperties().set("primary", true);
     commit_.getProperties().set("fontSize", 14.0);
     reset_.getProperties().set("fontSize", 13.0);
-    commit_.setTooltip("Add the staged effect, with its current settings, to the end of the committed chain. Committed effects can be moved or deleted but never edited.");
+    commit_.setTooltip("Add the staged effect, with its current settings, to the end of the committed chain. Committed effects can be moved or deleted but never edited. The browser stays on this effect with a fresh copy at its defaults, muted: touch a control or press M to audition the next one.");
     reset_.setTooltip("Return the staged effect to its defaults and clear what it holds (a Looper's recording, echoes, tails). Nothing committed is touched.");
     commit_.onClick = [this] { doCommit(); };
     reset_.onClick = [this] { proc_.uiReset(); };
@@ -162,20 +162,25 @@ void Editor::timerCallback() {
             sel = proc_.session().selected();
             chain = static_cast<int>(proc_.session().chain().size());
         }
-        bool muted;
+        bool muted, standby;
         {
             const juce::ScopedLock sl(proc_.sessionLock());
             muted = proc_.session().mute();
+            standby = proc_.session().standby();
         }
         carousel_.setSelected(sel);
         // MUTE (V2.1 9.7): the whole staged area is greyed and inactive -- carousel, settings, COMMIT, RESET.
         // Only S / M stay live so the user can unmute. Matches the DSP: the staged FX is silent while muted.
-        carousel_.setEnabled(!muted);
-        carousel_.setAlpha(muted ? 0.35f : 1.0f);
+        // V5 Phase 7: after COMMIT the browser stays on the same effect with a fresh, muted copy ("standby"): the
+        // carousel and RESET stay usable (browsing / editing is the next step); COMMIT waits for an audition, so a
+        // silent copy is never committed by a double press.
+        const bool hard = muted && !standby;
+        carousel_.setEnabled(!hard);
+        carousel_.setAlpha(hard ? 0.35f : 1.0f);
         commit_.setEnabled(sel >= 0 && chain < kMaxChain && !muted);
-        reset_.setEnabled(sel >= 0 && !muted);
+        reset_.setEnabled(sel >= 0 && !hard);
         commit_.setAlpha(muted ? 0.4f : 1.0f);
-        reset_.setAlpha(muted ? 0.4f : 1.0f);
+        reset_.setAlpha(hard ? 0.4f : 1.0f);
         settings_.setVisible(sel >= 0);  // no empty panel when nothing is staged
         presetBar_.refresh();
     }

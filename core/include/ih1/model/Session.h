@@ -62,7 +62,18 @@ public:
     const ParamValues& draft(int typeIndex) const { return drafts_[static_cast<size_t>(typeIndex)]; }
     void setDraftParam(int paramIndex, float plainValue);  // edits the selected type's draft only
     void resetDraft();                                     // RESET: selected type's draft -> defaults
-    bool commit();                                         // false if nothing staged or chain full
+    // COMMIT (V5 Phase 7): the staged processor (warmed up, with the current draft) becomes the immutable committed
+    // instance at the end of the chain. The carousel keeps the same effect selected; a fresh staged processor of that
+    // type is prepared at the effect's defaults, the draft returns to the defaults, and the staged stage is MUTED
+    // from the first sample ("standby"), so the committed copy is never doubled. Returns false if nothing is staged
+    // or the chain is full.
+    bool commit();
+    // Standby (V5): muted by COMMIT rather than by the MUTE button. The browser and controls stay usable; any
+    // deliberate audition gesture (MUTE off, selecting an effect, editing a control through auditionEdit) ends it.
+    bool standby() const { return standby_ && mute_; }
+    // A user edit of a staged control (UI gesture, not host automation): ends standby and un-mutes. Returns true if
+    // the mute state changed (the caller syncs its host MUTE parameter).
+    bool auditionEdit();
 
     // ---- committed chain ------------------------------------------------------------------
     const std::vector<CommittedInstance>& chain() const { return chain_; }
@@ -139,7 +150,7 @@ private:
     std::vector<ParamValues> drafts_;
     int selected_ = -1;
     FxProcessor* staged_ = nullptr;
-    bool solo_ = false, mute_ = false;
+    bool solo_ = false, mute_ = false, standby_ = false;
     LatencyMode latencyMode_ = LatencyMode::Quality;
     std::vector<CommittedInstance> chain_;
     std::vector<MacroDef> macros_;

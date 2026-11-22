@@ -90,6 +90,12 @@ Rgb fxColour(const std::string& typeId, int shade) {
     float h = f.h + kTierHue[tier];
     float s = std::clamp(f.s * kTierSat[tier], 0.0f, 0.5f);
     float v = std::clamp(f.v * kTierVal[tier], 0.0f, 1.0f);
+    // V5: types appended in round 5 wrap onto the tier table a second time; keep them readable (>= 0.78) without
+    // moving any accepted (V1-V4) colour
+    {
+        static const int firstV5 = fxTypeIndex("cloud_chamber");
+        if (firstV5 >= 0 && t >= firstV5) v = std::max(v, 0.78f);
+    }
     // duplicates: same hue, alternating deeper / lighter in growing steps. Pale families gain saturation
     // instead of losing it so their shades stay distinguishable.
     if (shade > 0) {

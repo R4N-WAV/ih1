@@ -188,6 +188,12 @@ void Processor::uiSetParam(int paramIndex, float plainValue) {
     const juce::ScopedLock sl(lock_);
     const int sel = session_->selected();
     if (sel < 0) return;
+    // V5 Phase 7: touching a control after COMMIT is a deliberate audition gesture: standby ends, MUTE turns off
+    if (session_->auditionEdit()) {
+        apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
+        lastMute_ = false;
+        afterModelChange();
+    }
     session_->setDraftParam(paramIndex, plainValue);
     if (paramIndex >= 0 && paramIndex < kNumMacros) {
         const auto& spec = fxRegistry()[static_cast<size_t>(sel)].params[static_cast<size_t>(paramIndex)];
@@ -217,9 +223,12 @@ uint64_t Processor::uiCommit() {
     const juce::ScopedLock sl(lock_);
     const bool ok = session_->commit();
     if (!ok) return 0;
+    // V5 Phase 7: the carousel stays on this effect; its fresh staged copy (defaults) is muted ("standby") so the
+    // committed instance is heard once. The host MUTE parameter follows the session.
     apvts_.getParameter("solo")->setValueNotifyingHost(0.0f);
-    apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);
-    lastSolo_ = lastMute_ = false;
+    apvts_.getParameter("mute")->setValueNotifyingHost(session_->mute() ? 1.0f : 0.0f);
+    lastSolo_ = false;
+    lastMute_ = session_->mute();
     syncMacrosFromDraft();
     afterModelChange();
     return session_->chain().back().id();
@@ -289,7 +298,7 @@ void Processor::uiSetSolo(bool on) {
     session_->setSolo(on);
     lastSolo_ = on;
     lastMute_ = session_->mute();
-    revision_.fetch_add(1);
+    afterModelChange();  // V5: leaving standby can restore the staged latency
 }
 
 void Processor::uiSetMute(bool on) {
@@ -303,7 +312,7 @@ void Processor::uiSetMute(bool on) {
     session_->setMute(on);
     lastMute_ = on;
     lastSolo_ = session_->solo();
-    revision_.fetch_add(1);
+    afterModelChange();  // V5: leaving standby can restore the staged latency
 }
 
 void Processor::uiSetLatencyMode(LatencyMode m) {
@@ -458,7 +467,7 @@ void Processor::pullHostParams(bool enforceExclusive) {
         lastSolo_ = solo;
         lastMute_ = mute;
         if (enforceExclusive) { lastSolo_ = s; lastMute_ = m; }
-        revision_.fetch_add(1);
+        afterModelChange();
     }
     // staged macros -> staged draft (host automation; control rate, smoothed inside the FX)
     const int sel = session_->selected();

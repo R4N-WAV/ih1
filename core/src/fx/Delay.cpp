@@ -28,6 +28,7 @@ constexpr float kMaxSeconds = 3.0f;
 constexpr float kXfadeMs = 40.0f;
 
 class Delay final : public FxBase {
+    static constexpr float kMaxLoopGain = 0.985f;  // V5: small-signal recirculation gain never reaches 1
     void onPrepare() override {
         const int maxD = static_cast<int>(kMaxSeconds * 1.5f * srf()) + 512;
         for (auto& l : line_) l.prepare(maxD);
@@ -73,7 +74,7 @@ class Delay final : public FxBase {
         }
     }
     double tailSeconds() const override {
-        const double fb = std::clamp(p_[kFeedback] * 0.01, 0.0, 0.999);
+        const double fb = std::clamp(p_[kFeedback] * 0.01, 0.0, static_cast<double>(kMaxLoopGain));
         const double t = p_[kTime] * 0.001;
         return fb <= 0.0 ? t : std::min(30.0, t * std::log(1e-3) / std::log(fb) + t);
     }
@@ -94,6 +95,10 @@ class Delay final : public FxBase {
         lofiSet.bits = bitsOn ? fp(kLofiBits) : 24.0f;
         lofiSet.reconstruct = rateOn ? dsp::RateReducer::FilterSoft : dsp::RateReducer::FilterOff;
         const bool lofiOn = rateOn || bitsOn;
+        // V5: the maximum recirculation also respects a 120 s ceiling on T60 for the loop time (the last tap), so
+        // Feedback 100 % on a long delay is a very long trail rather than a practically endless hold
+        const float loopSec = static_cast<float>(sec);  // the feedback is taken from the last tap (position 1)
+        const float gCap = std::min(kMaxLoopGain, std::pow(10.0f, -loopSec / 40.0f));
         duckS_.setTarget(pct(kDuck));
         const float xfStep = 1.0f / (kXfadeMs * 0.001f * srf());
 
@@ -137,7 +142,12 @@ class Delay final : public FxBase {
             for (int c = 0; c < 2; ++c) {
                 float f = fbSig[c];
                 if (drive > 0.0f) { const float k = 1.0f + 6.0f * drive; f = std::tanh(f * k) / k * (1.0f + drive); }
-                fbSig[c] = 2.0f * std::tanh(0.5f * f * fbg);  // safety soft-clip bounds runaway at 100 %
+                // V5 Phase 5: Feedback 100 % was an exact unity loop, and the Drive makeup (1 + drive) is small-signal
+                // gain INSIDE the loop, so the repeats grew until the soft clip held them at full level (measured:
+                // ih1_feedback_audit delay max / rnd3 / rnd5). The whole small-signal loop gain fb * (1 + drive) is now
+                // capped at 0.985: a very long trail (~ -0.13 dB per repeat) that still decays; Drive keeps its colour.
+                const float g = std::min(fbg, gCap / (1.0f + drive));
+                fbSig[c] = 2.0f * std::tanh(0.5f * f * g);
             }
             if (mode == 2) {  // ping-pong: L -> R -> L
                 line_[0].push(in[0] + fbSig[1]);

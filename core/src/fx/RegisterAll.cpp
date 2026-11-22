@@ -69,6 +69,16 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeSpectralShatter());
     r.push_back(describePartialRecomposer());
     r.push_back(describeSpectralGraft());
+    // V5 (appended after V4: every accepted colour tier stays where it is)
+    r.push_back(describeCloudChamber());
+    r.push_back(describeReflectionSculptor());
+    r.push_back(describeReverseBloom());
+    r.push_back(describeSwell());
+    r.push_back(describePulseShaper());
+    r.push_back(describeDrumCrush());
+    r.push_back(describeDrumSpace());
+    r.push_back(describeBandTransients());
+    r.push_back(describeHitMelody());
     r.push_back(describeTestGain());
     r.push_back(describeTestLatency());
 }

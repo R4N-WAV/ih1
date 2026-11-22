@@ -75,6 +75,7 @@ int T(const char* id) {
 
 void stageGain(Session& s, float gainDb) {
     s.select(T("test_gain"));
+    s.auditionEdit();  // V5: after COMMIT the same effect stays selected, muted; editing it (the UI gesture) auditions it
     s.setDraftParam(0, gainDb);
 }
 
@@ -95,20 +96,40 @@ TEST_CASE("staged FX runs after the committed chain") {
     CHECK(db(rms / kSineRms) == doctest::Approx(-12.0).epsilon(0.02));
 }
 
-TEST_CASE("commit snapshots, clears selection, keeps the draft, and is immutable") {
+TEST_CASE("commit snapshots, keeps the browser on the effect, resets and mutes the staged copy, and is immutable") {
     Harness h;
     stageGain(h.session, -10.0f);
     h.run(0.1);
     REQUIRE(h.session.commit());
-    CHECK(h.session.selected() == -1);
+    // V5 Phase 7: the carousel stays on the same effect; the staged copy is fresh (defaults) and muted ("standby")
+    CHECK(h.session.selected() == T("test_gain"));
+    CHECK(h.session.mute());
+    CHECK(h.session.standby());
     REQUIRE(h.session.chain().size() == 1);
     CHECK(h.session.chain()[0].values()[0] == doctest::Approx(-10.0f));
-    // draft retained (decision B2)
-    CHECK(h.session.draft(T("test_gain"))[0] == doctest::Approx(-10.0f));
-    // nothing staged: editing does nothing; second commit impossible (double-click guard)
-    h.session.setDraftParam(0, 0.0f);
+    CHECK(h.session.draft(T("test_gain"))[0] == doctest::Approx(0.0f));  // the draft is back at its default
+    CHECK(h.session.stagedProcessor() != h.session.chain()[0].processor());  // nothing shared with the snapshot
+    // no double processing: the committed copy alone is heard (-10 dB, not -10 + default)
+    CHECK(db(h.run(0.3) / kSineRms) == doctest::Approx(-10.0).epsilon(0.02));
+    // host automation / programmatic edits do not end standby; a UI edit does (auditionEdit)
+    h.session.setDraftParam(0, -3.0f);
+    CHECK(h.session.standby());
+    CHECK(db(h.run(0.3) / kSineRms) == doctest::Approx(-10.0).epsilon(0.02));
+    CHECK(h.session.auditionEdit());
+    CHECK_FALSE(h.session.mute());
+    CHECK(db(h.run(0.3) / kSineRms) == doctest::Approx(-13.0).epsilon(0.02));
+    // committing again makes a deliberate duplicate with its own values
+    REQUIRE(h.session.commit());
+    CHECK(h.session.chain().size() == 2);
+    CHECK(h.session.chain()[1].values()[0] == doctest::Approx(-3.0f));
+    CHECK(h.session.chain()[0].values()[0] == doctest::Approx(-10.0f));
+    CHECK(db(h.run(0.3) / kSineRms) == doctest::Approx(-13.0).epsilon(0.02));
+    // with nothing staged, COMMIT is impossible
+    h.session.setMute(false);
+    h.session.select(Session::kNone);
     CHECK_FALSE(h.session.commit());
-    CHECK(h.session.chain().size() == 1);
+    CHECK(h.session.chain().size() == 2);
+    h.session.remove(h.session.chain()[1].id());
     // re-select and edit the draft: committed output must not change
     h.session.select(T("test_gain"));
     h.session.setDraftParam(0, 6.0f);

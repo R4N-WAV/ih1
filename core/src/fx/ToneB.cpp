@@ -37,7 +37,9 @@ class Bitcrusher final : public FxBase {
                 if (tick || step >= 1.0) {
                     float q = x;
                     if (bits < 23.5f) {
-                        if (dither) q += (rng_.uniform() - rng_.uniform()) / levels;  // TPDF
+                        // TPDF dither; V5: not on digital silence, which used to become a constant +-1 LSB noise
+                        // floor (-48 dBFS at 8 bits) that never ended (ih1_feedback_audit bitcrush rnd2: HOLD)
+                        if (dither && std::fabs(x) > 1e-5f) q += (rng_.uniform() - rng_.uniform()) / levels;
                         q = std::round(std::clamp(q, -1.0f, 1.0f) * levels) / levels;
                     }
                     held_[c] = q;

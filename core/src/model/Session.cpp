@@ -106,7 +106,7 @@ void Session::prepare(double sampleRate, int maxBlock) {
     std::vector<Program*> released;
     engine_.installDirect(p, released);
     for (Program* r : released) releaseProgram(r);
-    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
+    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)], staged_);
     syncRouting();
     collectGarbage();
 }
@@ -144,7 +144,10 @@ void Session::rebuild(bool commitHandover, bool post) {
     }
     p->staged = staged_;
     p->stagedType = staged_ ? selected_ : -1;
-    p->stagedLatency = staged_ ? staged_->latencySamples() : 0;
+    // V5 Phase 7: in standby (muted by COMMIT) the staged copy is silent, so its output path is not delayed by its
+    // latency: the chain keeps exactly the timing it had while the effect was being committed, and the host latency does
+    // not grow. Auditioning it again rebuilds the program with its real latency (normal program transition).
+    p->stagedLatency = (staged_ && !standby()) ? staged_->latencySamples() : 0;
     if (staged_) ++refs_[staged_];
     p->commitHandover = commitHandover;
     if (pending_) releaseProgram(pending_);  // superseded before the audio thread ever saw it
@@ -199,10 +202,15 @@ void Session::select(int typeIndex) {
     if (typeIndex < -1 || typeIndex >= n) typeIndex = -1;
     if (typeIndex == selected_) return;
     selected_ = typeIndex;
+    if (standby_) {  // V5: choosing another effect is a deliberate audition gesture (rebuilt below)
+        standby_ = false;
+        mute_ = false;
+        syncRouting();
+    }
     staged_ = typeIndex >= 0 ? adopt(makeProcessor(typeIndex, drafts_[static_cast<size_t>(typeIndex)])) : nullptr;
     if (!staged_) { solo_ = false; mute_ = false; syncRouting(); }
     rebuild(false);
-    if (typeIndex >= 0) engine_.publishStagedParams(typeIndex, drafts_[static_cast<size_t>(typeIndex)]);
+    if (typeIndex >= 0) engine_.publishStagedParams(typeIndex, drafts_[static_cast<size_t>(typeIndex)], staged_);
     collectGarbage();
 }
 
@@ -222,7 +230,7 @@ void Session::setDraftParam(int paramIndex, float plainValue) {
     if (paramIndex < 0 || paramIndex >= static_cast<int>(d.params.size())) return;
     auto& v = drafts_[static_cast<size_t>(selected_)];
     v[static_cast<size_t>(paramIndex)] = d.params[static_cast<size_t>(paramIndex)].clamp(plainValue);
-    engine_.publishStagedParams(selected_, v);
+    engine_.publishStagedParams(selected_, v, staged_);
     ++revision_;
 }
 
@@ -235,7 +243,7 @@ void Session::resetDraft() {
     // and freed here later). Committed instances are separate processors and are never touched.
     staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
     rebuild(false);
-    engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
+    engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)], staged_);
     collectGarbage();
     ++revision_;
 }
@@ -245,13 +253,28 @@ bool Session::commit() {
     const uint64_t id = newId();
     uint64_t seedState = id;
     const auto seed = static_cast<uint32_t>(splitmix(seedState));
-    chain_.emplace_back(id, selected_, fxRegistry()[static_cast<size_t>(selected_)].clamp(drafts_[static_cast<size_t>(selected_)]), seed, staged_);
-    // the draft stays as it is (decision B2); the carousel selection clears
-    staged_ = nullptr;
-    selected_ = -1;
-    solo_ = mute_ = false;
-    syncRouting();
-    rebuild(true);
+    const auto& d = fxRegistry()[static_cast<size_t>(selected_)];
+    // the committed instance owns its own frozen copy of the values and the processor that was playing them;
+    // nothing (parameters or DSP state) is shared with the next staged instance
+    chain_.emplace_back(id, selected_, d.clamp(drafts_[static_cast<size_t>(selected_)]), seed, staged_);
+    // V5 Phase 7: stay on the same effect; the draft and a fresh processor start again from the defaults, muted
+    drafts_[static_cast<size_t>(selected_)] = d.defaults();
+    staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
+    solo_ = false;
+    mute_ = true;
+    standby_ = true;
+    rebuild(true, false);
+    if (pending_) pending_->stagedStartsMuted = true;
+    tryPost();
+    engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)], staged_);
+    syncRouting();  // MUTE on: the engine keeps the outgoing staged FX audible until this program is installed
+    collectGarbage();
+    return true;
+}
+
+bool Session::auditionEdit() {
+    if (!standby()) return false;
+    setMute(false);
     return true;
 }
 
@@ -319,7 +342,7 @@ void Session::initialise() {
     macros_.clear();
     selected_ = kNone;
     staged_ = nullptr;
-    solo_ = mute_ = false;
+    solo_ = mute_ = standby_ = false;
     const auto& reg = fxRegistry();
     for (size_t t = 0; t < reg.size(); ++t) drafts_[t] = reg[t].defaults();
     syncRouting();
@@ -329,15 +352,21 @@ void Session::initialise() {
 
 void Session::setSolo(bool on) {
     if (on && !staged_) on = false;  // nothing to audition
+    const bool leaveStandby = on && standby();
+    if (on) standby_ = false;
     solo_ = on;
     if (on) mute_ = false;
+    if (leaveStandby && staged_ && staged_->latencySamples() > 0) rebuild(false);
     syncRouting();
     ++revision_;
 }
 
 void Session::setMute(bool on) {
     if (on && !staged_) on = false;
+    const bool wasStandby = standby();
+    standby_ = false;  // an explicit MUTE change ends the post-commit standby either way
     mute_ = on;
+    if (wasStandby && staged_ && staged_->latencySamples() > 0) rebuild(false);  // restore the staged latency path
     if (on) solo_ = false;
     syncRouting();
     ++revision_;
@@ -357,7 +386,7 @@ void Session::setLatencyMode(LatencyMode m) {
     chain_.swap(next);
     if (selected_ >= 0) staged_ = adopt(makeProcessor(selected_, drafts_[static_cast<size_t>(selected_)]));
     rebuild(false);
-    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)]);
+    if (selected_ >= 0) engine_.publishStagedParams(selected_, drafts_[static_cast<size_t>(selected_)], staged_);
     collectGarbage();
 }
 
@@ -367,7 +396,7 @@ std::vector<Session::LatencyContributor> Session::latencyContributors() const {
         const int l = ci.processor()->latencySamples();
         if (l > 0) v.push_back({ci.id(), ci.typeIndex(), l, ci.descriptor().resolveLatency(latencyMode_), false});
     }
-    if (staged_ && selected_ >= 0) {
+    if (staged_ && selected_ >= 0 && !standby()) {
         const int l = staged_->latencySamples();
         if (l > 0) v.push_back({0, selected_, l, fxRegistry()[static_cast<size_t>(selected_)].resolveLatency(latencyMode_), true});
     }
@@ -377,7 +406,7 @@ std::vector<Session::LatencyContributor> Session::latencyContributors() const {
 int Session::latencySamples() const {
     int l = 0;
     for (const auto& ci : chain_) l += ci.processor()->latencySamples();
-    if (staged_) l += staged_->latencySamples();
+    if (staged_ && !standby()) l += staged_->latencySamples();  // V5: a standby copy is silent and adds no delay
     return l;
 }
 
@@ -561,7 +590,7 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
     if (includeSession) drafts_ = newDrafts;
     selected_ = kNone;
     staged_ = nullptr;
-    solo_ = mute_ = false;
+    solo_ = mute_ = standby_ = false;
     syncRouting();
     rebuild(false);
     collectGarbage();

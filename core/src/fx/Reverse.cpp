@@ -13,6 +13,7 @@ namespace ih1::fx {
 namespace {
 
 enum { kMode, kSync, kLength, kDiv, kFeedback, kFade, kPitch, kTone, kSpread, kGrainSize, kDensity, kMix };
+constexpr float kBufferLoopScale = 0.62f;  // V5: Buffer mode's two voices recirculate ~1.43x coherently
 constexpr float kMaxLen = 4.0f;  // seconds
 
 class Reverse final : public FxBase {
@@ -50,7 +51,9 @@ class Reverse final : public FxBase {
         const double lenSec = std::clamp(syncedSeconds(bp(kSync), fp(kLength), ip(kDiv), ctx.bpm), 0.03, static_cast<double>(kMaxLen));
         const double L = lenSec * sr_;
         const float rate = dsp::semitonesToRatio(fp(kPitch));
-        const float fb = std::min(pct(kFeedback), 0.95f);
+        // V5: the recirculation also respects a 120 s ceiling on T60 for the chunk time (as Delay), so 95 % on a
+        // two-second chunk is a long cascade, not a practically endless one
+        const float fb = std::min({pct(kFeedback), 0.95f, std::pow(10.0f, -static_cast<float>(lenSec) / 40.0f)});
         const float spread = pct(kSpread);
 
         if (mode == 2) {  // ---------------------------------------------------------------- grains
@@ -66,10 +69,14 @@ class Reverse final : public FxBase {
                 float l, r;
                 grains_.tick(gp, l, r);
                 grains_.write(ch[0][i] + fb * fbState_[0], ch[1][i] + fb * fbState_[1]);
-                fbState_[0] = tone_[0].process(l);
-                fbState_[1] = tone_[1].process(r);
-                ch[0][i] = fbState_[0];
-                ch[1][i] = fbState_[1];
+                // V5 Phase 5: feed back the output scaled by the cloud's weight bound (loop gain <= fb <= 0.95; the
+                // unnormalised sum of many overlapping reversed grains ran away at high density x size)
+                const float ks = grains_.feedbackScale();
+                const float ol = tone_[0].process(l), orr = tone_[1].process(r);
+                fbState_[0] = ol * ks;
+                fbState_[1] = orr * ks;
+                ch[0][i] = ol;
+                ch[1][i] = orr;
             }
             mix_.apply(ch, n);
             return;
@@ -126,7 +133,11 @@ class Reverse final : public FxBase {
             }
             for (int c = 0; c < 2; ++c) {
                 const float f = tone_[c].process(out[c]);
-                line_[c].push(ch[c][i] + fb * f);
+                // V5 Phase 5: in Buffer mode both half-overlapped voices re-read every sample, and their copies
+                // recirculate coherently: the measured per-lap gain is ~1.43 x Feedback (ih1_feedback_audit: growth
+                // from 75 % up, stable at 70 %). The Buffer recirculation is scaled by 0.62, so 95 % gives a loop
+                // gain of ~0.84 (a long but decaying cascade). Delay mode (one voice, flat window) is already <= fb.
+                line_[c].push(ch[c][i] + fb * (mode == 0 ? kBufferLoopScale : 1.0f) * f);
                 ch[c][i] = f;
             }
             // Reverse Delay on a playing host: re-phase to the grid only at the start of a chunk (window ~0)

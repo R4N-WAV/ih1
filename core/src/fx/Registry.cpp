@@ -104,6 +104,16 @@ constexpr Annot kAnnot[] = {
     {"spectral_shatter", FxCategory::Spectral, nullptr},
     {"partial_recompose", FxCategory::PitchVocal, nullptr},
     {"spectral_graft", FxCategory::Spectral, nullptr},
+    // V5
+    {"cloud_chamber", FxCategory::TimeSpace, nullptr},
+    {"reflections", FxCategory::TimeSpace, nullptr},
+    {"reverse_bloom", FxCategory::TimeSpace, "length_ms"},
+    {"swell", FxCategory::Dynamics, nullptr},
+    {"pulse_shaper", FxCategory::RhythmGlitch, nullptr},
+    {"drum_crush", FxCategory::Dynamics, nullptr},
+    {"drum_space", FxCategory::TimeSpace, nullptr},
+    {"band_transients", FxCategory::Dynamics, nullptr},
+    {"hit_melody", FxCategory::Experimental, nullptr},
 };
 
 void annotate(FxDescriptor& d) {
@@ -122,6 +132,14 @@ void annotate(FxDescriptor& d) {
     }
     auto& L = d.latency;
     const std::string& t = d.typeId;
+    if (t == "swell") {
+        L.lookahead = true;
+        L.cpuClass = 1;
+        L.lowNote = "No look-ahead: 0 samples instead of 3 ms, and the first ~1 ms of each attack is heard before the swell closes.";
+        L.zeroNote = L.lowNote;
+        return;
+    }
+    if (t == "cloud_chamber" || t == "drum_space" || t == "reflections") L.cpuClass = 2;
     if (t == "spectral_shatter" || t == "spectral_graft" || t == "partial_recompose") {
         L.zero = false;
         L.low = true;

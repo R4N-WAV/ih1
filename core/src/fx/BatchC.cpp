@@ -55,8 +55,18 @@ class FreqShifter final : public FxBase {
         mix_.prepare(sr_, maxBlock_, 0, MixLaw::Linear);
         shiftS_.prepare(sr_, 40.0f);
     }
-    void reset() override { for (auto& h : hil_) h.reset(); for (auto& l : fbLine_) l.reset(); ph_[0] = ph_[1] = 0.0; mix_.reset(); }
-    void applyParams(bool snap) override { shiftS_.setTarget(fp(fsShift) + fp(fsFine)); if (snap) shiftS_.snap(shiftS_.target()); mix_.setMix(pct(fsMix), snap); }
+    void reset() override { for (auto& h : hil_) h.reset(); for (auto& l : fbLine_) l.reset(); for (auto& f : fbHp_) f.reset(); for (auto& f : fbLp_) f.reset(); ph_[0] = ph_[1] = 0.0; mix_.reset(); }
+    void applyParams(bool snap) override {
+        shiftS_.setTarget(fp(fsShift) + fp(fsFine));
+        if (snap) shiftS_.snap(shiftS_.target());
+        mix_.setMix(pct(fsMix), snap);
+        // V5 Phase 5: the single-sideband output I cos + Q sin has unity gain only where the Hilbert pair is in
+        // quadrature. Near DC and the top octave I and Q drift toward phase and |y| approaches sqrt(2) |x|, so 0.85
+        // feedback ran away there (measured +9 dB, ih1_feedback_audit freq_shift max). The recirculation is band-limited
+        // to the pair's accurate band (2nd-order HP 40 Hz / LP 13 kHz, Q 0.6: no peak), where the loop gain is <= fb.
+        for (auto& f : fbHp_) f.setup(dsp::Svf::Highpass, 40.0f, 0.6f, 0, sr_);
+        for (auto& f : fbLp_) f.setup(dsp::Svf::Lowpass, std::min(13000.0f, 0.42f * srf()), 0.6f, 0, sr_);
+    }
     void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float fb = pct(fsFeedback) * 0.85f;
@@ -69,7 +79,7 @@ class FreqShifter final : public FxBase {
                 hil_[c].process(ch[c][i] + fb * fbLine_[c].readCubic(dly), I, Q);
                 const float co = std::cos(static_cast<float>(ph_[c]) * dsp::kTwoPi), si = std::sin(static_cast<float>(ph_[c]) * dsp::kTwoPi);
                 const float y = I * co + Q * si;  // upper sideband: every component moves by +hz
-                fbLine_[c].push(2.0f * std::tanh(0.5f * y));
+                fbLine_[c].push(2.0f * std::tanh(0.5f * fbLp_[c].process(fbHp_[c].process(y))));
                 ch[c][i] = y;
                 ph_[c] += hz / sr_;
                 ph_[c] -= std::floor(ph_[c]);
@@ -79,6 +89,7 @@ class FreqShifter final : public FxBase {
     }
     Hilbert hil_[2];
     dsp::DelayLine fbLine_[2];
+    dsp::Svf fbHp_[2], fbLp_[2];
     double ph_[2] = {0, 0};
     dsp::Smoother shiftS_;
     MixStage mix_;

@@ -61,31 +61,46 @@ class Shimmer final : public FxBase {
         mix_.capture(ch, n);
         const float r1 = dsp::semitonesToRatio(fp(shShift1)), r2 = dsp::semitonesToRatio(fp(shShift2));
         const float bal = pct(shBalance);
-        const float regen = std::min(pct(shRegen), 1.0f) * 0.55f;  // capped: pitch in the loop must stay bounded
+        // V5 Phase 5 (runaway fix). The pitch-shifted tank output used to be ADDED to the tank input on top of the
+        // lossless Householder recirculation: the mode it feeds then recirculated at absorption K + 0.9 * regen per
+        // pass (> 1 whenever the shifted energy lands in a band the tank still rings at), bounded only by a tanh.
+        // Measured: +12 dBFS after the input stopped (ih1_feedback_audit, shimmer rnd3-5). Now the shift REPLACES
+        // part of that mode inside the recirculation: with u the unit output pattern and s_u the projection of the
+        // absorbed reads on it, the line inputs get (H s) + u * a * (shift(s_u) - s_u), i.e. the u-mode recirculates
+        // as (1 - a) s_u + a shift(s_u). The shifter (two crossfaded heads, weights summing to 1) and the HP / LP
+        // (Q 0.6, no peak) never exceed unity, so every mode keeps a per-pass gain <= K < 1 and the configured decay
+        // governs the shimmer tail too. Regen 100 % = a 0.92: an almost fully pitched recirculation, still decaying.
+        const float a = std::min(pct(shRegen), 1.0f) * 0.92f;
         const int routing = ip(shRouting);  // 0 tank, 1 input, 2 both
         const float modD = pct(shMod) * 0.0006f * srf();
         const float pre = fp(shPredelay) * 0.001f * srf();
+        constexpr float kU = 0.35355339f;  // 1 / sqrt(8): the unit vector of the (+,+,-,-,+,+,-,-) output pattern
         for (int i = 0; i < n; ++i) {
             pre_.push(0.5f * (ch[0][i] + ch[1][i]));
             float x = pre_.readLinear(std::max(0.0f, pre));
             if (routing >= 1) x = 0.5f * x + 0.5f * ((1.0f - bal) * ps1_.process(x, r1, 0.0f) + bal * ps2_.process(x, r2, 0.0f));
-            float in = x + (routing != 1 ? fb_ : 0.0f);
-            for (auto& a : diff_) in = a.process(in, 0.6f);
-            float s[N], sum = 0.0f;
+            float in = x;
+            for (auto& d : diff_) in = d.process(in, 0.6f);
+            float s[N], sum = 0.0f, su = 0.0f;
             for (int j = 0; j < N; ++j) {
                 const float v = line_[j].readCubic(std::max(2.0f, delay_[j] + (j % 2 ? -1.0f : 1.0f) * modD * (0.5f + 0.5f * lfo_[j].next())));
                 absorb_[j] = absK_[j] * (1.0f - absB_[j]) * v + absB_[j] * absorb_[j];
                 s[j] = absorb_[j];
                 sum += s[j];
+                su += (j % 4 < 2 ? kU : -kU) * s[j];
+            }
+            float corr = 0.0f;
+            if (routing != 1) {
+                const float shifted = (1.0f - bal) * ps1_.process(su, r1, 0.0f) + bal * ps2_.process(su, r2, 0.0f);
+                const float sh = lp_.process(hp_.process(shifted));
+                corr = a * (std::tanh(sh * 1.2f) / 1.2f - su);  // the tanh only colours (|tanh(x)| <= |x|)
             }
             const float h = 2.0f / N * sum;
-            for (int j = 0; j < N; ++j) line_[j].push(s[j] - h + in * (j % 4 < 2 ? 0.45f : -0.45f));
-            const float wl = (s[0] - s[2] + s[4] - s[6]) * 0.5f, wr = (s[1] - s[3] + s[5] - s[7]) * 0.5f;
-            if (routing != 1) {
-                const float w = 0.5f * (wl + wr);
-                const float shifted = (1.0f - bal) * ps1_.process(w, r1, 0.0f) + bal * ps2_.process(w, r2, 0.0f);
-                fb_ = std::tanh(lp_.process(hp_.process(shifted)) * regen * 1.5f) / 1.5f;
+            for (int j = 0; j < N; ++j) {
+                const float sign = j % 4 < 2 ? 1.0f : -1.0f;
+                line_[j].push(s[j] - h + sign * (kU * corr + 0.45f * in));
             }
+            const float wl = (s[0] - s[2] + s[4] - s[6]) * 0.5f, wr = (s[1] - s[3] + s[5] - s[7]) * 0.5f;
             ch[0][i] = wl;
             ch[1][i] = wr;
         }

@@ -83,7 +83,11 @@ class Chorus final : public FxBase {
                     acc += line_[c].readCubic(std::max(2.0f, d));
                 }
                 out[c] = tone_[c].process(acc * vg);
-                fbz_[c] = out[c];
+                // V5 Phase 5: the voices are summed with 1 / sqrt(V) for loudness, but at low frequencies they read
+                // almost the same delay and add coherently, so the recirculation saw sqrt(V) * 0.7 > 1 from three voices
+                // up (measured: a full-level hold / growth with Feedback high, ih1_feedback_audit chorus). The loop takes
+                // the coherent-normalised sum (out / sqrt(V) = acc / V): loop gain <= 0.7 for any voice count.
+                fbz_[c] = out[c] * vg;
             }
             ch[0][i] = out[0];
             ch[1][i] = out[1];

@@ -76,8 +76,17 @@ class TapeEcho final : public FxBase {
         const int mask = kHeadMask[std::clamp(ip(kHeads), 0, 6)];
         int active = 0;
         for (int h = 0; h < 3; ++h) active += (mask >> h) & 1;
-        const float fb = pct(kIntensity) / static_cast<float>(std::max(1, active)) * (active > 1 ? 1.4f : 1.0f);
         const float sat = pct(kSaturation);
+        // V5 Phase 5. The heads read the same tape, so their feedback adds coherently: the old per-head gain
+        // Intensity / active * 1.4 gave a loop gain of 1.4 x Intensity with two or three heads, and the record
+        // makeup (1 + 0.25 sat) is more gain inside the loop (measured growth, ih1_feedback_audit tape_echo rnd4/5).
+        // Now the summed small-signal loop gain is Intensity x makeup, capped at 0.98 up to 100 % (always decays).
+        // Above 100 % the documented self-oscillation ("the tape starts to sing") stays: up to 1.2 x, bounded by the
+        // tape saturation, and it falls back to a decaying loop as soon as Intensity returns to 100 % or below.
+        const float makeup = 1.0f + 0.25f * sat;
+        const float inten = pct(kIntensity);
+        const float loopGain = inten <= 1.0f ? std::min(inten * makeup, 0.98f) : 0.98f + (inten - 1.0f) * 1.1f;
+        const float fb = loopGain / makeup / static_cast<float>(std::max(1, active));
         const float drive = 1.0f + 5.0f * sat;
         const float wowAmt = pct(kWow) * 0.006f, flutAmt = pct(kFlutter) * 0.0025f;
         const float spread = pct(kSpread);

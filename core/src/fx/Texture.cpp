@@ -62,13 +62,16 @@ class Granular final : public FxBase {
             float l, r;
             cloud_.tick(gp, l, r);
             cloud_.write(ch[0][i] + fb * fb_[0], ch[1][i] + fb * fb_[1]);
+            // V5 Phase 5: the recirculated signal is the cloud output scaled by its own weight bound (taken before
+            // the output diffusion), so the loop gain is <= fb (0.9 at 100 %) at any density / size.
+            const float ks = cloud_.feedbackScale();
+            fb_[0] = 2.0f * std::tanh(0.5f * fbLp_[0].process(l * ks));
+            fb_[1] = 2.0f * std::tanh(0.5f * fbLp_[1].process(r * ks));
             float dl = l, dr = r;
             for (auto& a : apL_) dl = a.process(dl, 0.55f);
             for (auto& a : apR_) dr = a.process(dr, 0.55f);
             l = (1.0f - diff) * l + diff * dl;
             r = (1.0f - diff) * r + diff * dr;
-            fb_[0] = 2.0f * std::tanh(0.5f * fbLp_[0].process(l));
-            fb_[1] = 2.0f * std::tanh(0.5f * fbLp_[1].process(r));
             ch[0][i] = l;
             ch[1][i] = r;
         }

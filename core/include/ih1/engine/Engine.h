@@ -27,6 +27,10 @@ struct Program {
     std::array<ParamValues, kMaxChain> chainValues{};
     // True when this program results from COMMIT: the old staged processor became the last chain slot.
     bool commitHandover = false;
+    // V5 Phase 7: COMMIT keeps the browser on the same effect. The program then also carries a fresh staged processor
+    // of the same type at its defaults, which must start silent: the engine installs it with the staged wet weight
+    // already at zero (no ramp), so the committed copy is never heard twice and nothing dips.
+    bool stagedStartsMuted = false;
     // V4 Phase 6: per-instance enable / bypass. A separate boolean, never part of the frozen parameter snapshot.
     // A bypassed slot passes its input (delayed by the slot's own latency, so the chain timing never moves).
     // tailOnBypass: Time & Space effects stop receiving new input but let their echoes / reverb ring out; every other
@@ -82,7 +86,10 @@ public:
     // Audio stopped only: install immediately. Returns previously active + pending programs via out.
     void installDirect(Program* p, std::vector<Program*>& released);
     // Staged parameter publishing (type-tagged so values never reach the wrong processor).
-    void publishStagedParams(int typeIndex, const ParamValues& v);
+    // `target` (V5): the staged processor these values are for. Values are applied only to that processor, so a COMMIT
+    // that keeps the same type staged never lets the new draft reach the processor being committed. nullptr = any
+    // staged processor of `typeIndex` (legacy behaviour).
+    void publishStagedParams(int typeIndex, const ParamValues& v, const FxProcessor* target = nullptr);
     void setSolo(bool on) { solo_.store(on); }
     void setMute(bool on) { mute_.store(on); }
     void setBypass(bool on) { bypass_.store(on); }
@@ -125,6 +132,7 @@ private:
 
     std::array<std::atomic<float>, kMaxParams> stagedParams_{};
     std::atomic<int> stagedParamType_{-1};
+    std::atomic<const FxProcessor*> stagedParamTarget_{nullptr};
     std::atomic<uint32_t> stagedParamVersion_{0};
     uint32_t appliedVersion_ = 0;
 

@@ -258,6 +258,10 @@ class PitchShift final : public FxBase {
             dsp::panGains(-w, gA, gAo);  // voice A leans left, voice B right
             dsp::panGains(w, gB, gBo);
             const float ga = (c == 0 ? gA : gAo) * 1.41f, gbb = (c == 0 ? gB : gBo) * 1.41f * gb;
+            // V5 Phase 5: the recirculated signal is the sum of both voices with pan gains up to 1.41 each, so a loop
+            // with coinciding voices reached 0.9 x 2.8 (measured growth, ih1_feedback_audit pitch_shift rnd4). The
+            // feedback is normalised by the voices' summed gain: loop gain <= Feedback (<= 0.9).
+            const float fbNorm = 1.0f / std::max(1.0f, ga + gbb);
             for (int i = 0; i < n; ++i) {
                 float x = ch[c][i] + fb * fbLine_[c].readCubic(dly);
                 stft_[c].process(&x, 1, [&](cfloat* X, int N) {
@@ -268,7 +272,7 @@ class PitchShift final : public FxBase {
                     if (gbb > 0.0f) shiftA_[c].addVoice(ana_[c], rb, character, preserve, gbb, X, nullptr, 1.0f, 0.0f, 1);
                     dsp::Stft::mirror(X, N);
                 });
-                fbLine_[c].push(2.0f * std::tanh(0.5f * x));
+                fbLine_[c].push(2.0f * std::tanh(0.5f * x * fbNorm));
                 ch[c][i] = x;
             }
         }

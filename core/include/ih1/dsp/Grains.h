@@ -26,6 +26,7 @@ public:
 
     void prepare(double sr, float bufferSeconds, uint32_t seed) {
         sr_ = sr;
+        weightRel_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.08 * sr)));
         int size = 1;
         while (size < static_cast<int>(bufferSeconds * sr)) size <<= 1;
         for (auto& b : buf_) b.assign(static_cast<size_t>(size), 0.0f);
@@ -47,6 +48,7 @@ public:
         for (auto& g : grains_) g.active = false;
         w_ = 0;
         countdown_ = 0.0f;
+        weight_ = 0.0f;
         rng_.seed_(seed_);
         filled_ = 0;
     }
@@ -70,7 +72,7 @@ public:
             countdown_ += interval * (1.0f + clamp01(p.timingJitter) * rng_.bipolar() * 0.9f);
             if (countdown_ < 1.0f) countdown_ = 1.0f;
         }
-        float l = 0.0f, r = 0.0f;
+        float l = 0.0f, r = 0.0f, wsum = 0.0f;
         for (auto& g : grains_) {
             if (!g.active) continue;
             const float ph = g.t / g.len;
@@ -84,6 +86,7 @@ public:
             const float s0 = read(0, i0, f), s1 = read(1, i0, f);
             l += a * g.gl * s0;
             r += a * g.gr * s1;
+            wsum += a * std::max(g.gl, g.gr);
             g.pos += g.inc;
             g.t += 1.0f;
             if (g.t >= g.len) g.active = false;
@@ -92,7 +95,15 @@ public:
         const float norm = 1.0f / std::sqrt(overlap) * 1.3f;
         outL = l * norm;
         outR = r * norm;
+        // V5 Phase 5: |out| <= wsum * norm * max|buffer| exactly (envelope weights times pan gains). Peak-held with a
+        // ~80 ms release so a feedback path scaled by feedbackScale() has a recirculation gain <= its own feedback
+        // amount whatever the overlap, coherence or pan (the 1/sqrt(overlap) output law alone lets coherent grains
+        // sum above unity: measured runaway in Granular and Reverse Grains).
+        const float wb = wsum * norm;
+        weight_ = wb > weight_ ? wb : weight_ + (wb - weight_) * weightRel_;
     }
+    // Multiply a signal derived from this cloud's output by this before feeding it back into the cloud's buffer.
+    float feedbackScale() const { return 1.0f / std::max(1.0f, weight_); }
 
 private:
     static constexpr int kEnvSize = 512;
@@ -139,6 +150,7 @@ private:
     std::array<Grain, kMaxGrains> grains_{};
     std::array<std::array<float, kEnvSize + 1>, 3> env_{};
     float countdown_ = 0.0f;
+    float weight_ = 0.0f, weightRel_ = 0.0003f;
     bool frozen_ = false;
     uint32_t seed_ = 1;
     Rng rng_;
