@@ -1,4 +1,4 @@
-IH1 {VERSION} - Windows test build, feedback round 4
+IH1 {VERSION} - Windows test build, feedback round 5
 ====================================================
 
 What this is
@@ -32,7 +32,19 @@ Test status of this build (see docs/V4_IMPLEMENTATION.md in the repository for t
   * NOT tested in FL Studio by the developer (no Windows / FL Studio in the build environment). Please use
     docs/FL_STUDIO_TEST_CHECKLIST.md.
 
-What is new in 0.4.0 (round 4)
+What is new in 0.5.0 (round 5)
+  * COMMIT keeps the effect browser where it is: the committed copy plays, a fresh copy of the same effect
+    (defaults) waits muted. Touch a control or press M to audition it.
+  * Nine new effects: Cloud Chamber, Reflection Sculptor, Reverse Bloom, Swell, Pulse Shaper, Drum Crush,
+    Drum Space, Band Transients, Hit Melody (64 effects in total).
+  * 209 factory presets (61 new: atmosphere, drums / drum bus, tremolo / groove; two new categories).
+  * Macro knobs now appear only for meaningful effect COMBINATIONS (e.g. transient + crush, tremolo + echo,
+    granular + space), named for what they do; every macro is tested to be audible.
+  * Feedback runaways fixed in Shimmer, Granular, Reverse, Frequency Shifter, Chorus, Delay, Tape Echo, Pitch
+    Shift and Grain Engine (all loops now decay); more click fixes (Glitch Scatter, Time Warp).
+  * The formation stays inside the panel (auto-framing), shakes less, and is a little more luminous.
+
+What was new in 0.4.0 (round 4)
   * 148 factory presets in ten categories (searchable by sound, source and style), each with up to four
     performance macros (Preset Macro 1-4, automatable; committed settings never change).
   * Ten new effects: Slice Shuffler, Attack / Body, Echo Matrix, Reverse Pitch Echo, Dispersion, Modal
@@ -47,4 +59,4 @@ Safety
   monitor levels sensible, especially when trying extreme or high-feedback presets.
 
 Known issues
-  See docs/KNOWN_ISSUES.md (V4 section) in the repository.
+  See docs/KNOWN_ISSUES.md (V5 section) in the repository.

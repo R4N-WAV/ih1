@@ -6,10 +6,23 @@ A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll 
 
 ## Status
 
-Version 0.4.0 (test build, feedback round 4). V4 is documented in `docs/V4_IMPLEMENTATION.md`; open items are in
-`docs/KNOWN_ISSUES.md` (V4 section). Earlier rounds: `docs/V3_IMPLEMENTATION.md`, `docs/V2_1_IMPLEMENTATION.md`.
+Version 0.5.0 (test build, feedback round 5). V5 is documented in `docs/V5_IMPLEMENTATION.md`; open items are in
+`docs/KNOWN_ISSUES.md` (V5 section). Earlier rounds: `docs/V4_IMPLEMENTATION.md`, `docs/V3_IMPLEMENTATION.md`,
+`docs/V2_1_IMPLEMENTATION.md`.
 
-![The V4 formation: one continuous field for a six-effect chain](docs/img/v4_formation_6fx.jpg)
+**New in V5:**
+- **COMMIT keeps the browser on the effect.** The committed copy plays; a fresh copy at its defaults waits, muted,
+  for the next audition: touch a control or press M.
+- **64 effects.** Nine are new: Cloud Chamber, Reflection Sculptor, Reverse Bloom, Swell, Pulse Shaper, Drum Crush,
+  Drum Space, Band Transients and Hit Melody.
+- **209 factory presets.** 61 are new, across atmosphere, drums / drum bus, and tremolo / groove.
+- **Combination macros.** Macro knobs appear only when the chain combines effects in a meaningful way, named for
+  what they do; every macro is tested to be audible.
+- **Bounded feedback.** Every feedback loop decays (`tools/ih1_feedback_audit`).
+- **Fewer clicks** in chopping and buffer effects.
+- **FX tree.** It stays inside the panel, shakes less, and is a little more luminous.
+
+The V4 state, for reference:
 
 - **55 effects**, including ten new in V4: Slice Shuffler, Attack / Body, Echo Matrix, Reverse Pitch Echo,
   Dispersion, Modal Resonator, Texture Imprint, Spectral Shatter, Partial Recomposer and Spectral Graft.
@@ -68,7 +81,7 @@ The build produces:
 - `ih1_uitest`, the editor interaction test (needs a display: `xvfb-run` on Linux)
 - `fx_dump`, which prints the FX parameter schema
 
-To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.4.0 /DTestRound=4 /DSourceDir=<stage> installer\IH1.iss`.
+To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.5.0 /DTestRound=5 /DSourceDir=<stage> installer\IH1.iss`.
 
 Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching it.
 
@@ -84,7 +97,7 @@ Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching
   - **S** (SOLO FX) plays only the staged effect.
   - **M** (MUTE FX) silences only the staged effect and greys the whole staged column until you unmute.
   - The staged effect never appears in the formation.
-- **COMMIT** sends a frozen copy into the chain. A short transfer animation carries it into the formation, and the carousel returns to `None`.
+- **COMMIT** sends a frozen copy into the chain. A short transfer animation carries it into the formation. The carousel stays on the same effect with a fresh copy at its defaults, muted (V5): touch a control or press M to audition it.
 - **RESET** restores the staged effect's defaults and clears what it holds, such as a Looper's recording or delay and reverb tails.
 - **Settings:**
   - Graphs show the real response or state.

@@ -7,7 +7,7 @@ What gets installed
 
 Updating
   * Close FL Studio (or any DAW using IH1) before running the installer.
-  * Check the build: the tiny text under the IH1 wordmark shows the version and build, e.g. "v0.4.0 <build>".
+  * Check the build: the tiny text under the IH1 wordmark shows the version and build, e.g. "v0.5.0 <build>".
   * If an older IH1 still loads: in FL Studio open Options > Manage plugins, tick "Rescan previously
     verified plugins", click "Find installed plugins", and make sure no other folder in the plug-in
     search paths contains an older IH1.vst3.

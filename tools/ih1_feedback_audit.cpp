@@ -247,7 +247,6 @@ void auditPresets(double tail, const std::string& filter) {
             for (const auto& [k, v] : f.params) if ((holdParam(k) && v >= 0.5f) || selfOscillating(f.type, k, v)) holdOk = true;
         }
         for (int pass = 0; pass < 3; ++pass) {
-            if (pass > 0 && p.macros.empty()) break;
             Rig r;
             std::string err;
             if (!r.session.fromJson(presetToJson(p), false, &err)) {
@@ -255,6 +254,8 @@ void auditPresets(double tail, const std::string& filter) {
                 ++gFail;
                 break;
             }
+            // V5: macros are authored OR generated from the chain's combination at load: test what the session has
+            if (pass > 0 && r.session.activeMacroCount() == 0) break;
             for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, pass == 1 ? 1.0f : 0.0f);
             CaseResult res;
             for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, replays ? std::max(tail, 30.0) : tail, pass == 2, res);

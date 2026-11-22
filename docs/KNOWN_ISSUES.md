@@ -1,6 +1,47 @@
 # Known issues and unverified items
 
-## V4 (this pass, 0.4.0 test round 4)
+## V5 (this pass, 0.5.0 test round 5)
+
+### Not verified in the target host
+- **FL Studio, Windows and real GPUs were not tested by the developer.** Everything ran on Linux (Mesa llvmpipe):
+  unit / behaviour / audit tests, the VST3 host test and the editor test. Use `docs/FL_STUDIO_TEST_CHECKLIST.md`
+  (V5 section). In particular: the COMMIT stand-by copy and FL's delay compensation for latency effects, the
+  adaptive accumulation and auto-framing on real GPUs, and automation of the combination macros.
+- **KADAL was not searched**: attaching `R4N-WAV/Kadal` was refused by the session's permission policy (as in V4).
+  Research relied on the V5 supplement, the KADAL paths recorded in earlier rounds and the code.
+
+### Audio
+- **Remaining click-audit flags at static settings** (normal use), 5 of 660 cases: Time Warp 1 and Reverse Pitch Echo
+  1 (waveforms inspected sample by sample: smooth onsets of energy under a low tone filter, no discontinuity found);
+  Granular 1 and Grain Engine 2 (V4 residuals; Grain Engine's include its intended feedback-rate sample-and-hold).
+- **Moving-parameter worst case** (half of all continuous controls jumping every 0.35-0.9 s, far beyond automation):
+  Granular 6, Grain Engine 7, Echo Matrix 7, Drum Crush 5 (new: threshold / drive jumps through the glide), Attack /
+  Body 4, Slice Shuffler 2, Time Warp 1, Reverse 1, Reverse Pitch Echo 1, Drum Space 1, Cloud Chamber 1.
+- **Tape Echo above 100 % Intensity** still self-oscillates by design ("the tape sings"), bounded by its saturation;
+  macros can never push it there (macro-safe maximum 100 %).
+- **Feedback ceilings changed sounds slightly**: Delay at 100 % feedback with Drive, multi-head Tape Echo, Reverse
+  Buffer mode, Shimmer, Chorus and Pitch Shift feedback now decay where they used to hold or grow. Presets that
+  relied on the old runaway (e.g. *Dub Machine*) now have long decaying tails instead.
+- **Combination macros replace the V4 generic ones**: 73 of 209 presets have macros (authored or by combination);
+  the other presets show none, by design. User presets saved with V4 generic macros keep them (authored).
+
+### Visual
+- **Auto-framing pulls the camera back** for long chains or narrow windows (zoom 0.45-1): very long chains look
+  smaller than in V4. Faint threads and halo may still cross the panel edge (they thin out there by design).
+- **Adaptive accumulation** (9 % calm, 30 % on transients) trades a little smear of fast motion in a calm field for
+  ~8 dB less frame-to-frame noise (CPU-reference measurement). Not measured on real GPUs.
+- Commit / reorder still glide every node to its new slot (1.1 s), with the camera easing back: continuous, but the
+  whole tree re-proportions; the procedural seeds and identities never change.
+
+### Presets
+- The V4 "two-thirds transformative" quota applies to the V4 bank only; the V5 additions include deliberately subtle,
+  mix-useful presets. Audition sources are synthetic stand-ins, not recordings; listening on real material is the
+  owner's call.
+
+---
+
+
+## V4 (0.4.0 test round 4)
 
 ### Not verified in the target host
 - **FL Studio, Windows and real GPUs were not tested by the developer.** Everything ran on Linux (Mesa llvmpipe).

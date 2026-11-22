@@ -139,3 +139,30 @@ Report anything unexpected with the steps, so it can be reproduced in `ih1_hostt
    drums and a pad; check latency compensation for the three spectral ones (Shatter, Recomposer, Graft).
 7. **Formation**: compare with the reference video / still at several window sizes and while resizing: one continuous
    field, no per-effect orbs, no square patches, plum background (not pure black). Note the GPU and the frame rate.
+
+## V5 (0.5.0) additions to check in FL Studio
+
+None of these were tested in FL Studio by the developer (Linux only: unit tests, VST3 host test, editor test on Mesa).
+
+1. **Version**: the text under the IH1 wordmark reads `v0.5.0 <build>`.
+2. **Commit keeps the browser position**: stage Reverb, set it up, COMMIT. Expect: the carousel still shows Reverb,
+   the settings panel stays, MUTE (M) is lit, the description reads "Committed. This fresh copy is muted...", and you
+   hear the committed reverb once (no doubled reverb). Touch any Reverb control: M turns off and the fresh copy is
+   audible. COMMIT is greyed while the copy is muted (no silent double commit). Repeat quickly 5x with duplicates.
+3. **Commit of a latency effect** (e.g. Harmony / Pitch Shift): FL's reported delay must not jump at COMMIT; it
+   rises only when you audition the new copy. Listen for a glitch at the moment of COMMIT (there should be none).
+4. **Macros**: load *Init*, commit Transient Shaper then Drum Crush: three knobs (Impact / Body / Dirt) appear beside
+   IN / MIX / OUT. Hover one: the tooltip lists exactly what it moves. Bypass Drum Crush: the knobs disappear.
+   A chain of EQ + Reverb shows no macro knobs. Automate Preset Macro 1 in FL and confirm it is audible.
+5. **Feedback safety**: Shimmer (Shimmer 100 %, Decay 30 s), Delay (Feedback 100 %, Drive 100 %), Tape Echo (3 heads,
+   Intensity 100 %), Granular (Feedback 100 %, max density). Play a loop, stop: each tail must keep decaying
+   (Tape Echo above 100 % Intensity still "sings" by design and stops when you go back to 100 % or below).
+6. **New effects**: Cloud Chamber (try Freeze on / off while playing), Reflection Sculptor (change Pattern while
+   playing: no clicks), Reverse Bloom (synced to FL's tempo), Swell (reports 3 ms latency in Full Quality, 0 in Low /
+   Zero), Pulse Shaper (locks to FL's grid when playing; Band = Highs on a drum loop), Drum Crush, Drum Space (Gated),
+   Band Transients, Hit Melody.
+7. **New preset categories**: *Drums / Drum Bus* and *Tremolo / Groove* in the preset browser; step through them with
+   the arrows during playback (no clicks, levels sensible).
+8. **Formation**: resize the window from narrowest to widest: the dense part of the field never touches the panel
+   edges (it reframes smoothly). Watch a silent, static chain for 30 s: no fine shaking. Commit several effects in a
+   row: the field reframes gradually, it never resets or pops. Check GPU load in FL's performance monitor.

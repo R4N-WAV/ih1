@@ -344,8 +344,31 @@ int main() {
             pump(450);  // past the double-commit guard
         };
         commitClick();
-        check(chainSize(*proc) == 1 && selected(*proc) == -1, "COMMIT adds one instance and the carousel returns to None");
-        check(!ed->settings().isVisible(), "...and the settings panel hides again");
+        // V5 Phase 7: the browser stays on the committed effect with a fresh, muted ("standby") copy
+        check(chainSize(*proc) == 1 && selected(*proc) == reverb, "COMMIT adds one instance and the carousel stays on the effect (V5)");
+        check(ed->settings().isVisible(), "...the settings panel stays visible");
+        bool standby = false, muted = false;
+        {
+            const ScopedLock sl(proc->sessionLock());
+            standby = proc->session().standby();
+            muted = proc->session().mute();
+        }
+        check(standby && muted, "...and the fresh copy is muted (standby), so the committed one is heard once");
+        {
+            bool carouselOn = false, commitOn = true;
+            for (auto* c : ed->getChildren()) {
+                if (auto* b = dynamic_cast<TextButton*>(c); b && b->getButtonText() == "COMMIT") commitOn = b->isEnabled();
+            }
+            carouselOn = ed->carousel().isEnabled();
+            check(carouselOn && !commitOn, "...the carousel stays usable; COMMIT waits for an audition (no silent double commit)");
+        }
+        // a UI edit of a control auditions the fresh copy
+        proc->uiSetParam(0, fxRegistry()[static_cast<size_t>(reverb)].params[0].defaultValue);
+        pump(100);
+        {
+            const ScopedLock sl(proc->sessionLock());
+            check(!proc->session().mute() && !proc->session().standby(), "...touching a control ends standby (MUTE off)");
+        }
         proc->uiSelect(delay); pump(100); commitClick();
         proc->uiSelect(reverb); pump(100); commitClick();
         pump(300);
