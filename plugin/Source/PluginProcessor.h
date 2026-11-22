@@ -62,6 +62,7 @@ public:
     bool uiToggleEnabled(uint64_t id);
     // V4 Phase 1.5: preset macros (names of the recalled chain's macros; empty string = no live target)
     std::vector<juce::String> presetMacroNames();
+    juce::String presetMacroDescription(int k);  // V5: "Bloom: Reverb Mix +30, Delay Mix +20" and its combination
     float presetMacroValue(int k) const;
     void uiSetPresetMacro(int k, float v01);
     void uiPresetMacroGesture(int k, bool begin);
@@ -118,6 +119,7 @@ private:
     void pullHostParams(bool enforceExclusive);
     void afterModelChange();  // latency, tail, macro sync, revision (lock held)
     void syncMacrosFromDraft();
+    uint64_t seenMacroGen_ = 0;
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     Engine engine_;

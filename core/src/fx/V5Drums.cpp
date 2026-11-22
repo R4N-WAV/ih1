@@ -489,7 +489,7 @@ class HitMelody final : public FxBase {
     }
     void reset() override {
         for (auto& v : voice_) for (auto& r : v.res) r.reset();
-        for (auto& v : voice_) { v.exc = 0.0f; v.hz = 220.0f; v.target = 220.0f; }
+        for (auto& v : voice_) { v.exc = 0.0f; v.hz = 220.0f; v.target = 220.0f; v.pending = false; v.fade = 0; v.dirty = true; }
         cur_ = 0;
         step_ = 0;
         walk_ = 0;
@@ -530,28 +530,48 @@ class HitMelody final : public FxBase {
         mix_.capture(ch, n);
         const float t60 = fp(hmDecay);
         const float bright = pct(hmBright);
-        const float excA = 1.0f - std::exp(-dsp::kTwoPi * (300.0f + 12000.0f * bright * bright) / srf());
+        if (excA_ <= 0.0f) excA_ = 1.0f - std::exp(-dsp::kTwoPi * (300.0f + 12000.0f * bright * bright) / srf());
         const float ratio = 1.4f + 4.0f * (1.0f - pct(hmSensitivity));
         const float glideC = fp(hmGlide) > 0.5f ? 1.0f - std::exp(-1.0f / (fp(hmGlide) * 0.001f * srf())) : 1.0f;
         static const float partial[3] = {1.0f, 2.0f, 3.01f}, plev[3] = {1.0f, 0.5f, 0.3f};
+        const int fadeLen = std::max(1, static_cast<int>(0.003f * srf()));
         for (int i = 0; i < n; ++i) {
             const float x = 0.5f * (ch[0][i] + ch[1][i]);
             float strike = 0.0f;
             if (onset_.process(std::fabs(x), ratio)) {
-                // the new note goes to the other voice; the previous one keeps ringing (no retuning of a ringing filter)
-                cur_ ^= 1;
+                // the new note goes to the next voice; the others keep ringing. A voice that is still ringing is faded
+                // out over 3 ms before it is retuned (V5 Phase 6: retuning a ringing two-pole changes its amplitude
+                // abruptly), so the strike waits for that fade
+                cur_ = (cur_ + 1) % kVoices;
                 auto& v = voice_[cur_];
-                v.target = noteHz(nextIndex());
+                v.pendingHz = noteHz(nextIndex());
+                v.pendingStrike = std::min(1.0f, 2.0f * onset_.fast.value());  // the hit's level strikes the note
+                v.fade = std::fabs(v.res[0].y1) + std::fabs(v.res[0].y2) > 1e-4f ? fadeLen : 0;
+                v.pending = true;
+            }
+            for (int k = 0; k < kVoices; ++k) {
+                auto& v = voice_[k];
+                if (!v.pending) continue;
+                if (v.fade > 0) { --v.fade; continue; }
+                for (auto& rr : v.res) rr.reset();
+                v.target = v.pendingHz;
                 if (glideC >= 1.0f || v.hz <= 0.0f) v.hz = v.target;
-                v.dirty = true;  // retune this (silent) voice before it is struck
-                strike = std::min(1.0f, 2.0f * onset_.fast.value());  // the hit's level strikes the note
+                v.dirty = true;
+                v.pending = false;
+                if (k == cur_) {
+                    strike = v.pendingStrike;
+                    // V5 Phase 6: the strike is band-limited to ~2x the note's highest partial, so even the top partial
+                    // starts continuously (a wider-band impulse made a click-like step on smooth sources)
+                    const float fc = std::min(300.0f + 12000.0f * bright * bright, 2.0f * 3.01f * v.target);
+                    excA_ = 1.0f - std::exp(-dsp::kTwoPi * std::max(fc, 60.0f) / srf());
+                }
             }
             // band-limited strike: a one-pole low-pass keeps the impulse's area (the fundamental rings at the same level),
             // Brightness decides how much the upper partials are struck
-            excLp_ += excA * (strike - excLp_);
+            excLp_ += excA_ * (strike - excLp_);
             (void)excEnv_;
             float out = 0.0f;
-            for (int k = 0; k < 2; ++k) {
+            for (int k = 0; k < kVoices; ++k) {
                 auto& v = voice_[k];
                 if (v.hz != v.target) {
                     v.hz += glideC * (v.target - v.hz);
@@ -564,7 +584,8 @@ class HitMelody final : public FxBase {
                     v.dirty = false;
                 }
                 const float e = k == cur_ ? excLp_ : 0.0f;
-                for (int p = 0; p < 3; ++p) out += plev[p] * v.res[p].process(e);
+                const float fg = v.pending && v.fade > 0 ? rcos(static_cast<float>(v.fade) / static_cast<float>(fadeLen)) : (v.pending ? 0.0f : 1.0f);
+                for (int p = 0; p < 3; ++p) out += fg * plev[p] * v.res[p].process(e);
             }
             // a strike rings at ~0.5 x its level per partial (0.9 x for the three together); overlapping notes and
             // rolls are rounded above -1 dBFS (each resonator is stable on its own, r < 1)
@@ -575,11 +596,12 @@ class HitMelody final : public FxBase {
         }
         mix_.apply(ch, n);
     }
-    struct Voice { Res res[3]; float hz = 220.0f, target = 220.0f, t60 = -1.0f, exc = 0.0f; bool dirty = true; };
-    Voice voice_[2];
+    static constexpr int kVoices = 3;
+    struct Voice { Res res[3]; float hz = 220.0f, target = 220.0f, t60 = -1.0f, exc = 0.0f, pendingHz = 220.0f, pendingStrike = 0.0f; int fade = 0; bool dirty = true, pending = false; };
+    Voice voice_[kVoices];
     Onset onset_;
     int cur_ = 0, step_ = 0, walk_ = 0;
-    float excLp_ = 0.0f, excEnv_ = 0.0f;
+    float excLp_ = 0.0f, excEnv_ = 0.0f, excA_ = -1.0f;
     MixStage mix_;
 };
 

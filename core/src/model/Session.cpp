@@ -139,7 +139,7 @@ void Session::rebuild(bool commitHandover, bool post) {
             mt.param = k;
             mt.depth = t.depth;
             mt.lo = d.params[static_cast<size_t>(k)].minValue;
-            mt.hi = d.params[static_cast<size_t>(k)].maxValue;
+            mt.hi = macroSafeMax(d.typeId, t.param, d.params[static_cast<size_t>(k)].maxValue);
         }
     }
     p->staged = staged_;
@@ -263,6 +263,7 @@ bool Session::commit() {
     solo_ = false;
     mute_ = true;
     standby_ = true;
+    refreshMacros();
     rebuild(true, false);
     if (pending_) pending_->stagedStartsMuted = true;
     tryPost();
@@ -292,6 +293,7 @@ bool Session::move(int from, int to) {
     CommittedInstance ci = chain_[static_cast<size_t>(from)];
     chain_.erase(chain_.begin() + from);
     chain_.insert(chain_.begin() + to, ci);
+    refreshMacros();
     rebuild(false);
     return true;
 }
@@ -300,6 +302,7 @@ bool Session::remove(uint64_t id) {
     const int i = indexOf(id);
     if (i < 0) return false;
     chain_.erase(chain_.begin() + i);
+    refreshMacros();
     rebuild(false);
     collectGarbage();
     return true;
@@ -311,6 +314,7 @@ bool Session::setEnabled(uint64_t id, bool on) {
     auto& ci = chain_[static_cast<size_t>(i)];
     if (ci.enabled_ == on) return true;
     ci.enabled_ = on;
+    refreshMacros();  // a bypassed effect no longer fills its role in a combination
     rebuild(false);  // same processors: the engine installs it at once and crossfades only that slot
     return true;
 }
@@ -318,6 +322,42 @@ bool Session::setEnabled(uint64_t id, bool on) {
 bool Session::toggleEnabled(uint64_t id) {
     const int i = indexOf(id);
     return i >= 0 && setEnabled(id, !chain_[static_cast<size_t>(i)].enabled());
+}
+
+void Session::refreshMacros() {
+    if (!macrosAuto_ && activeMacroCount() > 0) return;  // an authored (preset) set is still in use
+    std::string name;
+    auto next = comboMacros(chain_, &name);
+    bool same = next.size() == macros_.size();
+    for (size_t m = 0; same && m < next.size(); ++m) {
+        same = next[m].name == macros_[m].name && next[m].targets.size() == macros_[m].targets.size();
+        for (size_t t = 0; same && t < next[m].targets.size(); ++t)
+            same = next[m].targets[t].id == macros_[m].targets[t].id && next[m].targets[t].param == macros_[m].targets[t].param &&
+                   next[m].targets[t].depth == macros_[m].targets[t].depth;
+    }
+    macrosAuto_ = true;
+    comboName_ = name;
+    if (same) return;
+    macros_ = std::move(next);
+    ++macroGen_;
+}
+
+std::string Session::macroDescription(int m) const {
+    if (m < 0 || m >= static_cast<int>(macros_.size())) return {};
+    std::string s = macros_[static_cast<size_t>(m)].name + ":";
+    bool first = true;
+    for (const auto& t : macros_[static_cast<size_t>(m)].targets) {
+        const int i = indexOf(t.id);
+        if (i < 0) continue;
+        const auto& d = chain_[static_cast<size_t>(i)].descriptor();
+        const int k = d.paramIndex(t.param);
+        if (k < 0) continue;
+        char b[48];
+        std::snprintf(b, sizeof b, " %+g", static_cast<double>(t.depth));
+        s += (first ? " " : ", ") + d.name + " " + d.params[static_cast<size_t>(k)].name + b;
+        first = false;
+    }
+    return s;
 }
 
 int Session::activeMacroCount() const {
@@ -333,6 +373,9 @@ int Session::activeMacroCount() const {
 void Session::clearChain() {
     chain_.clear();
     macros_.clear();
+    macrosAuto_ = true;
+    comboName_.clear();
+    ++macroGen_;
     rebuild(false);
     collectGarbage();
 }
@@ -340,6 +383,9 @@ void Session::clearChain() {
 void Session::initialise() {
     chain_.clear();
     macros_.clear();
+    macrosAuto_ = true;
+    comboName_.clear();
+    ++macroGen_;
     selected_ = kNone;
     staged_ = nullptr;
     solo_ = mute_ = standby_ = false;
@@ -454,7 +500,7 @@ std::string Session::toJson(bool includeSession) const {
         chain.push(std::move(e));
     }
     root.set("chain", std::move(chain));
-    if (!macros_.empty()) {
+    if (!macros_.empty() && !macrosAuto_) {  // V5: generated (combination) macros are recomputed on load, not stored
         json::Value ms = json::Value::array();
         for (const auto& m : macros_) {
             json::Value mo = json::Value::object();
@@ -591,6 +637,11 @@ bool Session::fromJson(const std::string& text, bool includeSession, std::string
     selected_ = kNone;
     staged_ = nullptr;
     solo_ = mute_ = standby_ = false;
+    // V5 Phase 8: a document's macros are authored (kept as saved); without any, the chain's combination decides
+    ++macroGen_;
+    macrosAuto_ = macros_.empty();
+    comboName_.clear();
+    refreshMacros();
     syncRouting();
     rebuild(false);
     collectGarbage();

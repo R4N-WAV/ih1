@@ -159,6 +159,7 @@ private:
     Svf fbHp_[2], fbLp_[2];
     RateReducer fbRate_;
     float fbState_[2] = {0.0f, 0.0f};
+    float fbWeight_ = 0.0f, fbWeightRel_ = 0.0003f;  // V5: peak-held grain weight bound for the feedback path
     float dcX_[2] = {0.0f, 0.0f}, dcY_[2] = {0.0f, 0.0f};
     float lastHp_ = -1.0f, lastLp_ = -1.0f;
     // display: running peak bins over the most recent span

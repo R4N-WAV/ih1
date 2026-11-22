@@ -154,6 +154,11 @@ void Processor::afterModelChange() {
         setLatencySamples(lat);
     }
     tail_.store(session_->tailSeconds());
+    // V5 Phase 8: a new macro set (another combination, a recall) starts from 0 = the chain exactly as committed
+    if (session_->macroGeneration() != seenMacroGen_) {
+        seenMacroGen_ = session_->macroGeneration();
+        for (auto* p : presetMacros_) if (p) p->setValueNotifyingHost(0.0f);
+    }
     revision_.fetch_add(1);
 }
 
@@ -264,6 +269,17 @@ std::vector<juce::String> Processor::presetMacroNames() {
         v.push_back(live ? juce::String::fromUTF8(m.name.c_str()) : juce::String());
     }
     return v;
+}
+
+juce::String Processor::presetMacroDescription(int k) {
+    const juce::ScopedLock sl(lock_);
+    juce::String d = juce::String::fromUTF8(session_->macroDescription(k).c_str());
+    if (d.isEmpty()) return d;
+    if (session_->macrosGenerated() && !session_->macroCombination().empty())
+        d << "\n\nAppears because the chain combines " << juce::String::fromUTF8(session_->macroCombination().c_str()) << " effects.";
+    else
+        d << "\n\nAuthored for this preset.";
+    return d;
 }
 
 float Processor::presetMacroValue(int k) const {

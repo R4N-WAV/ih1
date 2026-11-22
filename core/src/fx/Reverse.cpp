@@ -53,7 +53,8 @@ class Reverse final : public FxBase {
         const float rate = dsp::semitonesToRatio(fp(kPitch));
         // V5: the recirculation also respects a 120 s ceiling on T60 for the chunk time (as Delay), so 95 % on a
         // two-second chunk is a long cascade, not a practically endless one
-        const float fb = std::min({pct(kFeedback), 0.95f, std::pow(10.0f, -static_cast<float>(lenSec) / 40.0f)});
+        // Delay mode re-reads material when pitched down (slower reversed playback), so its cap is 0.9
+        const float fb = std::min({pct(kFeedback), mode == 1 ? 0.9f : 0.95f, std::pow(10.0f, -static_cast<float>(lenSec) / 40.0f)});
         const float spread = pct(kSpread);
 
         if (mode == 2) {  // ---------------------------------------------------------------- grains

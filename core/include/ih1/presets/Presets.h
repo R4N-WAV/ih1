@@ -40,7 +40,9 @@ struct FactoryPreset {
 void addV4Presets(std::vector<FactoryPreset>& v);
 std::string v4CategoryFor(const std::string& v3Category);
 std::string v4DefaultIntensity(const std::string& category, const std::string& id);
-std::vector<PresetMacro> deriveMacros(const FactoryPreset& p);
+std::vector<PresetMacro> deriveMacros(const FactoryPreset& p);  // V4 rule table (kept for reference; no longer applied)
+// V5 additions (PresetsV5.cpp): atmosphere, drum / drum-bus and tremolo / groove presets
+void addV5Presets(std::vector<FactoryPreset>& v);
 
 // Category display order. The last one, "User", holds user presets (not part of the factory list).
 const std::vector<std::string>& presetCategories();

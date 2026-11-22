@@ -249,10 +249,13 @@ TEST_CASE("preset JSON carries metadata and malformed preset files are rejected 
 // subtle utility. The Musical / Beautiful family is deliberately not destructive, so it is excluded from the
 // denominator; everything else must still be at least two-thirds transformative.
 TEST_CASE("V4 factory bank: at least two-thirds of the creative (non-utility, non-musical) presets are transformative") {
+    // V5: the quota stays on the V4 bank. The V5 additions are deliberately a mix of mix-useful enhancements and
+    // radical statements (atmosphere, drum-bus and groove presets: "do not make every preset extreme"), so they are
+    // judged by the level / safety / distinctness gates instead and only counted here.
     int creative = 0, transformative = 0;
     std::string timid;
     for (const auto& p : factoryPresets()) {
-        if (p.category == "Init / Utility" || p.category == "Musical / Beautiful") continue;
+        if (p.category == "Init / Utility" || p.category == "Musical / Beautiful" || p.version >= 5) continue;
         ++creative;
         const auto srcs = audition::sourcesForTags(p.tags);
         int t = 0, n = 0;

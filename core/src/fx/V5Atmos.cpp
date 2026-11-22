@@ -210,9 +210,13 @@ class ReflectionSculptor final : public FxBase {
             lfo_[k].setShape(dsp::Lfo::Drift);
         }
         timeS_.prepare(sr_, 80.0f);
+        preS_.prepare(sr_, 60.0f);
+        diffS_.prepare(sr_, 40.0f);
+        xfStep_ = 1.0f / (0.04f * srf());
         mix_.prepare(sr_, maxBlock_, 0, MixLaw::Linear);
     }
     void reset() override {
+        xf_ = 1.0f;
         for (auto& l : line_) l.reset();
         for (auto& c : ap_) for (auto& a : c) a.reset();
         for (auto& z : lp_) z = 0.0f;
@@ -221,9 +225,30 @@ class ReflectionSculptor final : public FxBase {
         mix_.reset();
     }
     void applyParams(bool snap) override {
-        build();
+        // V5 Phase 6: a new layout (pattern, tap count, spread, fall-off, variation) is crossfaded in over 40 ms from
+        // the layout that was playing, so read heads never jump
+        const int pat = ip(rsPattern), taps = static_cast<int>(std::lround(fp(rsTaps))), seed = static_cast<int>(std::lround(fp(rsSeed)));
+        // Positions (pattern, tap count, variation) are crossfaded; a change that arrives during a crossfade waits for it
+        // to finish (the glide delivers several intermediate tap counts). Levels and pans (spread, fall-off) glide.
+        const bool layoutChanged = pat != lastPat_ || taps != lastTaps_ || seed != lastSeed_;
+        if (snap || !built_) {
+            build();
+            std::copy(std::begin(lvl_), std::end(lvl_), std::begin(lvlS_));
+            std::copy(std::begin(pan_), std::end(pan_), std::begin(panS_));
+            normS_ = norm_;
+            built_ = true;
+            xf_ = 1.0f;
+            pendingBuild_ = false;
+        } else if (layoutChanged || pendingBuild_ || xf_ < 1.0f) {
+            pendingBuild_ = true;  // positions change only through the crossfade (queued while one is running)
+        } else {
+            build();  // same positions: new level / pan targets only (they glide per sample)
+        }
+        lastPat_ = pat; lastTaps_ = taps; lastSeed_ = seed;
         timeS_.setTarget(fp(rsTime));
-        if (snap) timeS_.snap(fp(rsTime));
+        preS_.setTarget(fp(rsPredelay));
+        diffS_.setTarget(pct(rsDiffusion));
+        if (snap) { timeS_.snap(fp(rsTime)); preS_.snap(fp(rsPredelay)); diffS_.snap(pct(rsDiffusion)); }
         mix_.setMix(pct(rsMix), snap);
     }
     // Deterministic tap layout per pattern: position 0..1 of the span, level, pan.
@@ -264,36 +289,65 @@ class ReflectionSculptor final : public FxBase {
     void processBlock(float* const* ch, int n, const ProcessContext&) override {
         mix_.capture(ch, n);
         const float motion = pct(rsMotion) * 0.003f * srf();
-        const float pre = fp(rsPredelay) * 0.001f * srf();
-        const float diff = pct(rsDiffusion);
         // distance darkening: the far end of the span is low-passed down to Tone; near taps stay open
         const float toneA = 1.0f - std::exp(-dsp::kTwoPi * fp(rsTone) / srf());
         const float cap = static_cast<float>(line_[0].capacity() - 4);
         for (int i = 0; i < n; ++i) {
             const float span = timeS_.next() * 0.001f * srf();
+            const float pre = preS_.next() * 0.001f * srf();
+            const float diff = diffS_.next();
+            if (pendingBuild_ && xf_ >= 1.0f) {  // start the queued layout crossfade from what is playing now
+                std::copy(std::begin(pos_), std::end(pos_), std::begin(oPos_));
+                std::copy(std::begin(lvlS_), std::end(lvlS_), std::begin(oLvl_));
+                std::copy(std::begin(panS_), std::end(panS_), std::begin(oPan_));
+                oNorm_ = normS_;
+                std::copy(std::begin(lp_), std::end(lp_), std::begin(oLp_));  // the outgoing taps keep their tone memory
+                build();
+                std::copy(std::begin(lvl_), std::end(lvl_), std::begin(lvlS_));
+                std::copy(std::begin(pan_), std::end(pan_), std::begin(panS_));
+                normS_ = norm_;
+                xf_ = 0.0f;
+                pendingBuild_ = false;
+            }
+            normS_ += 0.002f * (norm_ - normS_);
             line_[0].push(ch[0][i]);
             line_[1].push(ch[1][i]);
-            float out[2] = {0.0f, 0.0f};
+            float out[2] = {0.0f, 0.0f}, old[2] = {0.0f, 0.0f};
+            const bool fading = xf_ < 1.0f;
+            if (fading) xf_ = std::min(1.0f, xf_ + xfStep_);
+            const float wNew = rcos(xf_), wOld = 1.0f - wNew;
             for (int k = 0; k < kTaps; ++k) {
-                if (lvl_[k] <= 0.0f && gainS_[k] <= 0.0f) continue;
-                // per-tap level glides (pattern / tap-count changes never step)
-                float& g = gainS_[k];
-                if (g < 0.0f) g = lvl_[k];
-                g += 0.002f * (lvl_[k] - g);
                 const float m = motion > 0.0f ? motion * lfo_[k].next() : 0.0f;
-                const float d = std::clamp(pre + pos_[k] * span + m, 1.0f, cap);
-                const float a = toneA + (1.0f - toneA) * (1.0f - pos_[k]);
-                float gl, gr;
-                dsp::panGains(pan_[k], gl, gr);
-                for (int c = 0; c < 2; ++c) {
-                    const float v = line_[c].readLinear(d);
-                    float& z = lp_[k * 2 + c];
-                    z += a * (v - z);
-                    out[c] += g * z * (c ? gr : gl) * 1.41421356f;
+                lvlS_[k] += 0.002f * (lvl_[k] - lvlS_[k]);
+                panS_[k] += 0.002f * (pan_[k] - panS_[k]);
+                if (lvlS_[k] > 1e-6f) {
+                    const float d = std::clamp(pre + pos_[k] * span + m, 1.0f, cap);
+                    const float a = toneA + (1.0f - toneA) * (1.0f - pos_[k]);
+                    float gl, gr;
+                    dsp::panGains(panS_[k], gl, gr);
+                    for (int c = 0; c < 2; ++c) {
+                        const float v = line_[c].readLinear(d);
+                        float& z = lp_[k * 2 + c];
+                        z += a * (v - z);
+                        out[c] += lvlS_[k] * z * (c ? gr : gl) * 1.41421356f;
+                    }
+                }
+                if (fading && oLvl_[k] > 0.0f) {  // the outgoing layout keeps its own tone filters (only during the fade)
+                    const float d = std::clamp(pre + oPos_[k] * span + m, 1.0f, cap);
+                    const float a = toneA + (1.0f - toneA) * (1.0f - oPos_[k]);
+                    float gl, gr;
+                    dsp::panGains(oPan_[k], gl, gr);
+                    for (int c = 0; c < 2; ++c) {
+                        float& z = oLp_[k * 2 + c];
+                        z += a * (line_[c].readLinear(d) - z);
+                        old[c] += oLvl_[k] * z * (c ? gr : gl) * 1.41421356f;
+                    }
                 }
             }
             for (int c = 0; c < 2; ++c) {
-                float y = out[c] * norm_;
+                float y = fading ? wNew * out[c] * normS_ + wOld * old[c] * oNorm_ : out[c] * normS_;
+                {
+                }
                 if (diff > 1e-4f) {
                     float dd = y;
                     for (auto& ap : ap_[c]) dd = ap.process(dd, 0.35f + 0.35f * diff);
@@ -310,7 +364,13 @@ class ReflectionSculptor final : public FxBase {
     dsp::Lfo lfo_[kTaps];
     dsp::Smoother timeS_;
     float pos_[kTaps] = {}, lvl_[kTaps] = {}, pan_[kTaps] = {}, gainS_[kTaps] = {}, lp_[kTaps * 2] = {};
-    float norm_ = 1.0f;
+    float oPos_[kTaps] = {}, oLvl_[kTaps] = {}, oPan_[kTaps] = {}, lvlS_[kTaps] = {}, panS_[kTaps] = {}, normS_ = 1.0f;
+    bool pendingBuild_ = false;
+    float oLp_[kTaps * 2] = {};
+    dsp::Smoother preS_, diffS_;
+    float norm_ = 1.0f, oNorm_ = 1.0f, xf_ = 1.0f, xfStep_ = 0.0005f, lastSpread_ = -1.0f, lastDecay_ = -1.0f;
+    int lastPat_ = -1, lastTaps_ = -1, lastSeed_ = -1;
+    bool built_ = false;
     MixStage mix_;
 };
 

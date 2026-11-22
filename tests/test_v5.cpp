@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "ih1/dsp/Basics.h"
@@ -340,4 +342,257 @@ TEST_CASE("V5 Hit Melody: successive hits ring at different pitches of the scale
     CHECK(z2 > z1);
     CHECK(z3 > z2);
     CHECK(rmsRange(out, 1.05, 1.15) > 0.01);  // clearly audible rings
+}
+
+// ============================================================================================ Phase 8: combination macros
+namespace {
+float drumsAndChord(long n, int c) {
+    const float chord = 0.12f * static_cast<float>(std::sin(2 * dsp::kPi * 220.0 * n / kSr + 0.2 * c) + std::sin(2 * dsp::kPi * 329.6 * n / kSr));
+    return hitTrain(n, c) + chord;
+}
+struct ComboCase { const char* name; std::vector<std::pair<const char*, std::vector<std::pair<const char*, float>>>> chain; std::vector<const char*> macros; };
+std::vector<float> renderWithMacros(const ComboCase& cc, float v, int only = -1, double seconds = 1.5) {
+    FxRig r;
+    for (const auto& [t, ps] : cc.chain) r.add(t, ps);
+    for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, (only < 0 || m == only) ? v : 0.0f);
+    r.run(0.3, drumsAndChord);  // macro smoothing settles
+    r.n = 0;
+    return r.run(seconds, drumsAndChord);
+}
+double relDiffDb(const std::vector<float>& a, const std::vector<float>& b) {
+    double e = 0, r = 0;
+    for (size_t i = 0; i < std::min(a.size(), b.size()); ++i) { e += (a[i] - b[i]) * (a[i] - b[i]); r += static_cast<double>(b[i]) * b[i]; }
+    return 10.0 * std::log10(std::max(e, 1e-24) / std::max(r, 1e-24));
+}
+}  // namespace
+
+TEST_CASE("V5 macros: eligible combinations get their own named, audible, bounded, monotonic macros") {
+    const std::vector<ComboCase> cases = {
+        {"Drum Bus", {{"transient", {}}, {"drum_crush", {{"blend", 40.0f}}}}, {"Impact", "Body", "Dirt"}},
+        {"Pulse into Echo", {{"pulse_shaper", {{"depth", 40.0f}}}, {"delay", {{"mix", 30.0f}}}}, {"Pulse", "Swing", "Echo Motion"}},
+        {"Groove Room", {{"glitch", {}}, {"drum_space", {}}}, {"Groove", "Room"}},
+        {"Granular Space", {{"granular", {{"mix", 50.0f}}}, {"reverb", {}}}, {"Scatter", "Cloud"}},
+        {"Dub Wear", {{"degrade", {{"mix", 60.0f}}}, {"tape_echo", {}}}, {"Wear", "Dub"}},
+        {"Pitch Halo", {{"pitch_shift", {{"mix", 30.0f}}}, {"shimmer", {}}}, {"Halo", "Decay"}},
+        {"Resonant Space", {{"modal", {{"mix", 30.0f}}}, {"cloud_chamber", {}}}, {"Ring", "Strike"}},
+        {"Spectral Blur", {{"spectral_smear", {{"mix", 50.0f}}}, {"reverb", {}}}, {"Blur", "Space"}},
+        {"Atmosphere", {{"reverb", {}}, {"delay", {}}}, {"Bloom", "Decay", "Drift"}},
+        {"Moving Space", {{"chorus", {}}, {"cloud_chamber", {}}}, {"Drift", "Bloom"}},
+        {"Deep Space", {{"reflections", {}}, {"cloud_chamber", {}}}, {"Bloom", "Drift"}},
+    };
+    for (const auto& cc : cases) {
+        const std::string cname = cc.name;
+        CAPTURE(cname);
+        FxRig probe;
+        for (const auto& [t, ps] : cc.chain) probe.add(t, ps);
+        const auto& ms = probe.session.macros();
+        std::string got;
+        for (int k = 0; k < static_cast<int>(ms.size()); ++k) got += probe.session.macroDescription(k) + " | ";
+        MESSAGE(cname << " -> " << got);
+        CHECK(ms.size() >= cc.macros.size());
+        if (ms.size() < cc.macros.size()) continue;
+        for (size_t k = 0; k < cc.macros.size(); ++k) CHECK(ms[k].name == cc.macros[k]);
+        CHECK(probe.session.macroCombination().find(cc.name) != std::string::npos);
+        // every macro moves >= 2 parameters, the set spans both effects, and no parameter belongs to two macros
+        std::set<std::pair<uint64_t, std::string>> seen;
+        std::set<uint64_t> inst;
+        for (const auto& m : ms) {
+            CHECK(m.targets.size() >= 2);
+            for (const auto& t : m.targets) { inst.insert(t.id); CHECK(seen.insert({t.id, t.param}).second); }
+        }
+        CHECK(inst.size() >= 2);
+        // EACH macro on its own: audible and growing (the difference from 0 rises at 25 / 50 / 75 / 100 %), bounded
+        const auto y0 = renderWithMacros(cc, 0.0f);
+        for (int m = 0; m < static_cast<int>(ms.size()); ++m) {
+            double prev = -300.0;
+            for (float v : {0.25f, 0.5f, 0.75f, 1.0f}) {
+                const auto y = renderWithMacros(cc, v, m);
+                float pk = 0;
+                for (float s : y) { REQUIRE(std::isfinite(s)); pk = std::max(pk, std::fabs(s)); }
+                CHECK(pk < 4.0f);
+                const double d = relDiffDb(y, y0);
+                // monotonic until the difference saturates (near 0 dB the whole wet field already differs)
+                if (prev < -3.0) CHECK_MESSAGE(d > prev - 1.5, ms[static_cast<size_t>(m)].name << " not monotonic at " << v);
+                prev = std::max(prev, d);
+            }
+            CHECK_MESSAGE(prev > -26.0, cname << " / " << ms[static_cast<size_t>(m)].name << " difference at 100 % only " << prev << " dB");
+        }
+    }
+}
+
+TEST_CASE("V5 macros: no combination, no macros; bypassing a member removes them; save / load restores them") {
+    FxRig a;
+    a.add("eq", {});
+    a.add("reverb", {});
+    CHECK(a.session.macros().empty());
+    CHECK(a.session.activeMacroCount() == 0);
+    FxRig b;
+    b.add("reverb", {});
+    b.add("delay", {});
+    REQUIRE(!b.session.macros().empty());
+    const auto gen = b.session.macroGeneration();
+    REQUIRE(b.session.setEnabled(b.session.chain()[1].id(), false));
+    CHECK(b.session.macros().empty());
+    CHECK(b.session.macroGeneration() != gen);
+    REQUIRE(b.session.setEnabled(b.session.chain()[1].id(), true));
+    REQUIRE(!b.session.macros().empty());
+    const auto names = b.session.macros().size();
+    const std::string doc = b.session.toJson(true);
+    FxRig c;
+    REQUIRE(c.session.fromJson(doc, true));
+    CHECK(c.session.macros().size() == names);
+    CHECK(c.session.macrosGenerated());
+    // a tape echo pushed by a macro never enters its self-oscillating range (> 100 %)
+    FxRig d;
+    d.add("degrade", {});
+    d.add("tape_echo", {{"intensity", 95.0f}});
+    for (int m = 0; m < kNumPresetMacros; ++m) d.engine.setMacro(m, 1.0f);
+    d.run(0.5, drumsAndChord);
+    const auto tail = d.run(14.0, [](long, int) { return 0.0f; });
+    CHECK(rmsRange(tail, 12.0, 14.0) < rmsRange(tail, 0.5, 2.5));  // decays
+}
+
+// ============================================================================================ Phase 5: runaway regressions
+// Each case is the worst legal setting found by tools/ih1_feedback_audit for a loop that used to grow or hold at full
+// level. After an impulse, a noise burst and a chord, 12 s of silence must end at least 12 dB below the excited level
+// (or under -70 dBFS), with no growth, no fault and no overs.
+namespace {
+void expectDecays(const char* type, std::vector<std::pair<const char*, float>> params) {
+    CAPTURE(std::string(type));
+    FxRig r;
+    r.add(type, params);
+    const auto ex = r.run(2.5, [](long n, int c) {
+        if (n == 0) return 0.9f;
+        if (n < 19200) { uint32_t h = static_cast<uint32_t>(n * 2 + c) * 0x9E3779B1u; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 13; return 0.35f * (static_cast<float>(h >> 8) / 8388608.0f - 1.0f); }
+        if (n < 120000) return 0.25f * static_cast<float>(std::sin(2 * dsp::kPi * 110.0 * n / kSr) + std::sin(2 * dsp::kPi * 164.8 * n / kSr));
+        return 0.0f;
+    });
+    const auto tail = r.run(12.0, [](long, int) { return 0.0f; });
+    double exc = 0;
+    for (double t = 0; t < 2.4; t += 0.1) exc = std::max(exc, rmsRange(ex, t, t + 0.1));
+    double after = 0;
+    for (double t = 1.0; t < 12.0; t += 0.1) after = std::max(after, rmsRange(tail, t, t + 0.1));
+    const double late = rmsRange(tail, 10.0, 12.0);
+    float pk = 0;
+    for (float v : tail) { REQUIRE(std::isfinite(v)); pk = std::max(pk, std::fabs(v)); }
+    CHECK(r.engine.telemetry().faults.load() == 0u);
+    CHECK(pk < 2.0f);
+    CHECK(dbv(after) < dbv(exc) + 3.0);                     // no growth after the excitation
+    CHECK((dbv(late) < dbv(exc) - 12.0 || dbv(late) < -70.0));  // and it keeps decaying
+}
+}  // namespace
+
+TEST_CASE("V5 runaway regression: shimmer pitch-in-loop (regen 100 %, unison shift, 30 s decay)") {
+    expectDecays("shimmer", {{"decay", 30.0f}, {"size", 100.0f}, {"regen", 100.0f}, {"shift1", 0.0f}, {"shift2", 0.0f}, {"mix", 100.0f}});
+    expectDecays("shimmer", {{"decay", 20.0f}, {"regen", 100.0f}, {"shift1", 12.0f}, {"shift2", 19.0f}, {"balance", 50.0f}, {"routing", 2.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: granular cloud feedback at maximum density x size") {
+    expectDecays("granular", {{"size_ms", 500.0f}, {"density", 60.0f}, {"feedback", 100.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: reverse (grains, buffer, delay modes) at maximum feedback") {
+    expectDecays("reverse", {{"mode", 2.0f}, {"feedback", 100.0f}, {"density", 60.0f}, {"grain_ms", 300.0f}, {"mix", 100.0f}});
+    expectDecays("reverse", {{"mode", 0.0f}, {"sync", 0.0f}, {"length_ms", 1350.0f}, {"feedback", 100.0f}, {"pitch", 0.0f}, {"mix", 100.0f}});
+    expectDecays("reverse", {{"mode", 1.0f}, {"sync", 0.0f}, {"length_ms", 600.0f}, {"feedback", 100.0f}, {"pitch", -7.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: frequency shifter feedback (out-of-quadrature band edges)") {
+    expectDecays("freq_shift", {{"shift", 0.0f}, {"fine", 0.5f}, {"feedback", 100.0f}, {"delay_ms", 40.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: chorus feedback with four coherent voices") {
+    expectDecays("chorus", {{"voices", 3.0f}, {"feedback", 100.0f}, {"depth", 0.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: delay at 100 % feedback with full drive; tape echo with three heads") {
+    expectDecays("delay", {{"sync", 0.0f}, {"time_ms", 300.0f}, {"feedback", 100.0f}, {"drive", 100.0f}, {"mix", 100.0f}});
+    expectDecays("tape_echo", {{"sync", 0.0f}, {"time_ms", 250.0f}, {"heads", 6.0f}, {"intensity", 100.0f}, {"saturation", 100.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: pitch shift feedback with coinciding voices") {
+    expectDecays("pitch_shift", {{"shift_a", 0.0f}, {"shift_b", 0.0f}, {"level_b", 0.0f}, {"width", 100.0f}, {"delay_ms", 200.0f}, {"feedback", 100.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 runaway regression: grain engine feedback at maximum density") {
+    expectDecays("grain_engine", {{"size_ms", 1000.0f}, {"density", 200.0f}, {"voices", 32.0f}, {"feedback", 100.0f}, {"fb_drive", 24.0f}, {"mix", 100.0f}});
+}
+TEST_CASE("V5 regression: bitcrusher dither leaves digital silence silent") {
+    FxRig r;
+    r.add("bitcrush", {{"bits", 4.0f}, {"dither", 1.0f}, {"mix", 100.0f}});
+    r.run(0.5, [](long n, int) { return 0.3f * std::sin(0.05f * n); });
+    const auto tail = r.run(1.0, [](long, int) { return 0.0f; });
+    CHECK(rmsRange(tail, 0.2, 1.0) == 0.0);
+}
+
+// ============================================================================================ Phases 4 / 10: preset gate
+TEST_CASE("V5 bank: counts, metadata, and no near-duplicates") {
+    int total = 0, v5 = 0, atmos = 0, drums = 0, groove = 0;
+    for (const auto& p : factoryPresets()) {
+        ++total;
+        if (p.version < 5) continue;
+        ++v5;
+        CHECK_MESSAGE(!p.description.empty(), p.id);
+        CHECK_MESSAGE(!p.tags.empty(), p.id);
+        CHECK_MESSAGE(!p.intensity.empty(), p.id);
+        CHECK_MESSAGE(!p.styles.empty(), p.id);
+        std::string err;
+        CHECK_MESSAGE(validatePreset(p, &err), p.id << ": " << err);
+        atmos += p.category == "Atmosphere / Cinematic / Drone" || p.id == "v5.blue_hour" || p.id == "v5.soft_focus";
+        drums += p.category == "Drums / Drum Bus" || p.tags.find("drums") == 0;
+        bool pulse = false;
+        for (const auto& f : p.chain) pulse = pulse || f.type == "pulse_shaper" || f.type == "tremolo";
+        groove += pulse;
+    }
+    MESSAGE(total << " factory presets, " << v5 << " new in V5: " << atmos << " atmosphere, " << drums << " drums, " << groove << " tremolo / volume shaping");
+    CHECK(total >= 200);
+    CHECK(v5 >= 50);
+    CHECK(atmos >= 20);
+    CHECK(drums >= 20);
+    CHECK(groove >= 15);
+    // near-duplicates: the same effect chain (types in order) with every parameter within 5 % of its range
+    const auto& bank = factoryPresets();
+    for (size_t a = 0; a < bank.size(); ++a)
+        for (size_t b = a + 1; b < bank.size(); ++b) {
+            const auto& A = bank[a];
+            const auto& B = bank[b];
+            if (A.chain.size() != B.chain.size() || A.chain.empty()) continue;
+            bool same = true;
+            for (size_t k = 0; same && k < A.chain.size(); ++k) same = A.chain[k].type == B.chain[k].type;
+            if (!same) continue;
+            bool close = true;
+            for (size_t k = 0; close && k < A.chain.size(); ++k) {
+                const auto& d = fxRegistry()[static_cast<size_t>(fxTypeIndex(A.chain[k].type))];
+                auto va = d.defaults(), vb = d.defaults();
+                for (const auto& [id, v] : A.chain[k].params) if (d.paramIndex(id) >= 0) va[static_cast<size_t>(d.paramIndex(id))] = v;
+                for (const auto& [id, v] : B.chain[k].params) if (d.paramIndex(id) >= 0) vb[static_cast<size_t>(d.paramIndex(id))] = v;
+                for (size_t i = 0; close && i < d.params.size(); ++i) {
+                    const float span = std::max(1e-6f, d.params[i].maxValue - d.params[i].minValue);
+                    close = std::fabs(va[i] - vb[i]) <= 0.05f * span;
+                }
+            }
+            CHECK_MESSAGE(!close, A.id << " and " << B.id << " are near-duplicates");
+        }
+}
+
+TEST_CASE("V5 bank: every macro of every preset (authored or combination) audibly changes the sound on its own") {
+    int checked = 0;
+    std::string weak;
+    for (const auto& p : factoryPresets()) {
+        if (p.id == kInitPresetId) continue;
+        FxRig probe;
+        REQUIRE(probe.session.fromJson(presetToJson(p), false));
+        const int nm = static_cast<int>(probe.session.macros().size());
+        if (nm == 0) continue;
+        auto render = [&](int only, float v) {
+            FxRig r;
+            REQUIRE(r.session.fromJson(presetToJson(p), false));
+            for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, m == only ? v : 0.0f);
+            r.run(0.4, drumsAndChord);
+            r.n = 0;
+            return r.run(1.2, drumsAndChord);
+        };
+        const auto y0 = render(-1, 0.0f);
+        for (int m = 0; m < nm; ++m) {
+            if (probe.session.macros()[static_cast<size_t>(m)].targets.empty()) continue;
+            const double d = relDiffDb(render(m, 1.0f), y0);
+            ++checked;
+            if (d < -30.0) weak += p.id + "/" + probe.session.macros()[static_cast<size_t>(m)].name + " (" + std::to_string(static_cast<int>(d)) + " dB) ";
+        }
+    }
+    MESSAGE(checked << " macros checked; inaudible: " << (weak.empty() ? std::string("none") : weak));
+    CHECK(weak.empty());
 }

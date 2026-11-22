@@ -554,8 +554,8 @@ void FormationView::syncMacros() {
         if (n != pmacroName_[static_cast<size_t>(k)]) changed = true;
         pmacroName_[static_cast<size_t>(k)] = n;
         s.setVisible(n.isNotEmpty());
-        s.setTooltip(n.isEmpty() ? juce::String() : n + ": a performance macro of this preset. It moves several of the chain's settings together while it plays; "
-                                                        "the committed settings themselves never change (0 = the preset exactly as saved). Double-click for 0. Automatable as Preset Macro " + juce::String(k + 1) + ".");
+        s.setTooltip(n.isEmpty() ? juce::String() : proc_.presetMacroDescription(k) + "\n\nA combination macro: it moves several settings of the chain together while it plays; "
+                                                        "the committed settings themselves never change (0 = the chain exactly as committed). Double-click for 0. Automatable as Preset Macro " + juce::String(k + 1) + ".");
     }
     if (changed) { resized(); repaint(); }
 }

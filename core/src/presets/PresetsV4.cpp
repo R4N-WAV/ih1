@@ -308,7 +308,9 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
     add("v4.glass_room", "Glass Room", MB, "vocals, keys, guitars", "Subtle", "pop, indie",
         "A small convolved space, micro detune and a glassy resonance underneath.",
         {{"convolution", PV{{"ir", 1}, {"mix", 20}}}, {"doubler", PV{{"detune", 8}, {"mix", 30}}},
-         {"modal", PV{{"material", 3}, {"note", 0}, {"octave", 4}, {"excite", 1}, {"decay", 1}, {"mix", 10}}}});
+         {"modal", PV{{"material", 3}, {"note", 0}, {"octave", 4}, {"excite", 1}, {"decay", 1}, {"mix", 10}}}},
+        // V5: authored macros (the combination's Ring was too faint with the glass layer at 10 %)
+        {{"Glass", {{2, "mix", 30.0f}, {2, "decay", 2.0f}, {2, "bright", 25.0f}}}, {"Space", {{0, "mix", 25.0f}, {1, "mix", 25.0f}}}});
     add("v4.warm_echo_hall", "Warm Echo Hall", MB, "vocals, guitars, keys", "Moderate", "dub, soul",
         "Tape echoes into a warm hall: classic depth with character.",
         {{"tape_echo", PV{{"intensity", 45}, {"mix", 30}}}, {"reverb", PV{{"mode", 1}, {"decay", 2.8f}, {"mix", 22}}}});

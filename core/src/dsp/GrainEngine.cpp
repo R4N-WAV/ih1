@@ -61,6 +61,7 @@ void GrainEngine::prepare(double sr, float bufferSeconds, int maxBlock, uint32_t
     disp_.spanSeconds.store(static_cast<float>(span));
     lastHp_ = lastLp_ = -1.0f;
     fbRate_.prepare(sr_, seed_ ^ 0xFEEDu);
+    fbWeightRel_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.08 * sr_)));
     reset();
 }
 
@@ -85,6 +86,7 @@ void GrainEngine::reset() {
     for (auto& d : delay_) d.reset();
     delayCur_ = -1.0f;
     fbRate_.reset();
+    fbWeight_ = 0.0f;
     for (int c = 0; c < 2; ++c) {
         fbHp_[c].reset();
         fbLp_[c].reset();
@@ -351,7 +353,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             }
         }
         // ---- grains ----
-        float l = 0.0f, r = 0.0f, e = 0.0f, ind = 0.0f;
+        float l = 0.0f, r = 0.0f, e = 0.0f, ind = 0.0f, wsum = 0.0f;
         // valid read region relative to the write head, and how fast the head (and the overwrite front) moves
         const double headV = holding_ ? 0.0 : 1.0;
         const double hiRel = -kMinLag;
@@ -385,6 +387,7 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
             }
             l += gl;
             r += gr;
+            wsum += a * std::max(std::fabs(g.gl), std::fabs(g.gr));
             ind += gl * gl + gr * gr;
             e += a * a;
             g.pos += g.inc;
@@ -399,6 +402,15 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         const float norm = 1.0f / std::sqrt(std::max(1.0f, energy_ * coher * (p.independent ? 0.5f : 1.0f)));
         l *= norm;
         r *= norm;
+        // V5 Phase 5: |out| <= wsum * norm * max|capture| exactly. The coherence-adaptive norm keeps the output POWER near
+        // the input's, so with 95 % feedback the recirculation hardly decayed (measured: a held tail at -21 dBFS,
+        // ih1_feedback_audit grain_engine max / rnd3 / rnd4). The fed-back signal is divided by the peak-held weight
+        // bound (80 ms release), so the loop's gain is <= Feedback whatever the density, overlap or coherence.
+        {
+            const float wb = wsum * norm;
+            fbWeight_ = wb > fbWeight_ ? wb : fbWeight_ + (wb - fbWeight_) * fbWeightRel_;
+        }
+        const float fbScale = 1.0f / std::max(1.0f, fbWeight_);
         // ---- grain delay + feedback (resampled into the capture buffer) ----
         float fbIn[2] = {0.0f, 0.0f};
         float wet[2] = {l, r};
@@ -414,12 +426,14 @@ void GrainEngine::process(const float* inL, const float* inR, float* outL, float
         for (int c = 0; c < 2; ++c) {
             delay_[c].push(wet[c]);
             const float d = echoNow ? delay_[c].readLinear(std::max(1.0f, delayCur_)) : wet[c];
-            fbPre[c] = fbLp_[c].process(fbHp_[c].process(d * p.feedback));
+            fbPre[c] = fbLp_[c].process(fbHp_[c].process(d * p.feedback * fbScale));
             if (echoNow) wet[c] += d * p.feedback;
         }
         if (fbChar) {
             if (fbRateOn) fbRate_.process(&fbPre[0], &fbPre[1], 1, fbSet);
-            if (fbDrive > 1.0001f) for (float& f : fbPre) f = std::tanh(f * fbDrive) / fbDrive * (1.0f + 0.3f * std::log(fbDrive));
+            // V5: the drive colours the loop without small-signal gain (the old makeup 1 + 0.3 ln(drive) was > 1 inside
+            // the recirculation)
+            if (fbDrive > 1.0001f) for (float& f : fbPre) f = std::tanh(f * fbDrive) / fbDrive;
         }
         for (int c = 0; c < 2; ++c) {
             float f = fbPre[c];

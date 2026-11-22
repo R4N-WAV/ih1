@@ -178,7 +178,9 @@ int main(int argc, char** argv) {
             // skip the first 60 ms (the high-pass and the effect's own start-up) and the windows right after the
             // deliberate reset (the reset itself is a state wipe; the engine fades a restarted processor's input)
             const int resetW = resetAt / win;
-            for (int w = ctx; w < W - 2; ++w) {
+            // V5: a window is judged only where its isolation test (20 windows after) and its local median fit inside the
+            // render: the last ~25 ms cannot be told apart from a level change (a gate re-opening at the very end)
+            for (int w = ctx; w < W - 25; ++w) {
                 if (w >= resetW - 2 && w <= resetW + 30) continue;
                 nb.clear();
                 for (int j = std::max(0, w - ctx); j < std::min(W, w + ctx); ++j) if (std::abs(j - w) > 2) nb.push_back(e[static_cast<size_t>(j)]);

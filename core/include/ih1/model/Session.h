@@ -94,6 +94,15 @@ public:
     struct MacroDef { std::string name; std::vector<MacroTargetDef> targets; };
     const std::vector<MacroDef>& macros() const { return macros_; }
     int activeMacroCount() const;  // macros with at least one live target
+    // V5 Phase 8: macros are either AUTHORED (a factory preset's curated set, kept while any of their targets lives)
+    // or GENERATED from the committed chain's effect combination (comboMacros), recomputed after every chain change.
+    // No eligible combination = no macros (the knobs are hidden). generation() changes whenever the set changes, so
+    // the host-facing macro values can return to 0 for a new set.
+    bool macrosGenerated() const { return macrosAuto_; }
+    uint64_t macroGeneration() const { return macroGen_; }
+    const std::string& macroCombination() const { return comboName_; }  // e.g. "Drum Bus + Atmosphere"
+    // "Bloom: Reverb Mix +30, Delay Mix +20" (plain-language mapping for tooltips)
+    std::string macroDescription(int m) const;
     // Init (V3 Phase 7.1): the explicit clean starting state. No committed FX, staged = None, every draft back to its
     // defaults (the staged cache is cleared only here and by RESET), SOLO / MUTE off. Every processor is retired,
     // so no loop, freeze, feedback or modulation memory survives. The latency mode is a host-latency preference and
@@ -154,6 +163,10 @@ private:
     LatencyMode latencyMode_ = LatencyMode::Quality;
     std::vector<CommittedInstance> chain_;
     std::vector<MacroDef> macros_;
+    bool macrosAuto_ = true;
+    uint64_t macroGen_ = 0;
+    std::string comboName_;
+    void refreshMacros();  // regenerate combination macros unless an authored set is live
 
     std::unordered_map<FxProcessor*, std::unique_ptr<FxProcessor>> owned_;
     std::unordered_map<FxProcessor*, int> refs_;  // references from programs not yet retired
@@ -161,6 +174,10 @@ private:
     uint64_t revision_ = 1;
     uint64_t idState_ = 0;
 };
+
+// V5 Phase 8 (ComboMacros.cpp): combination-specific macros for a chain, and the macro-safe maximum of a parameter
+std::vector<Session::MacroDef> comboMacros(const std::vector<CommittedInstance>& chain, std::string* comboName = nullptr);
+float macroSafeMax(const std::string& type, const std::string& param, float hi);
 
 std::string idToHex(uint64_t id);
 uint64_t idFromHex(const std::string& s);

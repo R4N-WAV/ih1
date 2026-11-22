@@ -408,16 +408,16 @@ TEST_CASE("V4 FX: Spectral Graft imposes a held spectral shape (bright input bec
     CHECK(spectralCentroid(y, 72000) < 0.7 * spectralCentroid(dry, 72000));
 }
 
-TEST_CASE("V4 P1.5: every factory preset's macros stay safe at their extremes (finite, bounded level, no runaway)") {
+TEST_CASE("V4 P1.5 / V5 P8: every factory preset's macros (authored or combination) stay safe at their extremes") {
+    // V5: a preset has macros only when its author wrote them or its effect combination is eligible (comboMacros)
     int withMacros = 0;
     for (const auto& p : factoryPresets()) {
         if (p.id == kInitPresetId) { CHECK(p.macros.empty()); continue; }
-        CHECK_MESSAGE(!p.macros.empty(), p.id << " has no macros");
         CHECK_MESSAGE(p.macros.size() <= 4, p.id);
-        if (p.macros.empty()) continue;
-        ++withMacros;
         Rig r;
         REQUIRE(r.session.fromJson(presetToJson(p), false));
+        if (r.session.activeMacroCount() == 0) continue;
+        ++withMacros;
         for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, 1.0f);
         std::vector<float> L, R;
         r.run(90, &L, &R, drums);  // ~0.5 s
@@ -431,5 +431,5 @@ TEST_CASE("V4 P1.5: every factory preset's macros stay safe at their extremes (f
         CHECK_MESSAGE(test::rms(L, L.size() / 2) < 1.0, p.id);
     }
     MESSAGE(withMacros << " presets with macros");
-    CHECK(withMacros >= 120);
+    CHECK(withMacros >= 40);
 }

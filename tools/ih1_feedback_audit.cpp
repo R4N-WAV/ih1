@@ -238,10 +238,12 @@ void auditPresets(double tail, const std::string& filter) {
         if (p.id == kInitPresetId) continue;
         if (!filter.empty() && p.id.find(filter) == std::string::npos) continue;
         std::string chain;
-        bool holdOk = false;
+        bool holdOk = false, replays = false;
         for (const auto& f : p.chain) {
             chain += (chain.empty() ? "" : " > ") + f.type;
             if (holdByDesign(f.type)) holdOk = true;
+            if (f.type == "grain_engine" || f.type == "time_warp" || f.type == "granular") replays = true;
+            for (const auto& [k, v] : f.params) if (f.type == "grain_engine" && k == "mode" && v >= 1.5f) holdOk = true;  // Loop mode
             for (const auto& [k, v] : f.params) if ((holdParam(k) && v >= 0.5f) || selfOscillating(f.type, k, v)) holdOk = true;
         }
         for (int pass = 0; pass < 3; ++pass) {
@@ -255,7 +257,7 @@ void auditPresets(double tail, const std::string& filter) {
             }
             for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, pass == 1 ? 1.0f : 0.0f);
             CaseResult res;
-            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, tail, pass == 2, res);
+            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, replays ? std::max(tail, 30.0) : tail, pass == 2, res);
             report(p.id + (pass == 0 ? "" : pass == 1 ? " @macros100" : " @sweep"), chain, res, holdOk);
         }
         std::fflush(stdout);
@@ -293,6 +295,7 @@ void auditFx(double tail, const std::string& filter, int randomDrafts) {
                 }
                 if (isRec) v = dr == 0 ? ps.maxValue : ps.minValue + (ps.maxValue - ps.minValue) * (0.85f + 0.15f * rng.uniform());
                 if (holdParam(ps.id) && ps.kind != ParamKind::Float && dr % 3 != 2) v = ps.minValue;  // freeze mostly off
+                if (d.typeId == "grain_engine" && ps.id == "mode" && v >= 1.5f) holdOk = true;    // Loop mode loops
                 // IH1_FB_SET="id=value,id=value": exact draft for the "max" case (reproduce a reported failure)
                 if (dr == 0) if (const char* set = std::getenv("IH1_FB_SET")) {
                     std::string ss = set;
@@ -321,7 +324,11 @@ void auditFx(double tail, const std::string& filter, int randomDrafts) {
             r.session.commit();
             r.session.select(Session::kNone);
             CaseResult res;
-            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, tail, false, res);
+            // buffer-based effects replay recorded history (Grain Engine positions up to 12 s back, Time Warp's ring):
+            // the tail must outlast their capture so the audit sees them fall silent, not a window into the replay
+            const bool replays = d.typeId == "grain_engine" || d.typeId == "time_warp" || d.typeId == "granular";
+            const double t2 = replays ? std::max(tail, 30.0) : tail;
+            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, t2, false, res);
             report(d.typeId + (dr == 0 ? " max" : " rnd" + std::to_string(dr)), raised, res, holdOk);
             if (res.verdict == "GROW" || res.verdict == "FAULT" || (res.verdict == "HOLD" && !holdOk)) std::printf("       draft: %s\n", draft.c_str());
         }

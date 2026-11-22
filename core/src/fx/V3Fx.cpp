@@ -677,13 +677,17 @@ class TimeWarp final : public FxBase {
         return ph >= period - len;
     }
     float read(int c, double pos) const { return hermite(buf_[static_cast<size_t>(c)], mask_, pos); }
+    double restOldPos_ = 0.0;
+    float restFade_ = 1.0f;
     // pitch-keeping read: two Hann grains, 50 % overlapped. Each grain starts at the playhead position of the moment
     // it (re)starts and then reads forward at rate 1, so pitch is kept while the playhead itself moves slower.
     void advanceGrains(double pos) {
         for (int v = 0; v < 2; ++v) {
             float ph = gPh_ + 0.5f * static_cast<float>(v);
             ph -= std::floor(ph);
-            if (ph < 1.0f / grain_) anchor_[v] = pos - 1.0;  // this voice wraps: re-anchor at the playhead
+            // this voice wraps: re-anchor at the playhead. V5 Phase 6: never so close to the write head that the grain's
+            // forward read reaches it (it was clamped there: a stuck sample, then a jump, once per Half-Time segment)
+            if (ph < 1.0f / grain_) anchor_[v] = std::min(pos - 1.0, static_cast<double>(head_) - 6.0 - static_cast<double>(grain_));
         }
     }
     float readKeep(int c) const {
@@ -772,10 +776,28 @@ class TimeWarp final : public FxBase {
             const bool rest = (mode == 1 || mode == 4 || (mode == 2 && !on && ip(twTrigger) != 0)) && !engaged_ && std::fabs(rate - 1.0) < 1e-6;
             rd_.service();
             if (rest) {
-                if (!atLive_) { if (rd_.fade >= 1.0f && !rd_.pending) rd_.jump(live, 1.0); oldLive_ = false; atLive_ = true; }
+                if (!atLive_) {
+                    // V5 Phase 6: returning to the direct input crossfades FROM the playhead (it trails the input by at
+                    // least minLag samples): switching straight to the input was a 6-sample jump at every release of a
+                    // triggered Half-Time / Tape Stop (ih1_click_audit time_warp case 11, once per segment)
+                    restOldPos_ = rd_.fade < 1.0f ? rd_.oldPos : rd_.pos;
+                    restFade_ = 0.0f;
+                    oldLive_ = false;
+                    atLive_ = true;
+                }
                 rd_.pos = live;
+                rd_.fade = 1.0f;
+                rd_.pending = false;
                 yl = ch[0][i];
                 yr = ch[1][i];
+                if (restFade_ < 1.0f) {
+                    const float a = 0.5f - 0.5f * std::cos(dsp::kPi * restFade_);
+                    const float ga = std::sin(0.5f * dsp::kPi * a), gb = std::cos(0.5f * dsp::kPi * a);
+                    yl = ga * yl + gb * read(0, std::min(restOldPos_, live));
+                    yr = ga * yr + gb * read(1, std::min(restOldPos_, live));
+                    restOldPos_ += 1.0;
+                    restFade_ = std::min(1.0f, restFade_ + xfStep_);
+                }
             } else {
                 // the pitch-keeping grains always run (fresh anchors), and are crossfaded in and out with a 12 ms ramp
                 // instead of switching when the smoothed speed crosses 1x
@@ -861,6 +883,7 @@ class GlitchScatter final : public FxBase {
         samples_ = 0;
         lastStep_ = -1;
         act_ = Pass;
+        pending_ = false;
         pos_ = oldPos_ = 0.0;
         rate_ = oldRate_ = 1.0;
         fade_ = 1.0f;
@@ -881,6 +904,18 @@ class GlitchScatter final : public FxBase {
         return h;
     }
     void startFragment(Action a, double newPos, double newRate, double len) {
+        // V5 Phase 6: a fragment that starts while the previous splice is still crossfading used to replace the
+        // still-audible outgoing source in one sample (measured: isolated clicks with dense Gate / Pitch / Reverse
+        // steps). It now waits for that crossfade to finish (<= 3 ms), keeping its position relative to the live head.
+        if (fade_ < 1.0f) {
+            pending_ = true;
+            pAct_ = a;
+            pOffset_ = newPos - (static_cast<double>(head_) - 4.0);
+            pRate_ = newRate;
+            pLen_ = len;
+            return;
+        }
+        pending_ = false;
         // V4 Phase 4: the outgoing signal keeps the gain it was actually heard at (a Gate step is silent), so the
         // crossfade never starts from a level that was not audible
         oldGain_ = 1.0f;  // the gate level is applied after the crossfade (gateU_), so both sides stay at unity here
@@ -942,8 +977,9 @@ class GlitchScatter final : public FxBase {
                     lofi_ = false;
                 }
             }
-            // micro-loop: a Repeat fragment restarts every fragLen (ratchets), with its own crossfade
-            if (act_ == Repeat && fragT_ >= fragLen_) {
+            if (pending_ && fade_ >= 1.0f) startFragment(pAct_, live + pOffset_, pRate_, pLen_);
+            // micro-loop: a Repeat fragment restarts every fragLen (ratchets), with its own crossfade (never inside one)
+            if (act_ == Repeat && fragT_ >= fragLen_ && fade_ >= 1.0f && !pending_) {
                 oldLive_ = false;
                 oldPos_ = pos_;
                 oldRate_ = rate_;
@@ -977,7 +1013,9 @@ class GlitchScatter final : public FxBase {
             tmpL_[static_cast<size_t>(i)] = yl * g;
             tmpR_[static_cast<size_t>(i)] = yr * g;
             // lo-fi amount follows the step decision per sample with a 3 ms ramp (was switched per block)
-            const float lofiTarget = (lofi_ && act_ != Pass) ? 1.0f : 0.0f;
+            // V5 Phase 6: not on Gate steps (the step fades to silence; the reducer's crunch during that 3 ms fade was an
+            // isolated tick: ih1_click_audit glitch static cases 1 and 8)
+            const float lofiTarget = (lofi_ && act_ != Pass && act_ != Gate) ? 1.0f : 0.0f;
             lofiAmt_ += (lofiTarget > lofiAmt_ ? 1.0f : -1.0f) * std::min(std::fabs(lofiTarget - lofiAmt_), 1.0f / xfLen_);
             lofiRamp_[static_cast<size_t>(i)] = lofiAmt_;
             if (act_ != Pass) pos_ += rate_;
@@ -1011,7 +1049,9 @@ class GlitchScatter final : public FxBase {
     std::vector<float> tmpL_, tmpR_, lofL_, lofR_, lofiRamp_;
     float lofiAmt_ = 0.0f, curGate_ = 1.0f, oldGain_ = 1.0f, gateU_ = 0.0f;
     int64_t mask_ = 0, head_ = 0, samples_ = 0, lastStep_ = -1;
-    Action act_ = Pass;
+    Action act_ = Pass, pAct_ = Pass;
+    bool pending_ = false;
+    double pOffset_ = 0, pRate_ = 1, pLen_ = 1;
     double pos_ = 0, oldPos_ = 0, rate_ = 1, oldRate_ = 1, fragT_ = 0, fragLen_ = 1, fragStart_ = 0;
     float fade_ = 1.0f, xfLen_ = 144.0f;
     bool lofi_ = false, oldLive_ = true;
