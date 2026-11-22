@@ -31,7 +31,18 @@ struct Driver {
     explicit Driver(Editor& e) : ed(e) {}
     ComponentPeer* peer() { return ed.getPeer(); }
     Point<float> toPeer(Component& c, Point<int> p) { return ed.getLocalPoint(&c, p).toFloat(); }
-    void move(Point<float> p) { t += 30; peer()->handleMouseEvent(MouseInputSource::InputSourceType::mouse, p, ModifierKeys(), 0.0f, 0.0f, t); }
+    // JUCE asks the OS for the real cursor position when deciding whether the mouse is over a button (Windows), so
+    // the real cursor follows every synthetic event; otherwise wherever the runner's cursor happens to sit decides
+    // whether a click lands
+    // (only there: on X11 the warp's own motion events would interrupt synthetic drags). The warp is pumped before
+    // the synthetic event so the OS's own move (buttons up) never lands inside a press / drag.
+    void warp([[maybe_unused]] Point<float> p) {
+#if JUCE_WINDOWS
+        Desktop::setMousePosition(ed.localPointToGlobal(p).roundToInt());
+        pump(15);
+#endif
+    }
+    void move(Point<float> p) { warp(p); t += 30; peer()->handleMouseEvent(MouseInputSource::InputSourceType::mouse, p, ModifierKeys(), 0.0f, 0.0f, t); }
     void press(Point<float> p, ModifierKeys::Flags button = ModifierKeys::leftButtonModifier) {
         move(p);
         t += 30;
