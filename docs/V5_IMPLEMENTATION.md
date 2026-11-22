@@ -58,7 +58,13 @@ Open items: `docs/KNOWN_ISSUES.md` (V5 section). FL Studio checklist: `docs/FL_S
 
 Macros: `macroSafeMax` keeps any macro target out of self-oscillating ranges (Tape Echo Intensity <= 100 %, any Feedback <= 85 %, Shimmer <= 90 %, Granular density <= 40).
 
-**After V5:** {{FB_RESULT}}
+**After V5:**
+- **FX types:** 448 cases, 0 GROW / FAULT, 0 unexplained HOLD (11 long tails that decay as configured). Table: `docs/V5_FEEDBACK_AUDIT_FX.md`.
+- **Presets:** 354 cases (every preset, plus macros at 100 % and swept for all 73 presets with macros), 0 FAULT, 0 unexplained HOLD.
+  - 7 intended holds: Looper, Freeze and Grain Engine Loop modes, and Degrade's documented noise floor.
+  - One residual: `frg.loop_ghost` @ 100 % macro. It is an intended Loop-mode loop; its Cloud macro raises density and wet, so the held loop settles about 5.6 dB above its first second. It is flat (+0.06 dB/s) with a +2.1 dBFS peak before Output Safety, so it is bounded, not a runaway.
+  - Table: `docs/V5_FEEDBACK_AUDIT_PRESETS.md`.
+- The preset pass at first exercised only authored macros. Covering combination macros found two more cases. `v4.ghost_station` turned out to be Degrade's constant noise floor lifted by the macros. `v4.slow_planet` was a 0.3x Stretch replay that decays to -135 dBFS within 60 s. The macro feedback ceiling was lowered to 85 % anyway.
 
 ## 2. Clicks and pops (Phase 6, P0)
 
@@ -212,7 +218,7 @@ CPU of the processors changed in section 1 is within noise of V4: Delay 0.80 %, 
 | `ih1_tests` | **177 / 177**, 28.8 M assertions (V4 baseline 148) |
 | `ih1_uitest` (real editor, Mesa OpenGL, `IH1_REQUIRE_GL`) | **pass**, 96 checks incl. 5 V5 commit checks; the GL formation (new zoom / mood uniforms) compiles and renders |
 | `ih1_hosttest` (built VST3 through JUCE's host) | **56 / 56** |
-| `ih1_feedback_audit` (presets + FX) | {{FB_SHORT}} |
+| `ih1_feedback_audit` (presets + FX) | 448 FX cases + 354 preset cases: 0 FAULT, 0 unexplained HOLD; 1 bounded Loop-mode level rise (section 1) |
 | `ih1_click_audit` | section 2 |
 | pluginval, sanitizers, soak | **not re-run** in this pass (CI runs pluginval on Linux and Windows) |
 | FL Studio, Windows, real GPUs, installer | **not tested** (not available) |

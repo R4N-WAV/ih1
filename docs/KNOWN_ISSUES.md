@@ -17,6 +17,9 @@
 - **Moving-parameter worst case** (half of all continuous controls jumping every 0.35-0.9 s, far beyond automation):
   Granular 6, Grain Engine 7, Echo Matrix 7, Drum Crush 5 (new: threshold / drive jumps through the glide), Attack /
   Body 4, Slice Shuffler 2, Time Warp 1, Reverse 1, Reverse Pitch Echo 1, Drum Space 1, Cloud Chamber 1.
+- **`frg.loop_ghost` at 100 % macro**: a Grain Engine Loop-mode preset (an intended endless loop). Its Cloud macro raises the
+  held loop about 5.6 dB above its first second (flat afterwards, +2.1 dBFS peak before Output Safety). Bounded; not a runaway.
+- **Degrade's Noise** is a constant floor by design (it does not stop when the input stops).
 - **Tape Echo above 100 % Intensity** still self-oscillates by design ("the tape sings"), bounded by its saturation;
   macros can never push it there (macro-safe maximum 100 %).
 - **Feedback ceilings changed sounds slightly**: Delay at 100 % feedback with Drive, multi-head Tape Echo, Reverse
