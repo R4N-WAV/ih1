@@ -180,7 +180,7 @@ std::vector<Session::MacroDef> comboMacros(const std::vector<CommittedInstance>&
 // Upper bound a macro may push a parameter to (inclusive). Keeps every loop in its decaying range.
 float macroSafeMax(const std::string& type, const std::string& param, float hi) {
     if (type == "tape_echo" && param == "intensity") return std::min(hi, 100.0f);  // above 100 % the tape sings
-    if (param == "feedback") return std::min(hi, 95.0f);
+    if (param == "feedback") return std::min(hi, 85.0f);  // V5 audit: 95 % held Echo Matrix / Spectral Delay loops
     if (type == "shimmer" && param == "regen") return std::min(hi, 90.0f);
     if (type == "granular" && param == "density") return std::min(hi, 40.0f);
     return hi;

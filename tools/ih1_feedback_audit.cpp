@@ -244,6 +244,8 @@ void auditPresets(double tail, const std::string& filter) {
             if (holdByDesign(f.type)) holdOk = true;
             if (f.type == "grain_engine" || f.type == "time_warp" || f.type == "granular") replays = true;
             for (const auto& [k, v] : f.params) if (f.type == "grain_engine" && k == "mode" && v >= 1.5f) holdOk = true;  // Loop mode
+            // Degrade's Noise is a documented constant converter / tape floor (not a loop): an intended, bounded floor
+            for (const auto& [k, v] : f.params) if (f.type == "degrade" && k == "noise" && v > 0.0f) holdOk = true;
             for (const auto& [k, v] : f.params) if ((holdParam(k) && v >= 0.5f) || selfOscillating(f.type, k, v)) holdOk = true;
         }
         for (int pass = 0; pass < 3; ++pass) {
@@ -258,7 +260,7 @@ void auditPresets(double tail, const std::string& filter) {
             if (pass > 0 && r.session.activeMacroCount() == 0) break;
             for (int m = 0; m < kNumPresetMacros; ++m) r.engine.setMacro(m, pass == 1 ? 1.0f : 0.0f);
             CaseResult res;
-            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, replays ? std::max(tail, 30.0) : tail, pass == 2, res);
+            for (Src s : {Src::Impulse, Src::Noise, Src::Chord, Src::Drums}) excite(r, s, replays ? std::max(tail, 60.0) : tail, pass == 2, res);
             report(p.id + (pass == 0 ? "" : pass == 1 ? " @macros100" : " @sweep"), chain, res, holdOk);
         }
         std::fflush(stdout);

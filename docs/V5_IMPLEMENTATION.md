@@ -56,7 +56,7 @@ Open items: `docs/KNOWN_ISSUES.md` (V5 section). FL Studio checklist: `docs/FL_S
 | Grain Engine (max, rnd3, 4: hold) | coherence-adaptive norm keeps output power ~ input, and the drive makeup is in the loop | weight-bounded feedback (as GrainCloud); drive without makeup | `... grain engine ...` |
 | Bitcrush (rnd2: -48 dBFS forever) | TPDF dither turned digital silence into +-1 LSB noise | no dither on digital silence | `V5 regression: bitcrusher dither ...` |
 
-Macros: `macroSafeMax` keeps any macro target out of self-oscillating ranges (Tape Echo Intensity <= 100 %, any Feedback <= 95 %, Shimmer <= 90 %, Granular density <= 40).
+Macros: `macroSafeMax` keeps any macro target out of self-oscillating ranges (Tape Echo Intensity <= 100 %, any Feedback <= 85 %, Shimmer <= 90 %, Granular density <= 40).
 
 **After V5:** {{FB_RESULT}}
 
