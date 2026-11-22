@@ -11,9 +11,10 @@ namespace ih1::plugin {
 using namespace juce::gl;
 
 namespace {
-constexpr float kExposure = 2.2f;
+constexpr float kExposure = 2.4f;  // V5 mood: +0.8 dB of luminance (V4: 2.2); see visual::Mood
 constexpr float kBloomGain = 0.10f;  // V3: bloom is only a faint finishing accent; the field volume carries the light
 constexpr float kHistory = 0.22f;    // V4: temporal accumulation weight of the newest ray-marched frame (jittered)
+constexpr float kHistoryCalm = 0.09f, kHistoryTransient = 0.30f;  // V5: adaptive weight (per 60 Hz frame)
 // V3: adaptive cost. Level 0 = half resolution, 64 samples ... level 4 = a quarter resolution, 16 samples. The volume
 // pass is timed every 20th frame; a slow pass steps down, a fast one steps back up. The look stays the same, only
 // sampling density changes (bounded GPU cost on weak / software GL, full quality on real GPUs).
@@ -364,6 +365,7 @@ void FormationRenderer::renderOpenGL() {
         glUniform4fv(glGetUniformLocation(pid, "uAudio2"), 1, P.audio2);
         glUniform4fv(glGetUniformLocation(pid, "uPulse"), 1, P.pulse);
         glUniform4fv(glGetUniformLocation(pid, "uBound"), 1, P.bound);
+        glUniform4fv(glGetUniformLocation(pid, "uView"), 1, P.view);
         glUniform2f(glGetUniformLocation(pid, "uRes"), static_cast<float>(rw), static_cast<float>(rh));
         glUniform1f(glGetUniformLocation(pid, "uFrame"), static_cast<float>(frame_ % 1024));
         const bool timeIt = (frame_++ % 20) == 0;
@@ -380,8 +382,21 @@ void FormationRenderer::renderOpenGL() {
         glBindFramebuffer(GL_FRAMEBUFFER, accum_.fbo);
         glViewport(0, 0, rw, rh);
         if (!fresh) {
+            // V5 Phase 1.2 (jitter): the newest jittered frame's weight adapts. The ray-march step / sub-pixel jitter is
+            // re-drawn every frame; with a fixed 22 % weight about a fifth of each frame was fresh noise, which read as
+            // a fine continuous vibration. Calm field: 9 % (much less temporal noise); an audio transient (a travelling
+            // onset pulse) raises it to 30 % so flashes stay immediate. Normalised to the actual frame interval, so a
+            // slow or dropped frame does not change the visual time constant.
+            const double nowMs = juce::Time::getMillisecondCounterHiRes();
+            const float frames = lastAccumMs_ > 0.0 ? juce::jlimit(0.5f, 4.0f, static_cast<float>((nowMs - lastAccumMs_) / 16.667)) : 1.0f;
+            lastAccumMs_ = nowMs;
+            float tr = 0.0f;
+            if (P.pulse[0] >= 0.0f) tr = std::max(tr, P.pulse[1]);
+            if (P.pulse[2] >= 0.0f) tr = std::max(tr, P.pulse[3]);
+            const float w60 = kHistoryCalm + (kHistoryTransient - kHistoryCalm) * juce::jlimit(0.0f, 1.0f, tr);
+            const float w = 1.0f - std::pow(1.0f - w60, frames);
             glEnable(GL_BLEND);
-            glBlendColor(0.0f, 0.0f, 0.0f, kHistory);
+            glBlendColor(0.0f, 0.0f, 0.0f, w);
             glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
         }
         passProg_->use();

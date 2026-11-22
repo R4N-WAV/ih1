@@ -184,8 +184,8 @@ void Formation::project(const V3& p, float& x, float& y, float& depth) const {
     depth = std::max(0.6f, kCamDist - z2);
     const float k = kCamDist / depth;
     const float cx = aspect_ * 0.54f;  // slightly right of centre: generous black space on both sides
-    x = cx + x1 * k * kScale;
-    y = 0.5f - y2 * k * kScale;
+    x = cx + x1 * k * kScale * zoom_;
+    y = 0.5f - y2 * k * kScale * zoom_;
 }
 
 V3 Formation::unproject(float fx, float fy, float worldZ) const {
@@ -193,7 +193,7 @@ V3 Formation::unproject(float fx, float fy, float worldZ) const {
     const float depth = std::max(0.6f, kCamDist - worldZ);
     const float k = kCamDist / depth;
     const float cx = aspect_ * 0.54f;
-    return {(fx - cx) / (k * kScale), (0.5f - fy) / (k * kScale), worldZ};
+    return {(fx - cx) / (k * kScale * zoom_), (0.5f - fy) / (k * kScale * zoom_), worldZ};
 }
 
 Rgb Formation::shade(const Rgb& c) const {
@@ -569,6 +569,32 @@ void Formation::update(const FrameInput& in) {
     for (auto& sp : spinePulses_) sp.age += dt;
     spinePulses_.erase(std::remove_if(spinePulses_.begin(), spinePulses_.end(), [](const SpinePulse& p) { return p.age > 1.6f; }), spinePulses_.end());
     if (onset && spinePulses_.size() < 4) spinePulses_.push_back({0.0f, std::clamp(tr, 0.35f, 1.0f)});
+    // V5 Phase 1.1: auto-framing. The dense medium (every live node's envelope) must stay inside the panel with a
+    // margin at every aspect ratio and chain length, so the field is never cut by the panel's rectangle; only the
+    // faint halo and threads may cross the edge, where they thin out continuously. The zoom only ever pulls back
+    // (<= 1) and glides (1.5 s), so commits, reorders and resizes reframe smoothly instead of popping.
+    {
+        const float m = 0.07f, cx = aspect_ * 0.54f;
+        const float envR = (0.19f + 0.16f * extent_) * 2.3f;
+        float target = 1.0f;
+        const float cyw = std::cos(yaw_), syw = std::sin(yaw_), cpw = std::cos(pitch_), spw = std::sin(pitch_);
+        for (const auto& kv : insts_) {
+            const Inst& c = kv.second;
+            if (!c.inChain || c.presence <= 0.01f) continue;
+            const V3 p = c.anchor;
+            const float x1 = cyw * p.x + syw * p.z, z1 = -syw * p.x + cyw * p.z;
+            const float y2 = cpw * p.y - spw * z1, z2 = spw * p.y + cpw * z1;
+            const float k = kCamDist / std::max(0.6f, kCamDist - z2);
+            const float dx = x1 * k * kScale, dy = y2 * k * kScale, r = envR * k * kScale;
+            if (dx + r > 0.0f) target = std::min(target, ((1.0f - m) * aspect_ - cx) / (dx + r));
+            if (dx - r < 0.0f) target = std::min(target, (cx - m * aspect_) / (r - dx));
+            if (dy + r > 0.0f) target = std::min(target, (0.5f - m) / (dy + r));
+            if (dy - r < 0.0f) target = std::min(target, (0.5f - m) / (r - dy));
+        }
+        target = std::clamp(target, 0.45f, 1.0f);
+        if (first_) zoom_ = target;
+        else zoom_ += (target - zoom_) * (1.0f - std::exp(-dt / 1.5f));
+    }
     for (auto& kv : insts_) follow(kv.second.enabledAmt, kv.second.enabledIn ? 1.0f : 0.0f, dt, 0.25f, 0.25f);
     if (onset && !order_.empty()) {
         Inst& c = insts_[order_.front()];
@@ -708,6 +734,7 @@ void Formation::buildScene() {
     S.pitch = pitch_;
     S.aspect = aspect_;
     S.time = time_;
+    S.zoom = zoom_;
     S.energy = energy_;
     S.high = high_;
     S.low = low_;

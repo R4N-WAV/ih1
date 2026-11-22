@@ -195,6 +195,10 @@ private:
     float aspect_ = 1.6f;
     float extent_ = 0.5f, extentTarget_ = 0.5f;
     float yaw_ = 0.0f, pitch_ = 0.0f;
+    float zoom_ = 1.0f;  // V5 auto-framing (smoothed); see Formation::update
+  public:
+    float zoom() const { return zoom_; }
+  private:
     int strands_ = 0;
     bool first_ = true;
 };

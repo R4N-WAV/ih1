@@ -246,14 +246,18 @@ V emissionPackets(const PackedScene& P, V q, float t) {
 }
 }  // namespace
 
+namespace { Mood gMood; }
+const Mood& mood() { return gMood; }
+void setMood(const Mood& m) { gMood = m; }
+
 void backgroundColour(float u, float v, float energy, float& r, float& g, float& b) {
     // near-black plum / navy, a touch lighter towards the middle-right of the field (where the formation lives)
     const float dx = u - 0.6f, dy = v - 0.48f;
     const float k = std::exp(-(dx * dx * 1.6f + dy * dy * 2.2f));
     const float lift = 0.65f + 0.35f * k * (1.0f + 0.25f * std::clamp(energy, 0.0f, 1.2f));
-    r = 0.016f * lift;
-    g = 0.011f * lift;
-    b = 0.026f * lift;
+    r = 0.016f * lift * gMood.bg;
+    g = 0.011f * lift * gMood.bg;
+    b = 0.026f * lift * gMood.bg;
 }
 
 void FieldScene::computeBound() {
@@ -368,6 +372,7 @@ PackedScene packScene(const FieldScene& s) {
     P.cam[1] = s.pitch;
     P.cam[2] = s.aspect;
     P.cam[3] = s.time;
+    P.view[0] = std::clamp(std::isfinite(s.zoom) ? s.zoom : 1.0f, 0.3f, 1.0f);
     P.audio[0] = s.energy;
     P.audio[1] = s.high;
     P.audio[2] = s.low;
@@ -409,7 +414,9 @@ void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<
     const float br = P.bound[3];
     const float aspect = P.cam[2];
     const float t = P.cam[3];
-    const V indigo{0.10f, 0.08f, 0.30f};
+    // depth tint: V4 indigo (0.10, 0.08, 0.30) desaturated toward its own luminance by the mood
+    const float ind = gMood.indigo, indL = 0.30f * 0.10f + 0.59f * 0.08f + 0.11f * 0.30f;
+    const V indigo{indL + ind * (0.10f - indL), indL + ind * (0.08f - indL), indL + ind * (0.30f - indL)};
     // per-frame sub-pixel and step jitter (golden-ratio sequence): temporal accumulation reconstructs the image
     const float jx = std::fmod(0.5f + 0.7548777f * static_cast<float>(frame), 1.0f) - 0.5f;
     const float jy = std::fmod(0.5f + 0.5698403f * static_cast<float>(frame), 1.0f) - 0.5f;
@@ -422,7 +429,8 @@ void renderRows(const PackedScene& P, int w, int h, int y0, int y1, std::vector<
             if (br <= 0.0f) continue;
             const float fx = (static_cast<float>(px) + 0.5f + jx) / static_cast<float>(h);
             const float fy = (static_cast<float>(py) + 0.5f + jy) / static_cast<float>(h);
-            const V dirC{(fx - 0.54f * aspect) / (kFieldCamDist * kFieldScale), -(fy - 0.5f) / (kFieldCamDist * kFieldScale), -1.0f};
+            const float zs = kFieldScale * P.view[0];
+            const V dirC{(fx - 0.54f * aspect) / (kFieldCamDist * zs), -(fy - 0.5f) / (kFieldCamDist * zs), -1.0f};
             const V dir = toWorld(dirC);  // per unit of depth
             const V oc = sub(camW, bc);
             const float A = dot(dir, dir), B = 2.0f * dot(oc, dir), C = dot(oc, oc) - br * br;
@@ -468,7 +476,7 @@ uniform vec4 uNodeP[32]; uniform vec4 uNodeA[32]; uniform vec4 uNodeU[32]; unifo
 uniform vec4 uSpine[16];
 uniform vec4 uPackP[4]; uniform vec4 uPackA[4]; uniform vec4 uPackU[4]; uniform vec4 uPackV[4]; uniform vec4 uPackC[4];
 uniform int uNodes; uniform int uSpineN; uniform int uPackets; uniform int uSteps;
-uniform vec4 uCam; uniform vec4 uAudio; uniform vec4 uAudio2; uniform vec4 uPulse; uniform vec4 uBound; uniform vec2 uRes; uniform float uFrame;
+uniform vec4 uCam; uniform vec4 uAudio; uniform vec4 uAudio2; uniform vec4 uPulse; uniform vec4 uBound; uniform vec4 uView; uniform vec2 uRes; uniform float uFrame;
 float smoothF(float e0, float e1, float x) { float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
 float lumF(vec3 c) { return 0.30 * c.x + 0.55 * c.y + 0.15 * c.z; }
 float hash3(float x, float y, float z) { float h = sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return h - floor(h); }
@@ -599,7 +607,7 @@ vec3 background(vec2 uv, float energy) {
   float dx = uv.x - 0.6, dy = uv.y - 0.48;
   float k = exp(-(dx * dx * 1.6 + dy * dy * 2.2));
   float lift = 0.65 + 0.35 * k * (1.0 + 0.25 * clamp(energy, 0.0, 1.2));
-  return vec3(0.016, 0.011, 0.026) * lift;
+  return vec3(0.016, 0.011, 0.026) * lift * MOODBG;
 }
 void main() {
   vec2 pix = vec2(vUv.x * uRes.x, (1.0 - vUv.y) * uRes.y);
@@ -611,7 +619,8 @@ void main() {
   vec2 jit = vec2(fract(0.5 + 0.7548777 * uFrame), fract(0.5 + 0.5698403 * uFrame)) - 0.5;
   float fx = (vUv.x + jit.x / uRes.x) * aspect, fy = 1.0 - vUv.y + jit.y / uRes.y;
   vec3 camW = toWorld(vec3(0.0, 0.0, CAMDIST), cy, sy, cp, sp);
-  vec3 dir = toWorld(vec3((fx - 0.54 * aspect) / (CAMDIST * SCALE), -(fy - 0.5) / (CAMDIST * SCALE), -1.0), cy, sy, cp, sp);
+  float zs = SCALE * clamp(uView.x, 0.3, 1.0);
+  vec3 dir = toWorld(vec3((fx - 0.54 * aspect) / (CAMDIST * zs), -(fy - 0.5) / (CAMDIST * zs), -1.0), cy, sy, cp, sp);
   vec3 oc = camW - uBound.xyz;
   float A = dot(dir, dir), B = 2.0 * dot(oc, dir), C = dot(oc, oc) - uBound.w * uBound.w;
   float disc = B * B - 4.0 * A * C;
@@ -622,7 +631,8 @@ void main() {
   float dd = (d1 - d0) / float(uSteps); float ds = dd * sqrt(A);
   // white-noise step jitter, re-drawn every frame (averages out in the temporal accumulation)
   float ign = hash3(floor(pix.x) * 0.731 + uFrame * 3.17, floor(pix.y) * 1.177, 3.1 + mod(uFrame, 64.0) * 0.37);
-  vec3 col = vec3(0.0); float T = 1.0; vec3 indigo = vec3(0.10, 0.08, 0.30);
+  vec3 col = vec3(0.0); float T = 1.0; float indL = 0.30 * 0.10 + 0.59 * 0.08 + 0.11 * 0.30;
+  vec3 indigo = vec3(indL) + MOODIND * (vec3(0.10, 0.08, 0.30) - vec3(indL));
   for (int k = 0; k < 96; ++k) {
     if (k >= uSteps || T <= 0.02) break;
     float d = d0 + (float(k) + ign) * dd;
@@ -655,6 +665,8 @@ void main() {
         rep("CAMDIST", f(kFieldCamDist));
         rep("SCALE", f(kFieldScale));
         rep("FOG", f(kFog));
+        rep("MOODBG", f(gMood.bg));
+        rep("MOODIND", f(gMood.indigo));
         return s;
     }();
     return src;

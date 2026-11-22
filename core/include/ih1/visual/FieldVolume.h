@@ -61,13 +61,15 @@ struct FieldScene {
     std::vector<FieldLink> links;
     std::vector<FieldPacket> packets;
     float yaw = 0.0f, pitch = 0.0f, aspect = 1.6f, time = 0.0f;
+    float zoom = 1.0f;  // V5: camera framing (<= 1 pulls back so the dense medium never meets the panel edges)
     float energy = 0.0f, high = 0.0f;
     // V4 multi-dimensional audio response: bands, stereo lean, onset density (fine turbulence), travelling pulses
     float low = 0.0f, mid = 0.0f, balance = 0.0f, turbulence = 0.0f;
     float pulseS[2] = {-1.0f, -1.0f}, pulseA[2] = {0.0f, 0.0f};
     float detail = 1.0f;  // V4: 1 = full filament sharpness; lower for few ray steps (softer lines instead of sparkle)
     float radius = 0.3f;  // V4: base radius of the continuous medium around the spine (grows with the chain)
-    float bound[4] = {0, 0, 0, 0};  // bounding sphere centre xyz + radius (radius 0 = nothing to draw)
+    float bound[4] = {0, 0, 0, 0};
+    // bounding sphere centre xyz + radius (radius 0 = nothing to draw)
     void computeBound();
 };
 
@@ -75,6 +77,13 @@ struct FieldScene {
 // coordinates x in [0, aspect], y in [0, 1] (y down); the image centre is at x = 0.54 * aspect.
 constexpr float kFieldCamDist = 4.2f;
 constexpr float kFieldScale = 0.23f;
+// V5 Phase 1.3 (mood): the V4 palette is kept; only the emotional weighting moves. kMoodBg lifts the near-black void
+// toward the existing plum (more atmosphere, less threat), kMoodIndigo desaturates the deep indigo that distant
+// structure cools toward (the darkest violet was the ominous part). Compared as variants A (V4) / B / C in
+// docs/V5_IMPLEMENTATION.md; B was chosen. setMood() exists for the comparison renders (formation_preview) only.
+struct Mood { float bg = 1.45f; float indigo = 0.65f; };
+const Mood& mood();
+void setMood(const Mood& m);
 
 // Flat uniform layout shared by both implementations (vec4 slots).
 struct PackedScene {
@@ -88,6 +97,7 @@ struct PackedScene {
     float audio2[4] = {0, 0, 0.3f, 1}; // balance, turbulence, radius, detail
     float pulse[4] = {-1, 0, -1, 0};   // s0, a0, s1, a1
     float bound[4] = {0, 0, 0, 0};
+    float view[4] = {1, 0, 0, 0};      // V5: zoom (auto-framing), reserved
 };
 PackedScene packScene(const FieldScene& s);
 

@@ -31,7 +31,13 @@ int main(int argc, char** argv) {
     const int W = argc > 4 ? std::atoi(argv[4]) : 1280, H = argc > 5 ? std::atoi(argv[5]) : 800;
     const int fps = argc > 6 ? std::atoi(argv[6]) : 30;
     const float every = argc > 7 ? static_cast<float>(std::atof(argv[7])) : 0.5f;
-    const float exposure = std::getenv("IH1_EXPOSURE") ? static_cast<float>(std::atof(std::getenv("IH1_EXPOSURE"))) : 2.2f;
+    const float exposure = std::getenv("IH1_EXPOSURE") ? static_cast<float>(std::atof(std::getenv("IH1_EXPOSURE"))) : 2.4f;
+    // V5: mood variants for comparison renders (IH1_MOOD="bg,indigo"; V4 = "1,1")
+    if (const char* md = std::getenv("IH1_MOOD")) {
+        ih1::visual::Mood m;
+        std::sscanf(md, "%f,%f", &m.bg, &m.indigo);
+        ih1::visual::setMood(m);
+    }
     const float bloom = std::getenv("IH1_BLOOM") ? static_cast<float>(std::atof(std::getenv("IH1_BLOOM"))) : 0.45f;
     const float mono = std::getenv("IH1_MONO") ? static_cast<float>(std::atof(std::getenv("IH1_MONO"))) : 0.0f;
     const int q = std::getenv("IH1_QUALITY") ? std::atoi(std::getenv("IH1_QUALITY")) : 1;

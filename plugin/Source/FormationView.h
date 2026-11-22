@@ -79,6 +79,7 @@ private:
     unsigned vao_ = 0, lineVbo_ = 0, quadVbo_ = 0;
     Target accum_, volA_, bloomA_, bloomB_;  // V3: accum_ = temporal history of the half-resolution volume (volA_)
     unsigned frame_ = 0;
+    double lastAccumMs_ = 0.0;  // V5: frame interval for the adaptive accumulation weight
     int volLevel_ = 0;              // adaptive volume quality (0 = best)
     std::atomic<double> volMs_{0.0};
     int wantW_ = 0, wantH_ = 0;
