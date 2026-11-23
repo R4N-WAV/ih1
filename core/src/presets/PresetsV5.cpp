@@ -121,8 +121,8 @@ void addV5Presets(std::vector<FactoryPreset>& v) {
          {"tape_colour", PV{{"drive", 3}, {"hf_loss", 3}, {"mix", 100}}}});
     add("v5.snare_cathedral", "Snare Cathedral", DR, "drums, snare, percussion", "Strong", "80s, cinematic",
         "The attack of each hit excites a bright room while a long, controlled chamber rises behind it.",
-        {{"drum_space", PV{{"mode", 1}, {"size", 70}, {"decay", 1.4f}, {"attack_send", 90}, {"body_send", 20}, {"mix", 35}}},
-         {"cloud_chamber", PV{{"size", 75}, {"decay", 3.5f}, {"high_decay", 0.5f}, {"predelay", 20}, {"mix", 25}}}});
+        {{"drum_space", PV{{"mode", 1}, {"size", 70}, {"decay", 1.4f}, {"attack_send", 90}, {"body_send", 20}, {"mix", 50}}},
+         {"cloud_chamber", PV{{"size", 75}, {"decay", 3.5f}, {"high_decay", 0.5f}, {"predelay", 20}, {"mix", 38}}}});
     add("v5.dust_break", "Dust Break", DR, "drums, breaks, loops", "Strong", "jungle, lo-fi, breakbeat",
         "A break re-sliced every bar, worn through a dusty sampler and a filtered echo.",
         {{"slice_shuffle", PV{{"length", 2}, {"slices", 2}, {"pattern", 1}, {"reverse", 15}, {"swing", 20}, {"mix", 100}}},
@@ -134,11 +134,11 @@ void addV5Presets(std::vector<FactoryPreset>& v) {
          {"width", PV{{"width", 125}, {"mono_below", 200}}}});
     add("v5.concrete_room", "Concrete Room", DR, "drums, drum bus, loops", "Moderate", "rock, hip-hop",
         "Harder attacks into a dense, tight concrete room.",
-        {{"transient", PV{{"attack", 45}, {"sustain", -10}, {"mix", 100}}},
+        {{"transient", PV{{"attack", 45}, {"sustain", -10}, {"out", -8}, {"mix", 100}}},
          {"drum_space", PV{{"mode", 0}, {"size", 35}, {"decay", 0.5f}, {"attack_send", 80}, {"body_send", 40}, {"tone", 20}, {"mix", 30}}}});
     add("v5.rubber_kit", "Rubber Kit", DR, "drums, drum bus, loops", "Strong", "hip-hop, boom bap",
         "Parallel crush with a bouncy medium release and a warm low end under clean hits.",
-        {{"drum_crush", PV{{"crush", 65}, {"drive", 8}, {"character", 0}, {"release", 1}, {"tone", -20}, {"body", 4}, {"blend", 55}}},
+        {{"drum_crush", PV{{"crush", 65}, {"drive", 8}, {"character", 0}, {"release", 1}, {"tone", -20}, {"body", 4}, {"blend", 55}, {"out", -7}}},
          {"transient", PV{{"attack", 25}, {"sustain", 10}, {"mix", 100}}}});
     add("v5.half_life_break", "Half-Life Break", DR, "drums, breaks", "Strong", "trip-hop, downtempo",
         "Half-time reconstruction of the break with its attacks kept sharp.",
@@ -150,7 +150,7 @@ void addV5Presets(std::vector<FactoryPreset>& v) {
          {"band_transients", PV{{"mid_attack", 30}, {"high_sustain", -30}, {"mix", 100}}}});
     add("v5.broken_pocket", "Broken Pocket", DR, "drums, loops, percussion", "Strong", "broken beat, footwork",
         "A syncopated tempo gate with swing and per-bar probability: the groove keeps shifting.",
-        {{"pulse_shaper", PV{{"pattern", 13}, {"division", 4}, {"depth", 90}, {"attack", 1.2f}, {"gate", 45}, {"release", 35}, {"swing", 40}, {"chance", 75}, {"mix", 100}}},
+        {{"pulse_shaper", PV{{"pattern", 13}, {"division", 4}, {"depth", 80}, {"attack", 1.2f}, {"gate", 70}, {"release", 35}, {"swing", 40}, {"chance", 75}, {"mix", 100}}},
          {"drum_space", PV{{"mode", 0}, {"size", 25}, {"decay", 0.35f}, {"mix", 20}}}});
     add("v5.drum_orbit", "Drum Orbit", DR, "drums, percussion, loops", "Moderate", "techno, dub techno",
         "Hits ping-pong left and right in a pattern and trail into filtered echoes.",
@@ -191,7 +191,7 @@ void addV5Presets(std::vector<FactoryPreset>& v) {
          {"band_transients", PV{{"mid_attack", 25}, {"high_attack", 20}, {"mix", 100}}}});
     add("v5.offbeat_machinery", "Offbeat Machinery", DR, "drums, percussion, loops", "Strong", "techno, electro",
         "An alternating off-beat gate with humanised timing and a metallic early reflection.",
-        {{"pulse_shaper", PV{{"pattern", 2}, {"division", 4}, {"depth", 85}, {"attack", 0.8f}, {"gate", 40}, {"release", 25}, {"humanize", 30}, {"stereo", 1}, {"mix", 100}}},
+        {{"pulse_shaper", PV{{"pattern", 2}, {"division", 4}, {"depth", 70}, {"attack", 0.8f}, {"gate", 50}, {"release", 25}, {"humanize", 30}, {"stereo", 1}, {"mix", 100}}},
          {"reflections", PV{{"pattern", 7}, {"time", 18}, {"taps", 8}, {"mix", 25}}}});
     add("v5.last_hit_in_the_hall", "Last Hit in the Hall", DR, "drums, percussion, vocals", "Strong", "cinematic, trailer",
         "The attacks lead a long hall tail that blooms upward in pitch.",

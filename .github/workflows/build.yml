@@ -111,7 +111,7 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(IH1 VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-          & $iscc "/DAppVersion=$ver" "/DTestRound=5" "/DSourceDir=$PWD\stage" installer\IH1.iss
+          & $iscc "/DAppVersion=$ver" "/DTestRound=6" "/DSourceDir=$PWD\stage" installer\IH1.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package the test build ZIP (installer + install README)
         shell: pwsh

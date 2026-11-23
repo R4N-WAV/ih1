@@ -24,6 +24,16 @@ void check(bool ok, const String& what) {
     if (!ok) ++failures;
 }
 void pump(int ms = 80) { MessageManager::getInstance()->runDispatchLoopUntil(ms); }
+// V6: wait for a condition the editor reaches on its own timer (up to timeoutMs) instead of a fixed pump, so a loaded
+// machine (CI, sanitizers) cannot make a correct editor miss a fixed window. Measured before: the V5 test missed one
+// such window in 2 of 6 idle runs.
+bool waitFor(const std::function<bool()>& cond, int timeoutMs = 1500) {
+    for (int t = 0; t < timeoutMs; t += 20) {
+        if (cond()) return true;
+        pump(20);
+    }
+    return cond();
+}
 
 struct Driver {
     Editor& ed;
@@ -340,7 +350,10 @@ int main() {
                 for (auto* c : ed->getChildren()) if (auto* b = dynamic_cast<TextButton*>(c); b && b->getButtonText() == "COMMIT") return b;
                 return nullptr;
             }();
-            if (commitBtn) d.clickOn(*commitBtn, commitBtn->getLocalBounds().getCentre());
+            if (commitBtn) {
+                waitFor([&] { return commitBtn->isEnabled(); });  // the editor timer enables COMMIT after an audition
+                d.clickOn(*commitBtn, commitBtn->getLocalBounds().getCentre());
+            }
             pump(450);  // past the double-commit guard
         };
         commitClick();
@@ -535,9 +548,11 @@ int main() {
             d.t += 400;
             d.press(pp);
             d.release(pp);
-            pump(60);
-            const bool okK = selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible() &&
-                             proc->params().getRawParameterValue("solo")->load() < 0.5f;
+            auto landed = [&] {
+                return selected(*proc) == -1 && car.selected() == -1 && !ed->settings().isVisible() &&
+                       proc->params().getRawParameterValue("solo")->load() < 0.5f;
+            };
+            const bool okK = waitFor(landed, 1000);
             if (!okK)
                 std::printf("   iteration %d: selected %d carousel %d settings %d solo %.1f preset %s\n", k, selected(*proc), car.selected(),
                             ed->settings().isVisible() ? 1 : 0, proc->params().getRawParameterValue("solo")->load(), proc->currentPresetKey().toRawUTF8());
@@ -548,8 +563,7 @@ int main() {
             proc->uiSelect(sat);
             pump(20);
             proc->loadPresetKey(proc->presetList()[static_cast<size_t>(3 + k * 5)].key, msg);  // the browser's load path
-            pump(40);
-            okLoad += selected(*proc) == -1 && car.selected() == -1;
+            okLoad += waitFor([&] { return selected(*proc) == -1 && car.selected() == -1; }, 1000);
         }
         check(okLoad == 5, "loading from the browser path lands on None (" + String(okLoad) + "/5)");
         float drive;

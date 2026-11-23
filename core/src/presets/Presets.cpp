@@ -89,7 +89,7 @@ std::vector<FactoryPreset> build() {
         {{"grain_engine", P{{"mode", 1}, {"speed", 0.25f}, {"size_ms", 160}, {"density", 30}, {"spray_ms", 40}, {"align", 1}, {"gain", -3}, {"mix", 100}}},
          {"spectral_smear", P{{"smear", 25}, {"time", 30}, {"scatter", 10}, {"mix", 70}}}});
     add("ss.smear_field", "Smear Field", S, "field, pads, vocals, full mix", "No pitch, no attack: a dense cloud of the source's colours with the phase scattered away.",
-        {{"spectral_smear", P{{"smear", 95}, {"bias", 30}, {"time", 70}, {"scatter", 90}, {"out", 6}, {"mix", 100}}}, {"width", P{{"width", 140}}}});
+        {{"spectral_smear", P{{"smear", 95}, {"bias", -40}, {"time", 40}, {"scatter", 90}, {"out", 11}, {"mix", 100}}}, {"width", P{{"width", 140}}}});
     add("ss.quarter_drift", "Varispeed Sink", S, "vocals, drums, guitars, loops", "Tape playback at 0.6x: everything sinks a fifth and a half and slows, with wow.",
         {{"time_warp", P{{"mode", 0}, {"speed", 0.6f}, {"mix", 100}}}, {"tape_colour", P{{"drive", 8}, {"hf_loss", 5}}}, {"vibrato", P{{"depth", 18}, {"rate", 0.5f}}}});
     add("s3.frozen_bloom", "Frozen Bloom", S, "pads, keys, vocals, guitars", "A spectral hold blooms out of the source and hangs, with grains glittering through it.",
@@ -160,7 +160,7 @@ std::vector<FactoryPreset> build() {
     add("so.partial_gate", "Partial Gate", SO, "vocals, keys, pads, guitars", "Only the strongest partials survive the spectral gate; the rest is silence. Sparse, glassy and strange.",
         {{"spectral_smear", P{{"smear", 10}, {"time", 25}, {"scatter", 0}, {"gate", -48}, {"out", 6}, {"mix", 100}}}, {"reverb", P{{"mode", 2}, {"decay", 3}, {"mix", 30}}}});
     add("so.disintegrate", "Disintegrate", SO, "vocals, pads, keys, field", "Partials drop out and return at random: the sound tears and sparkles apart.",
-        {{"spectral_smear", P{{"smear", 20}, {"time", 20}, {"scatter", 30}, {"disintegrate", 90}, {"mix", 100}}}, {"spectral_delay", P{{"sync", 1}, {"division", 7}, {"shape", 3}, {"feedback", 30}, {"mix", 45}}}});
+        {{"spectral_smear", P{{"smear", 20}, {"time", 20}, {"scatter", 30}, {"disintegrate", 90}, {"out", 10}, {"mix", 100}}}, {"spectral_delay", P{{"sync", 1}, {"division", 7}, {"shape", 3}, {"feedback", 30}, {"mix", 45}}}});
     add("ht.fifth_resonance", "Fifth Resonance", SO, "drums, percussion, vocals, field", "Everything excites a ringing bank of fifths: drums become tuned metal.",
         {{"resonator", P{{"key", 9}, {"octave", 2}, {"chord", 2}, {"decay", 4}, {"bright", 60}, {"mix", 100}}}, {"spectral_smear", P{{"smear", 15}, {"time", 30}, {"mix", 50}}}});
     add("ht.crystal", "Glass Chord", SO, "keys, vocals, guitars, pads", "A held spectrum of the source, shimmering in a pentatonic resonator.",

@@ -72,9 +72,9 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
          {"saturation", PV{{"style", 3}, {"drive", 14}}}});
     add("v4.glass_shards", "Glass Shards", SC, "keys, guitars, drums, synths", "Extreme", "glitch, hyperpop",
         "Spectral shards gated on the sixteenth, struck through glass modes: splintered, ringing and metallic.",
-        {{"spectral_shatter", PV{{"shards", 3}, {"division", 4}, {"reorder", 70}, {"gate", 35}, {"mix", 100}}},
+        {{"spectral_shatter", PV{{"shards", 3}, {"division", 4}, {"reorder", 70}, {"gate", 35}, {"out", -6}, {"mix", 100}}},
          {"modal", PV{{"material", 3}, {"note", 7}, {"octave", 3}, {"excite", 1}, {"decay", 1.5f}, {"mix", 50}}},
-         {"transient", PV{{"attack", 60}}}});
+         {"transient", PV{{"attack", 45}}}});
     add("v4.subatomic", "Subatomic", SC, "bass, drums, synths", "Strong", "leftfield bass, industrial",
         "Low frequencies are smeared late through dispersion, shifted an octave down and folded: a sub-heavy, unstable mass.",
         {{"dispersion", PV{{"stages", 4}, {"center", 150}, {"spread", 3}, {"curve", -80}, {"q", 2.5f}, {"mix", 100}}},
@@ -95,7 +95,7 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
     add("v4.ghost_break", "Ghost Break", GR, "drums, loops", "Strong", "jungle, breakcore",
         "Breaks rebuilt from reversed slices and octave-down ghosts, with the attacks kept sharp.",
         {{"slice_shuffle", PV{{"length", 3}, {"slices", 2}, {"pattern", 6}, {"reverse", 40}, {"pitch", 1}, {"pitch_amt", 20}, {"fade", 1.5f}, {"mix", 100}}},
-         {"transient", PV{{"attack", 40}, {"sustain", -20}}}});
+         {"transient", PV{{"attack", 40}, {"sustain", -20}, {"out", -9}}}});
     add("v4.borrowed_chorus", "Borrowed Chorus", GR, "vocals, keys, guitars", "Strong", "future garage, dream pop",
         "Overlapping grains pitched into fifths and octaves, spread wide: one voice becomes a borrowed choir.",
         {{"grain_engine", PV{{"size_ms", 180}, {"density", 30}, {"pitch_jit", 12}, {"scale", 2}, {"spread", 95}, {"stereo", 1}, {"mix", 70}}},
@@ -210,7 +210,7 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
          {"chorus", PV{{"depth", 20}, {"mix", 25}}}});
     add("v4.formant_morph", "Formant Glass", PR, "vocals", "Strong", "hyperpop, experimental",
         "A grafted, shifted spectral shape of the voice's own past moment, with formants pushed up: glassy, alien vocals.",
-        {{"spectral_graft", PV{{"source", 1}, {"echo_ms", 300}, {"amount", 80}, {"formant", 5}, {"mix", 100}}},
+        {{"spectral_graft", PV{{"source", 1}, {"echo_ms", 300}, {"amount", 80}, {"formant", 5}, {"out", -4}, {"mix", 100}}},
          {"formant", PV{{"shift", 4}, {"mix", 70}}}, {"reverb", PV{{"mode", 2}, {"decay", 1.5f}, {"mix", 20}}}});
 
     // ======================================================================================= Spectral / Frequency Space
@@ -342,11 +342,11 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
          {"reverb", PV{{"mode", 6}, {"decay", 6}, {"mix", 40}}}});
     add("v4.tidal_body", "Tidal Body", AC, "field, pads, vocals", "Strong", "drone, ambient",
         "Spectral smear and a slow dispersion sweep: the sound becomes a tide of frequencies.",
-        {{"spectral_smear", PV{{"smear", 70}, {"time", 80}, {"scatter", 40}, {"mix", 100}}},
+        {{"spectral_smear", PV{{"smear", 70}, {"time", 80}, {"scatter", 40}, {"out", 9}, {"mix", 100}}},
          {"dispersion", PV{{"stages", 3}, {"center", 500}, {"spread", 5}, {"mod_depth", 1.2f}, {"mod_rate", 0.05f}, {"mix", 70}}}});
     add("v4.trailer_hit", "Trailer Hit", AC, "drums, percussion, full mix", "Extreme", "cinematic, trailer",
         "Hits become huge: an octave-down body, a struck plate and a dark, enormous tail.",
-        {{"transient", PV{{"attack", 70}, {"sustain", 40}}}, {"pitch_shift", PV{{"shift_a", -12}, {"level_b", -40}, {"mix", 45}}},
+        {{"transient", PV{{"attack", 50}, {"sustain", 40}, {"out", -4}}}, {"pitch_shift", PV{{"shift_a", -12}, {"level_b", -40}, {"mix", 45}}},
          {"modal", PV{{"material", 4}, {"note", 0}, {"octave", 1}, {"excite", 1}, {"decay", 4}, {"mix", 35}}}, {"reverb", PV{{"mode", 4}, {"decay", 9}, {"mix", 40}}}});
     add("v4.ghost_station", "Ghost Station", AC, "vocals, field, full mix", "Strong", "dub ambient, hauntology",
         "A distant, radio-band voice with static, echoes and a cold hall.",
@@ -368,7 +368,7 @@ void addV4Presets(std::vector<FactoryPreset>& v) {
     add("v4.modal_rebuild", "Modal Rebuild", EX, "drums, loops, percussion", "Extreme", "IDM, experimental",
         "Bars rebuilt from scrambled slices whose attacks strike a bar-metal resonator.",
         {{"slice_shuffle", PV{{"length", 2}, {"slices", 2}, {"pattern", 3}, {"mix", 100}}},
-         {"modal", PV{{"material", 1}, {"note", 9}, {"octave", 3}, {"excite", 1}, {"decay", 1.2f}, {"mix", 45}}}});
+         {"modal", PV{{"material", 1}, {"note", 9}, {"octave", 3}, {"excite", 1}, {"decay", 2.0f}, {"mix", 70}}}});
     add("v4.graft_cascade", "Graft Cascade", EX, "vocals, synths", "Strong", "experimental, hyperpop",
         "A grafted spectral shape, then reversed pitch echoes climbing out of it.",
         {{"spectral_graft", PV{{"source", 0}, {"amount", 70}, {"refresh", 2}, {"mix", 100}}}, {"reverse_echo", PV{{"interval", 12}, {"feedback", 50}, {"mix", 40}}}});

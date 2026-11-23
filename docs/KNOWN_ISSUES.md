@@ -1,6 +1,36 @@
 # Known issues and unverified items
 
-## V5 (this pass, 0.5.0 test round 5)
+## V6 (this pass, 0.6.0 test round 6)
+
+### Not verified in the target host
+- **FL Studio, Windows and real GPUs were not tested by the developer** (Linux only). The P0 crash was diagnosed on
+  the shipped Windows binary (disassembly) and reproduced with AddressSanitizer on Linux; the fix is verified there,
+  not yet in FL Studio. Use `docs/FL_STUDIO_TEST_CHECKLIST.md` (V6 section, item 2 first).
+- **No crash dump or PDB of the crashing build existed.** The diagnosis used the exact CI artefact, its `.pdata` table
+  and disassembly (`docs/V6_CRASH_ANALYSIS.md`). From 0.6.0 on, CI keeps a private PDB artefact for every Windows build.
+- **Windows display scaling** (125 / 150 / 200 %) was not tested on Windows; the menus were checked at two editor sizes
+  and at 2x snapshot scale on Linux. JUCE scales the logical layout, so the layout fixes should carry over.
+- **KADAL was not searched**: attaching `R4N-WAV/Kadal` was refused by the session's permission policy (as in V4 / V5).
+- **Listening**: the vocal presets were validated by measurement (level, peak, transformation, added content, macro
+  audibility) on the synthetic vocal sources, not by listening to real recordings.
+
+### Tests
+- **Fixed in V6: timing-sensitive editor checks.** Some `ih1_uitest` checks waited a fixed 40-60 ms for the editor
+  timer. The unmodified V5 test missed one in 2 of 6 idle runs (measured), and heavy load could trip others. They now
+  poll for the expected state (up to 1-1.5 s): 6 / 6 idle runs and 3 / 3 runs under concurrent CPU load pass.
+
+### Audio
+- **Whisper output is noise**: its peaks can reach about 5x its RMS (a noise crest factor). On a loud vocal it can
+  peak above 0 dBFS before Output Safety (worst measured preset: *Ghost Whisper*, 1.48 on the vocal phrase).
+- **Vocal Throw's pitch per repeat** uses a two-tap delay-line shifter (50 ms window) in the loop: repeats get a
+  slight grainy, "pitched tape" character, by design for throws, not a transparent shifter.
+- **Vowel Morph's level match** follows the input level over ~300 ms; after long silence the first syllable can be
+  briefly quieter or louder (bounded to -12 .. +18 dB of make-up).
+- **Vocal Throw, discrete switches** (Mode, Ping-Pong, Sync) change the echo path at once. Committed copies never change
+  values, and on the staged copy the engine's existing discrete-switch crossfade covers the jump. The processor alone,
+  with discrete switches thrown every 0.35-0.9 s, flags 12 of 30 click-audit cases (continuous controls: 0 of 60).
+
+## V5 (previous pass, 0.5.0 test round 5)
 
 ### Not verified in the target host
 - **FL Studio, Windows and real GPUs were not tested by the developer.** Everything ran on Linux (Mesa llvmpipe):

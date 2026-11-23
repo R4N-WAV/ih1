@@ -166,3 +166,27 @@ None of these were tested in FL Studio by the developer (Linux only: unit tests,
 8. **Formation**: resize the window from narrowest to widest: the dense part of the field never touches the panel
    edges (it reframes smoothly). Watch a silent, static chain for 30 s: no fine shaking. Commit several effects in a
    row: the field reframes gradually, it never resets or pops. Check GPU load in FL's performance monitor.
+
+## V6 (0.6.0) additions to check in FL Studio
+
+None of these were tested in FL Studio by the developer (Linux only: unit tests, VST3 host test, editor tests, and the
+editor tests under AddressSanitizer). Report the build id under the IH1 wordmark with any result.
+
+1. **Version**: the text under the IH1 wordmark reads `v0.6.0 <build>`.
+2. **The reported crash (P0)**: load a preset that shows macro knobs (e.g. *Swell Choir*), turn each macro knob, turn
+   several staged controls (stage Doppler, then Reverb), then **right-click the effect browser (carousel)** 20 times,
+   opening a category each time and closing with Escape or a click outside. Also right-click right after loading
+   presets with the preset arrows. Expect: never a crash; the list shows None, then the categories, every effect once.
+   If FL ever reports an IH1 crash again, follow `docs/V6_CRASH_ANALYSIS.md` section 9 (capturing a dump).
+3. **Preset browser**: open it at the smallest window size. Every category, including *Vocal / Voice* and *User*, is
+   readable and none is drawn over the description text; counts sit at the right. Hover presets: the description and
+   the metadata line never overlap the Save / Rename buttons. Type `vocal` in the search: names and categories never
+   overlap. Repeat at Windows display scaling 125 %, 150 % and 200 % (Settings > Display), and with the window enlarged.
+4. **FX right-click list**: the current effect is ticked in bold and shown in full (e.g. *Reflection Sculptor*); the
+   footer describes the hovered effect; category rows preview their effects. Open it near each edge of the window.
+5. **New effects**: Vowel Morph (Motion = Loudness on a vocal; Sequence synced to FL's tempo), Whisper (reports
+   1024 samples at 48 kHz in Full Quality, 512 in Low; Zero is not available and the latency read-out says why),
+   Vocal Throw (Last Word mode on a vocal with gaps: only the end of each phrase is thrown).
+6. **Vocal / Voice presets**: step through the 37 presets with the arrows during playback on a real vocal: no clicks
+   at the switch, levels sensible, macros (Voice / Mouth / Throw) audible. Note any preset that does not match its
+   description; that is the listening test the developer could not do.

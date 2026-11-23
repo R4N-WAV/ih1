@@ -5,10 +5,10 @@
 ; VST3 host scans (FL Studio, Cubase, ...). The standalone app is optional.
 
 #ifndef AppVersion
-  #define AppVersion "0.5.0"
+  #define AppVersion "0.6.0"
 #endif
 #ifndef TestRound
-  #define TestRound "5"
+  #define TestRound "6"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\stage"

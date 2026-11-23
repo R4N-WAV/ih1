@@ -26,13 +26,25 @@ Supported
   Windows 10 / 11, 64-bit VST3 hosts. Primary target: FL Studio. OpenGL 3.2 or newer for the full formation
   (IH1 falls back to a software formation automatically; audio is never affected).
 
-Test status of this build (see docs/V4_IMPLEMENTATION.md in the repository for the evidence)
+Test status of this build (see docs/V6_IMPLEMENTATION.md in the repository for the evidence)
   * Automated: unit / behaviour / factory-audit tests, VST3 host-lifecycle tests and editor tests run on
     Linux; the Windows CI builds, runs the unit and host tests and pluginval, and builds this installer.
   * NOT tested in FL Studio by the developer (no Windows / FL Studio in the build environment). Please use
     docs/FL_STUDIO_TEST_CHECKLIST.md.
 
-What is new in 0.5.0 (round 5)
+What is new in 0.6.0 (round 6)
+  * FIXED: the FL Studio crash (access violation in IH1.vst3). It happened on a right-click on the effect
+    browser: the FX list read one entry before the effect table. Found in the shipped 0.5.0 binary, proven
+    with AddressSanitizer, fixed, and guarded by a new test that CI runs under AddressSanitizer.
+  * Menus redesigned for readability: the preset browser no longer draws a category over the description,
+    category names are shown in full with counts, the FX list shows what each effect does, long names are
+    fitted instead of cut.
+  * Three new vocal effects: Vowel Morph (talkbox-style vowels on any sound), Whisper (turns singing into
+    breath), Vocal Throw (ducked, filtered adlib echoes with pitch drops; Last Word mode). 67 effects in total.
+  * A new Vocal / Voice preset category with 37 presets, from polished leads and choirs to robots, whispers
+    and destroyed voices; voice macros (Voice, Mouth, Throw) on vocal chains.
+
+What was new in 0.5.0 (round 5)
   * COMMIT keeps the effect browser where it is: the committed copy plays, a fresh copy of the same effect
     (defaults) waits muted. Touch a control or press M to audition it.
   * Nine new effects: Cloud Chamber, Reflection Sculptor, Reverse Bloom, Swell, Pulse Shaper, Drum Crush,
