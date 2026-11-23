@@ -182,6 +182,10 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
         parent.text = categoryName(static_cast<FxCategory>(cat));
         parent.colour = categoryColour(cat);
         for (int idx : order_) {
+            // V6 P0 (FL Studio access violation, IH1.vst3 + 0x27F8D): order_ starts with the None entry (-1) since V4.
+            // reg[-1] read 280 bytes before the registry's storage and built a String from whatever lay there. None
+            // is the dedicated row above; only real registry indices become FX rows.
+            if (idx < 0 || idx >= static_cast<int>(reg.size())) continue;
             const auto& d = reg[static_cast<size_t>(idx)];
             if (static_cast<int>(d.category) != cat) continue;
             MenuItem it;

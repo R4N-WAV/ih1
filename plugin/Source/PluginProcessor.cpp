@@ -193,6 +193,8 @@ void Processor::uiSetParam(int paramIndex, float plainValue) {
     const juce::ScopedLock sl(lock_);
     const int sel = session_->selected();
     if (sel < 0) return;
+    // V6: validate against the staged effect's real control count before anything reads its parameter spec
+    if (paramIndex < 0 || paramIndex >= static_cast<int>(fxRegistry()[static_cast<size_t>(sel)].params.size())) return;
     // V5 Phase 7: touching a control after COMMIT is a deliberate audition gesture: standby ends, MUTE turns off
     if (session_->auditionEdit()) {
         apvts_.getParameter("mute")->setValueNotifyingHost(0.0f);

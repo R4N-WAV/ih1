@@ -66,6 +66,18 @@ target_compile_definitions(IH1 PUBLIC
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0)
 
+# V6 P0: Release builds carry full debug information so a host crash offset can be resolved to a source line. The PDB
+# goes to a private folder outside the VST3 bundle (CI uploads it as its own artefact); it is never installed.
+if(MSVC)
+    target_compile_options(IH1 PRIVATE $<$<CONFIG:Release>:/Zi>)
+    foreach(t IH1 IH1_VST3 IH1_Standalone)
+        if(TARGET ${t})
+            target_link_options(${t} PRIVATE $<$<CONFIG:Release>:/DEBUG:FULL /OPT:REF /OPT:ICF>)
+            set_target_properties(${t} PROPERTIES PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pdb/${t}")
+        endif()
+    endforeach()
+endif()
+
 target_link_libraries(IH1
     PRIVATE
         ih1_core

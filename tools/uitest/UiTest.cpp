@@ -749,6 +749,60 @@ int main() {
         pump(200);
     }
 
+    // ---- V6 P0: the FL Studio access violation (IH1.vst3 + 0x27F8D, Carousel::showCatalogueMenu read reg[-1] for the
+    // None entry of the carousel ring). The user's sequence: a preset with macros recalled (staged controls 3-8 and
+    // preset macros 1-3 re-synced, as in FL's undo list), macro and staged-control tweaks, then the right-click FX list.
+    // The out-of-bounds read is silent in most heap layouts, so this block is also run under AddressSanitizer in CI.
+    {
+        int withMacros = -1;
+        const auto& fp = factoryPresets();
+        for (size_t i = 0; i < fp.size() && withMacros < 0; ++i) if (!fp[i].macros.empty()) withMacros = static_cast<int>(i);
+        check(withMacros >= 0, "V6: a factory preset with macros exists");
+        const int doppler = fxTypeIndex("doppler");
+        int menuOk = 0;
+        const int rounds = 25;
+        for (int round = 0; round < rounds; ++round) {
+            String msg;
+            if (withMacros >= 0) proc->loadPresetKey("f:" + String(fp[static_cast<size_t>(withMacros)].id), msg);
+            pump(40);
+            for (int k = 0; k < kNumPresetMacros; ++k) {
+                proc->uiPresetMacroGesture(k, true);
+                for (int s = 0; s <= 8; ++s) proc->uiSetPresetMacro(k, static_cast<float>((s + round) % 9) / 8.0f);
+                proc->uiPresetMacroGesture(k, false);
+            }
+            proc->uiSelect(round % 2 ? doppler : fxTypeIndex("reverb"));
+            pump(40);
+            const int sel = selected(*proc);
+            const int np = sel >= 0 ? static_cast<int>(fxRegistry()[static_cast<size_t>(sel)].params.size()) : 0;
+            for (int k = 2; k < kNumMacros; ++k) {  // staged controls 3..8 (including indices beyond this effect's count)
+                proc->uiGesture(k, true);
+                if (k < np) {
+                    const auto& sp = fxRegistry()[static_cast<size_t>(sel)].params[static_cast<size_t>(k)];
+                    proc->uiSetParam(k, sp.fromNormalised(static_cast<float>(round % 5) / 4.0f));
+                } else {
+                    proc->uiSetParam(k, 0.5f);  // no such control: must be ignored
+                }
+                proc->uiGesture(k, false);
+            }
+            pump(40);
+            d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);
+            pump(30);
+            // None once at the top, then one row per non-empty category, each FX exactly once across the submenus
+            int total = 0, cats = 0;
+            for (int c = 0; c < kNumCategories; ++c) {
+                int inCat = 0;
+                for (int idx : fxCarouselOrder()) inCat += static_cast<int>(fxRegistry()[static_cast<size_t>(idx)].category) == c ? 1 : 0;
+                total += inCat;
+                cats += inCat > 0 ? 1 : 0;
+            }
+            if (menu.isOpen() && menu.indexOfText("None") == 0 && menu.itemCount() == cats + 1 && total == static_cast<int>(fxCarouselOrder().size())) ++menuOk;
+            d.key(KeyPress(KeyPress::escapeKey));
+            pump(20);
+        }
+        check(menuOk == rounds, "V6 P0: preset recall + macro / staged-control tweaks + right-click FX list, " + String(rounds) + " rounds: list correct every time (" + String(menuOk) + ")");
+        check(selected(*proc) >= 0, "...and the session is still usable");
+    }
+
     // ---- editor close with a menu open, reopen ----
     {
         d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);

@@ -44,6 +44,28 @@ jobs:
           name: IH1-linux-vst3
           path: build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
 
+  # V6 P0: the FL Studio access violation was an out-of-bounds read that is silent in most heap layouts. The real
+  # editor is driven under AddressSanitizer so that class of defect fails CI instead of shipping.
+  linux-asan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libxi-dev xvfb
+      - name: Configure (Debug + AddressSanitizer)
+        run: >
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_C_FLAGS=-fsanitize=address
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address
+          -DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=address
+      - name: Build the editor interaction tests
+        run: cmake --build build-asan --target ih1_uitest --parallel
+      - name: Editor interaction tests under ASan (any ASan report fails the job)
+        run: ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 xvfb-run -a -s "-screen 0 1920x1200x24" ./build-asan/plugin/ih1_uitest_artefacts/Debug/ih1_uitest
+
   windows:
     runs-on: windows-2022
     steps:
@@ -82,6 +104,7 @@ jobs:
           Copy-Item -Recurse -Force build\plugin\IH1_artefacts\Release\VST3\IH1.vst3 stage\VST3\
           Copy-Item -Force build\plugin\IH1_artefacts\Release\Standalone\IH1.exe stage\Standalone\
           Copy-Item -Force README.md, installer\THIRD_PARTY_NOTICES.txt, installer\INSTALL_NOTES.txt stage\
+          if (Get-ChildItem -Recurse stage -Include *.pdb, *.ilk, *.dmp) { throw 'debug files must not be shipped in the installer' }
       - name: Build setup wizard (Inno Setup)
         shell: pwsh
         run: |
@@ -121,3 +144,8 @@ jobs:
         with:
           name: IH1-windows-vst3
           path: build/plugin/IH1_artefacts/Release/VST3/IH1.vst3
+      # V6: symbols for crash-offset resolution (private CI artefact; never part of the installer or the ZIP)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IH1-windows-pdb
+          path: build/pdb/**/*.pdb
