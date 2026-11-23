@@ -77,6 +77,9 @@ FxDescriptor describeLooper();
 FxDescriptor describeResonator();
 FxDescriptor describeConvolution();
 FxDescriptor describeAmp();
+FxDescriptor describeVowelMorph();  // V6
+FxDescriptor describeWhisper();     // V6
+FxDescriptor describeVocalThrow();  // V6
 FxDescriptor describeTestGain();  // hidden test effect used to prove the engine semantics
 
 }  // namespace ih1::fx

@@ -114,6 +114,10 @@ constexpr Annot kAnnot[] = {
     {"drum_space", FxCategory::TimeSpace, nullptr},
     {"band_transients", FxCategory::Dynamics, nullptr},
     {"hit_melody", FxCategory::Experimental, nullptr},
+    // V6 (vocal)
+    {"vowel_morph", FxCategory::PitchVocal, "rate"},
+    {"whisper", FxCategory::PitchVocal, nullptr},
+    {"vocal_throw", FxCategory::TimeSpace, "time_ms"},
 };
 
 void annotate(FxDescriptor& d) {
@@ -140,6 +144,15 @@ void annotate(FxDescriptor& d) {
         return;
     }
     if (t == "cloud_chamber" || t == "drum_space" || t == "reflections") L.cpuClass = 2;
+    if (t == "whisper") {
+        L.zero = false;
+        L.low = true;
+        L.analysisWindow = true;
+        L.cpuClass = 2;
+        L.lowNote = "Shorter analysis window (512 points at 48 kHz): about 11 ms instead of 21 ms; a slightly grainier whisper on low voices.";
+        return;
+    }
+    if (t == "vowel_morph" || t == "vocal_throw") L.cpuClass = 1;
     if (t == "spectral_shatter" || t == "spectral_graft" || t == "partial_recompose") {
         L.zero = false;
         L.low = true;

@@ -81,6 +81,10 @@ void registerAll(std::vector<FxDescriptor>& r) {
     r.push_back(describeHitMelody());
     r.push_back(describeTestGain());
     r.push_back(describeTestLatency());
+    // V6 (appended after every existing type, including the hidden test effects: no accepted colour tier moves)
+    r.push_back(describeVowelMorph());
+    r.push_back(describeWhisper());
+    r.push_back(describeVocalThrow());
 }
 
 }  // namespace ih1::fx

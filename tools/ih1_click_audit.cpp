@@ -143,7 +143,11 @@ int main(int argc, char** argv) {
                 }
                 if (pos >= nextChange && !std::getenv("IH1_CLICK_STATIC")) {
                     if (std::getenv("IH1_CLICK_VERBOSE")) std::printf("   [case %d] params change at %.3f s\n", k, pos / sr);
+                    const ParamValues before = v;
                     randomise(v, 0.5f);
+                    if (std::getenv("IH1_CLICK_VERBOSE"))  // V6: which values moved, so an interaction can be isolated
+                        for (size_t i = 0; i < d.params.size(); ++i)
+                            if (before[i] != v[i]) std::printf("       %s: %.4g -> %.4g\n", d.params[i].id.c_str(), static_cast<double>(before[i]), static_cast<double>(v[i]));
                     fx->setParams(d.clamp(v), false);
                     nextChange = pos + static_cast<int>((0.35 + 0.55 * rng.uniform()) * sr);
                 }
