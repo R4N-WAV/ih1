@@ -34,6 +34,7 @@ public:
     MenuOverlay& menu() { return menu_; }
     FormationView& formation() { return formation_; }
     PresetBar& presetBar() { return presetBar_; }
+    PresetBrowser& browser() { return browser_; }
     bool usingSoftwareFormation() const { return formation_.softwareFallback(); }
 
 private:

@@ -29,6 +29,7 @@ struct MenuItem {
     bool ticked = false;      // current value
     juce::String hint;        // small right-aligned detail text
     bool divider = false;     // faint hairline under this row (V3: separates "None" from the categories)
+    juce::String detail;      // V6: one or two plain-language lines shown in the list's footer while the row is hot
     std::vector<MenuItem> sub;  // non-empty: this row opens a nested submenu (one level deep)
 };
 
@@ -81,11 +82,16 @@ public:
     bool hitTest(int, int) override { return open_; }
 
 private:
+    // V6 Phase 4: row columns (logical px), shared by layout, painting and hit-testing
+    static constexpr float kTextLeft = 16.0f, kHintGap = 10.0f, kRightCol = 26.0f;
+    static constexpr int kFooterH = 40;
     struct Level {
         bool open = false;
         std::vector<MenuItem> items;
         juce::Rectangle<int> list;
         int hot = -1, scroll = 0, visibleRows = 0;
+        int footerH = 0;       // V6: description footer (0 = no item of this level has a detail)
+        int hintW = 0;         // V6: widest hint of this level (reserved, so text never runs under it)
     };
     void timerCallback() override;
     void layoutLevel(Level& L, juce::Rectangle<int> placeNear, bool beside);

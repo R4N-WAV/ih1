@@ -803,6 +803,49 @@ int main() {
         check(selected(*proc) >= 0, "...and the session is still usable");
     }
 
+    // ---- V6 Phase 4: menu / browser layout snapshots (IH1_SNAPSHOT_DIR), at the minimum and a large editor size ----
+    if (const auto dir = SystemStats::getEnvironmentVariable("IH1_SNAPSHOT_DIR", {}); dir.isNotEmpty()) {
+        const File out(dir);
+        out.createDirectory();
+        auto snap = [&](const String& name, float scale) {
+            pump(150);
+            const auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, scale);
+            PNGImageFormat png;
+            FileOutputStream os(out.getChildFile(name + ".png"));
+            if (os.openedOk()) { os.setPosition(0); os.truncate(); png.writeImageToStream(img, os); }
+        };
+        for (auto size : {Point<int>(Editor::kMinW, Editor::kMinH), Point<int>(1600, 1000)}) {
+            ed->setSize(size.x, size.y);
+            pump(300);
+            const String tag = String(size.x) + "x" + String(size.y);
+            String msg;
+            proc->loadPresetKey("f:" + String(factoryPresets().back().id), msg);
+            proc->uiSelect(fxTypeIndex("reflections"));
+            pump(200);
+            d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);
+            for (int i = 0; i < menu.itemCount(); ++i)
+                if (menu.rowBounds(i).getHeight() > 0 && menu.indexOfText("Time & Space") == i) d.move(menu.rowBounds(i).getCentre().toFloat());
+            pump(250);
+            snap("v6_fx_menu_" + tag, 1.0f);
+            snap("v6_fx_menu_" + tag + "_x2", 2.0f);
+            d.key(KeyPress(KeyPress::escapeKey));
+            d.key(KeyPress(KeyPress::escapeKey));
+            if (ed->presetBar().onOpenBrowser) ed->presetBar().onOpenBrowser();
+            pump(200);
+            {
+                const auto pb = ed->getLocalArea(&ed->presetBar(), ed->presetBar().getLocalBounds());
+                d.move(Point<float>(static_cast<float>(pb.getX() + 260), static_cast<float>(pb.getBottom() + 6 + 50 + 13)));
+            }
+            snap("v6_presets_" + tag, 1.0f);
+            for (auto ch : String("drum")) d.key(KeyPress(static_cast<int>(ch), ModifierKeys(), ch));
+            pump(200);
+            snap("v6_presets_search_" + tag, 1.0f);
+            d.key(KeyPress(KeyPress::escapeKey));
+            ed->browser().close();
+            pump(100);
+        }
+    }
+
     // ---- editor close with a menu open, reopen ----
     {
         d.clickOn(car, {120, car.getHeight() / 2}, ModifierKeys::rightButtonModifier);

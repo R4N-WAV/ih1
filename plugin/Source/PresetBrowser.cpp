@@ -148,6 +148,8 @@ void PresetBrowser::reload() {
     for (const auto& e : proc_.presetList()) all_.push_back({e.key, e.name, e.category, e.description, e.factory, e.meta});
     categories_.clear();
     for (const auto& c : presetCategories()) categories_.add(c);
+    catCounts_.assign(static_cast<size_t>(categories_.size()), 0);
+    for (const auto& e : all_) if (const int c = categories_.indexOf(e.category); c >= 0) ++catCounts_[static_cast<size_t>(c)];
     filter();
 }
 
@@ -172,7 +174,7 @@ void PresetBrowser::filter() {
 void PresetBrowser::open(juce::Rectangle<int> below) {
     if (getParentComponent() == nullptr) return;
     setBounds(getParentComponent()->getLocalBounds());
-    const int w = std::min(600, getWidth() - 24), h = std::min(440, getHeight() - below.getBottom() - 16);
+    const int w = std::min(getWidth() >= 1400 ? 780 : 700, getWidth() - 24), h = std::min(getHeight() >= 900 ? 600 : 460, getHeight() - below.getBottom() - 16);
     panel_ = juce::Rectangle<int>(below.getX(), below.getBottom() + 6, w, std::max(260, h)).constrainedWithin(getLocalBounds().reduced(8));
     // start on the category of the current preset
     reload();
@@ -180,7 +182,9 @@ void PresetBrowser::open(juce::Rectangle<int> below) {
     for (const auto& e : all_) if (e.key == key) category_ = std::max(0, categories_.indexOf(e.category));
     search_.clear();
     setMode(Mode::Browse);
+    catScroll_ = 0;
     filter();
+    if (category_ >= catScroll_ + catVisible()) catScroll_ = category_ - catVisible() + 1;  // the current category is visible
     setVisible(true);
     toFront(true);
     search_.setVisible(true);
@@ -241,10 +245,22 @@ void PresetBrowser::resized() {
     search_.setBounds(r.removeFromTop(28));
     r.removeFromTop(10);
     footer_ = r.removeFromBottom(30);
-    descArea_ = r.removeFromBottom(34);
-    catArea_ = r.removeFromLeft(158);
+    r.removeFromBottom(6);
+    descArea_ = r.removeFromBottom(52);  // V6: two description lines + one metadata line (was 34 px for three lines)
+    r.removeFromBottom(6);
+    // V6 Phase 4: the category column is as wide as its longest name plus its count (up to 40 % of the panel)
+    const auto catFont = LookAndFeel::font(13.5f, true), countFont = LookAndFeel::font(11.0f);
+    float cw = 0.0f;
+    for (const auto& c : categories_) cw = std::max(cw, juce::GlyphArrangement::getStringWidth(catFont, c));
+    const float countW = juce::GlyphArrangement::getStringWidth(countFont, "000");
+    const int catW = juce::jlimit(158, std::max(158, r.getWidth() * 2 / 5), static_cast<int>(std::ceil(cw + countW + 34.0f)));
+    catArea_ = r.removeFromLeft(catW);
     r.removeFromLeft(12);
     listArea_ = r;
+    // rows fit the height (26 px down to 20 px); below that the column scrolls with the wheel
+    const int nCat = std::max(1, categories_.size());
+    catRowH_ = juce::jlimit(20, kRowH, catArea_.getHeight() / nCat);
+    catScroll_ = std::clamp(catScroll_, 0, std::max(0, nCat - catVisible()));
     auto f = footer_;
     if (mode_ == Mode::Browse) {
         for (auto* b : {&saveAs_, &save_, &rename_, &del_}) { b->setBounds(f.removeFromLeft(74)); f.removeFromLeft(4); }
@@ -265,8 +281,8 @@ int PresetBrowser::rowAt(juce::Point<int> p) const {
 
 int PresetBrowser::categoryAt(juce::Point<int> p) const {
     if (!catArea_.contains(p)) return -1;
-    const int i = (p.y - catArea_.getY()) / kRowH;
-    return i >= 0 && i < categories_.size() ? i : -1;
+    const int i = (p.y - catArea_.getY()) / catRowH_ + catScroll_;
+    return i >= 0 && i < categories_.size() && i < catScroll_ + catVisible() ? i : -1;
 }
 
 void PresetBrowser::paint(juce::Graphics& g) {
@@ -277,13 +293,26 @@ void PresetBrowser::paint(juce::Graphics& g) {
     g.drawRect(panel_.toFloat(), 1.0f);
     const bool searching = search_.getText().trim().isNotEmpty();
     // categories
-    for (int i = 0; i < categories_.size(); ++i) {
-        auto row = juce::Rectangle<int>(catArea_.getX(), catArea_.getY() + i * kRowH, catArea_.getWidth(), kRowH);
-        const bool sel = !searching && i == category_;
-        if (sel) { g.setColour(Colours::accent); g.fillRect(row.getX(), row.getY() + 6, 2, kRowH - 12); }
-        g.setColour(sel ? Colours::text : (i == hotCat_ ? Colours::text.withAlpha(0.85f) : Colours::textDim));
-        g.setFont(LookAndFeel::font(13.5f, sel));
-        g.drawText(categories_[i], row.withTrimmedLeft(12), juce::Justification::centredLeft);
+    // V6 Phase 4: each region is clipped to itself, so no row can ever be drawn over the description or the footer
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(catArea_);
+        for (int i = catScroll_; i < categories_.size() && i < catScroll_ + catVisible(); ++i) {
+            auto row = juce::Rectangle<int>(catArea_.getX(), catArea_.getY() + (i - catScroll_) * catRowH_, catArea_.getWidth(), catRowH_);
+            const bool sel = !searching && i == category_;
+            if (i == hotCat_ && !sel) { g.setColour(Colours::text.withAlpha(0.04f)); g.fillRect(row); }
+            if (sel) { g.setColour(Colours::accent); g.fillRect(row.getX(), row.getY() + catRowH_ / 4, 2, catRowH_ - catRowH_ / 2); }
+            const int count = i < static_cast<int>(catCounts_.size()) ? catCounts_[static_cast<size_t>(i)] : 0;
+            auto countArea = row.removeFromRight(30);
+            g.setColour(Colours::textFaint);
+            g.setFont(LookAndFeel::font(11.0f));
+            g.drawText(juce::String(count), countArea.withTrimmedRight(6), juce::Justification::centredRight, true);
+            g.setColour(sel ? Colours::text : (i == hotCat_ ? Colours::text.withAlpha(0.85f) : Colours::textDim));
+            g.setFont(LookAndFeel::font(13.5f, sel));
+            g.drawText(categories_[i], row.withTrimmedLeft(12), juce::Justification::centredLeft, true);
+        }
+        if (catScroll_ > 0) { g.setColour(Colours::textDim); g.fillRect(catArea_.getCentreX() - 8, catArea_.getY(), 16, 1); }
+        if (catScroll_ + catVisible() < categories_.size()) { g.setColour(Colours::textDim); g.fillRect(catArea_.getCentreX() - 8, catArea_.getBottom() - 1, 16, 1); }
     }
     // presets
     const auto key = proc_.currentPresetKey();
@@ -293,6 +322,17 @@ void PresetBrowser::paint(juce::Graphics& g) {
         g.setFont(LookAndFeel::font(13.0f));
         g.drawText(searching ? "No preset matches" : (category_ >= 0 && categories_[category_] == "User" ? "No user presets yet: Save As to add one" : "Empty"),
                    listArea_.withHeight(kRowH), juce::Justification::centredLeft);
+    }
+    {
+    juce::Graphics::ScopedSaveState listClip(g);
+    g.reduceClipRegion(listArea_);
+    // search results show their category on the right: measured, so a long name is truncated before it, never under it
+    int catColW = 0;
+    if (searching) {
+        const auto f = LookAndFeel::font(11.0f);
+        for (int row = 0; row < visible && row + scroll_ < static_cast<int>(shown_.size()); ++row)
+            catColW = std::max(catColW, static_cast<int>(std::ceil(juce::GlyphArrangement::getStringWidth(f, all_[static_cast<size_t>(shown_[static_cast<size_t>(row + scroll_)])].category))));
+        catColW = std::min(catColW, listArea_.getWidth() / 2);
     }
     for (int row = 0; row < visible; ++row) {
         const int i = row + scroll_;
@@ -304,12 +344,13 @@ void PresetBrowser::paint(juce::Graphics& g) {
         if (cur) { g.setColour(Colours::accent); g.fillRect(r.getX(), r.getY() + 6, 2, kRowH - 12); }
         g.setColour(cur ? Colours::accent : Colours::text.withAlpha(i == hot_ ? 1.0f : 0.85f));
         g.setFont(LookAndFeel::font(13.5f, cur));
-        g.drawText(e.name, r.withTrimmedLeft(12).withTrimmedRight(90), juce::Justification::centredLeft);
+        g.drawText(e.name, r.withTrimmedLeft(12).withTrimmedRight(searching ? catColW + 20 : 8), juce::Justification::centredLeft, true);
         if (searching) {
             g.setColour(Colours::textFaint);
             g.setFont(LookAndFeel::font(11.0f));
-            g.drawText(e.category, r.withTrimmedRight(8), juce::Justification::centredRight);
+            g.drawText(e.category, r.withTrimmedRight(8).removeFromRight(catColW), juce::Justification::centredRight, true);
         }
+    }
     }
     // description of the hovered / current preset
     const Entry* d = nullptr;
@@ -318,7 +359,16 @@ void PresetBrowser::paint(juce::Graphics& g) {
         g.setColour(Colours::textDim);
         g.setFont(LookAndFeel::font(12.5f));
         const juce::String text = d->description.isNotEmpty() ? d->description : (d->factory ? juce::String() : juce::String("User preset"));
-        g.drawFittedText(d->meta.isNotEmpty() ? text + "\n" + d->meta : text, descArea_, juce::Justification::centredLeft, 3);
+        // V6: description in up to two lines, metadata in its own line; both end with an ellipsis instead of squashing
+        auto da = descArea_;
+        const bool oneLine = juce::GlyphArrangement::getStringWidth(LookAndFeel::font(12.5f), text) <= static_cast<float>(da.getWidth());
+        g.drawFittedText(text, da.removeFromTop(oneLine ? 18 : 34), juce::Justification::topLeft, 2, 1.0f);
+        da = da.withHeight(18);
+        if (d->meta.isNotEmpty()) {
+            g.setColour(Colours::textFaint);
+            g.setFont(LookAndFeel::font(11.5f));
+            g.drawText(d->meta, da, juce::Justification::centredLeft, true);
+        }
     }
     if (mode_ == Mode::ConfirmDelete || mode_ == Mode::ConfirmOverwrite) {
         g.setColour(Colours::text);
@@ -375,9 +425,14 @@ void PresetBrowser::mouseMove(const juce::MouseEvent& e) {
 
 void PresetBrowser::mouseExit(const juce::MouseEvent&) { hotCat_ = -1; repaint(); }
 
-void PresetBrowser::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& w) {
+void PresetBrowser::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w) {
     const int visible = std::max(1, listArea_.getHeight() / kRowH);
     const int step = w.deltaY > 0 ? -1 : (w.deltaY < 0 ? 1 : 0);
+    if (catArea_.contains(e.getPosition())) {  // V6: the category column scrolls on its own when it cannot fit
+        catScroll_ = std::clamp(catScroll_ + step, 0, std::max(0, categories_.size() - catVisible()));
+        repaint();
+        return;
+    }
     scroll_ = std::clamp(scroll_ + step, 0, std::max(0, static_cast<int>(shown_.size()) - visible));
     repaint();  // consumed: nothing beneath scrolls
 }
@@ -396,6 +451,8 @@ bool PresetBrowser::keyPressed(const juce::KeyPress& k) {
     if (k == juce::KeyPress::returnKey) { load(hot_); return true; }
     if (k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey) {
         category_ = std::clamp(category_ + (k == juce::KeyPress::rightKey ? 1 : -1), 0, categories_.size() - 1);
+        if (category_ < catScroll_) catScroll_ = category_;
+        if (category_ >= catScroll_ + catVisible()) catScroll_ = category_ - catVisible() + 1;
         search_.clear();
         filter();
         repaint();

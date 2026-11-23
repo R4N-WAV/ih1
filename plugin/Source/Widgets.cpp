@@ -29,18 +29,27 @@ bool MenuOverlay::selectableIn(const Level& L, int i) {
 }
 
 void MenuOverlay::layoutLevel(Level& L, juce::Rectangle<int> near, bool beside) {
-    const auto font = LookAndFeel::font(14.0f);
-    float w = static_cast<float>(beside ? 150 : opts_.minWidth);
+    // V6 Phase 4: one source of truth for row geometry. Text is measured with the font it is drawn with (ticked rows
+    // are bold, so the bold width is used for every row), the widest hint and the chevron / tick column are reserved,
+    // and a name that still does not fit is truncated with an ellipsis and shown in full in the footer.
+    const auto bold = LookAndFeel::font(14.0f, true);
+    const auto hintFont = LookAndFeel::font(11.5f);
+    float textW = 0.0f, hintW = 0.0f;
+    bool anyDetail = false;
     for (const auto& it : L.items) {
-        const float tw = juce::GlyphArrangement::getStringWidth(it.header ? LookAndFeel::font(10.5f, true) : font, it.text) +
-                         (it.hint.isEmpty() ? 0.0f : juce::GlyphArrangement::getStringWidth(LookAndFeel::font(11.5f), it.hint) + 24.0f) + 50.0f;
-        w = std::max(w, tw);
+        textW = std::max(textW, juce::GlyphArrangement::getStringWidth(it.header ? LookAndFeel::font(10.5f, true) : bold, it.header ? it.text.toUpperCase() : it.text));
+        if (it.hint.isNotEmpty()) hintW = std::max(hintW, juce::GlyphArrangement::getStringWidth(hintFont, it.hint));
+        anyDetail = anyDetail || it.detail.isNotEmpty();
     }
+    L.hintW = static_cast<int>(std::ceil(hintW));
+    const float w = std::max(static_cast<float>(beside ? (anyDetail ? 250 : 170) : (anyDetail ? std::max(opts_.minWidth, 230) : opts_.minWidth)),
+                             kTextLeft + textW + (hintW > 0.0f ? hintW + kHintGap : 0.0f) + kRightCol + 6.0f);
     const auto area = getLocalBounds().reduced(6);
-    const int width = std::min(static_cast<int>(std::ceil(w)), area.getWidth());
-    const int rowsFit = std::max(3, (area.getHeight() - 8) / opts_.rowHeight);
+    const int width = std::min({static_cast<int>(std::ceil(w)), area.getWidth(), anyDetail ? 380 : 340});
+    L.footerH = anyDetail ? kFooterH : 0;
+    const int rowsFit = std::max(3, (area.getHeight() - 8 - L.footerH) / opts_.rowHeight);
     L.visibleRows = std::min({static_cast<int>(L.items.size()), opts_.maxVisibleRows, rowsFit});
-    const int height = L.visibleRows * opts_.rowHeight + 8;
+    const int height = L.visibleRows * opts_.rowHeight + 8 + L.footerH;
     juce::Rectangle<int> r;
     if (beside) {
         // to the right of the parent list, top aligned with the parent row; flips left, shifts up at the edges
@@ -206,8 +215,9 @@ void MenuOverlay::paintLevel(juce::Graphics& g, const Level& L, bool isRoot) con
     g.fillRect(L.list);
     g.setColour(Colours::border.brighter(0.2f));
     g.drawRect(L.list.toFloat(), Tokens::hairline);
+    const auto rowsArea = L.list.withTrimmedBottom(L.footerH).reduced(1);
     g.saveState();
-    g.reduceClipRegion(L.list.reduced(1));
+    g.reduceClipRegion(rowsArea);
     for (int row = 0; row < L.visibleRows; ++row) {
         const int i = row + L.scroll;
         if (i >= static_cast<int>(L.items.size())) break;
@@ -216,7 +226,7 @@ void MenuOverlay::paintLevel(juce::Graphics& g, const Level& L, bool isRoot) con
         if (it.header) {
             g.setColour(Colours::textFaint);
             g.setFont(LookAndFeel::font(10.5f, true).withExtraKerningFactor(0.12f));
-            g.drawText(it.text.toUpperCase(), r.withTrimmedLeft(12).withTrimmedTop(6), juce::Justification::centredLeft);
+            g.drawText(it.text.toUpperCase(), r.withTrimmedLeft(static_cast<int>(kTextLeft) - 2).withTrimmedTop(6), juce::Justification::centredLeft, true);
             continue;
         }
         if (it.divider) {
@@ -234,30 +244,57 @@ void MenuOverlay::paintLevel(juce::Graphics& g, const Level& L, bool isRoot) con
         juce::Colour c = it.colour.isTransparent() ? Colours::text : readable(it.colour);
         if (!it.enabled) c = Colours::textFaint;
         else if (!hot) c = c.withMultipliedAlpha(0.88f);
+        if (!it.sub.empty() && !it.colour.isTransparent()) {  // category rows: a small family swatch (IH1 palette)
+            g.setColour(readable(it.colour).withAlpha(hot ? 0.95f : 0.6f));
+            g.fillRect(r.getX() + 6, r.getCentreY() - 3, 3, 6);
+        }
+        // columns: [text][gap][hint][chevron / tick]: the text never runs under the hint or the marker
+        const int right = static_cast<int>(kRightCol);
+        const int hintCol = it.hint.isNotEmpty() ? L.hintW + static_cast<int>(kHintGap) : 0;
         g.setColour(c);
         g.setFont(LookAndFeel::font(14.0f, it.ticked));
-        g.drawText(it.text, r.withTrimmedLeft(14).withTrimmedRight(it.hint.isEmpty() ? 26 : 12), juce::Justification::centredLeft);
+        g.drawText(it.text, r.withTrimmedLeft(static_cast<int>(kTextLeft)).withTrimmedRight(right + hintCol), juce::Justification::centredLeft, true);
         if (it.hint.isNotEmpty()) {
             g.setColour(Colours::textFaint);
             g.setFont(LookAndFeel::font(11.5f));
-            g.drawText(it.hint, r.withTrimmedRight(it.sub.empty() ? 26 : 30), juce::Justification::centredRight);
+            g.drawText(it.hint, r.withTrimmedRight(right).removeFromRight(L.hintW), juce::Justification::centredRight, true);
         }
+        const float mx = static_cast<float>(r.getRight()) - kRightCol * 0.5f, cy = static_cast<float>(r.getCentreY());
         if (!it.sub.empty()) {  // submenu chevron
             juce::Path chev;
-            const float cx = static_cast<float>(r.getRight()) - 13.0f, cy = static_cast<float>(r.getCentreY());
-            chev.startNewSubPath(cx - 2.0f, cy - 4.0f);
-            chev.lineTo(cx + 2.0f, cy);
-            chev.lineTo(cx - 2.0f, cy + 4.0f);
+            chev.startNewSubPath(mx - 2.0f, cy - 4.0f);
+            chev.lineTo(mx + 2.0f, cy);
+            chev.lineTo(mx - 2.0f, cy + 4.0f);
             g.setColour(hot ? Colours::text : Colours::textDim);
             g.strokePath(chev, juce::PathStrokeType(1.2f));
         } else if (it.ticked) {
             g.setColour(c);
-            g.fillRect(juce::Rectangle<float>(4.0f, 4.0f).withCentre({static_cast<float>(r.getRight()) - 13.0f, static_cast<float>(r.getCentreY())}));
+            g.fillRect(juce::Rectangle<float>(4.0f, 4.0f).withCentre({mx, cy}));
         }
     }
     g.restoreState();
     if (L.scroll > 0) { g.setColour(Colours::textDim); g.fillRect(L.list.getCentreX() - 8, L.list.getY() + 2, 16, 1); }
-    if (L.scroll + L.visibleRows < static_cast<int>(L.items.size())) { g.setColour(Colours::textDim); g.fillRect(L.list.getCentreX() - 8, L.list.getBottom() - 3, 16, 1); }
+    if (L.scroll + L.visibleRows < static_cast<int>(L.items.size())) { g.setColour(Colours::textDim); g.fillRect(L.list.getCentreX() - 8, rowsArea.getBottom() - 2, 16, 1); }
+    if (L.footerH > 0) {
+        // V6: what the hot (or current) row does, in plain language; a truncated name is repeated here in full
+        int i = L.hot;
+        if (i < 0) for (int k = 0; k < static_cast<int>(L.items.size()); ++k) if (L.items[static_cast<size_t>(k)].ticked) i = k;
+        auto f = L.list.withTop(rowsArea.getBottom()).reduced(1);
+        g.setColour(Colours::border.withAlpha(0.6f));
+        g.fillRect(f.getX() + 10, f.getY(), f.getWidth() - 20, 1);
+        if (i >= 0 && i < static_cast<int>(L.items.size())) {
+            const auto& it = L.items[static_cast<size_t>(i)];
+            auto t = f.reduced(static_cast<int>(kTextLeft), 6);
+            if (it.detail.isNotEmpty()) {
+                const auto font = LookAndFeel::font(11.5f);
+                const bool nameCut = juce::GlyphArrangement::getStringWidth(LookAndFeel::font(14.0f, true), it.text) >
+                                     static_cast<float>(L.list.getWidth()) - kTextLeft - kRightCol - static_cast<float>(it.hint.isNotEmpty() ? L.hintW + kHintGap : 0);
+                g.setColour(Colours::textDim);
+                g.setFont(font);
+                g.drawFittedText(nameCut ? it.text + ": " + it.detail : it.detail, t, juce::Justification::topLeft, 2, 1.0f);
+            }
+        }
+    }
 }
 
 void MenuOverlay::paint(juce::Graphics& g) {

@@ -88,6 +88,11 @@ private:
     Mode mode_ = Mode::Browse;
     juce::String pendingName_;
     static constexpr int kRowH = 26;
+    // V6 Phase 4: category column geometry, computed in resized() from the real names (single source of truth for
+    // painting and hit-testing); rows shrink to 20 px before the column scrolls
+    int catRowH_ = kRowH, catScroll_ = 0;
+    int catVisible() const { return std::max(1, catArea_.getHeight() / std::max(1, catRowH_)); }
+    std::vector<int> catCounts_;
 };
 
 }  // namespace ih1::plugin

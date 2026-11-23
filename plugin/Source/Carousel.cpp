@@ -115,8 +115,13 @@ void Carousel::paint(juce::Graphics& g) {
         if (!centre && mouseIn && row.contains(mouse)) alpha = juce::jmin(1.0f, alpha + 0.3f);
         const auto col = isNone ? Colours::text.withMultipliedAlpha(0.8f) : readable(fxColourForIndex(idx), centre ? 0.88f : 0.8f);
         g.setColour(col.withAlpha(alpha * (isNone ? 0.78f : 1.0f)));
-        g.setFont(LookAndFeel::font(size, centre && !isNone).withExtraKerningFactor(centre ? 0.04f : 0.08f));
-        g.drawText(isNone ? juce::String("NONE") : juce::String(reg[static_cast<size_t>(idx)].name).toUpperCase(), row, juce::Justification::centred, false);
+        // V6 Phase 4: long names are fitted to the column (scaled down to 60 %, then an ellipsis), never clipped mid-letter
+        const juce::String label = isNone ? juce::String("NONE") : juce::String(reg[static_cast<size_t>(idx)].name).toUpperCase();
+        auto font = LookAndFeel::font(size, centre && !isNone).withExtraKerningFactor(centre ? 0.04f : 0.08f);
+        const float tw = juce::GlyphArrangement::getStringWidth(font, label), avail = row.getWidth() - 8.0f;
+        if (tw > avail && tw > 0.0f) font = font.withHeight(font.getHeight() * std::max(0.6f, avail / tw));
+        g.setFont(font);
+        g.drawText(label, row.reduced(4.0f, 0.0f), juce::Justification::centred, true);
         if (centre && isNone) {
             g.setColour(Colours::textDim.withAlpha(0.7f));
             g.setFont(LookAndFeel::font(10.0f, true).withExtraKerningFactor(0.14f));
@@ -174,6 +179,7 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
         none.text = "None";
         none.ticked = selected_ == kNoneEntry;
         none.divider = true;
+        none.detail = "Nothing staged: you hear only the committed chain. Every effect keeps its settings until RESET.";
         items.push_back(std::move(none));
     }
     const auto& reg = fxRegistry();
@@ -193,10 +199,16 @@ void Carousel::showCatalogueMenu(juce::Point<int> atLocal) {
             it.text = d.name;
             it.colour = fxColourForIndex(idx);
             it.ticked = idx == selected_;
+            it.detail = juce::String::fromUTF8(d.tooltip.c_str());
             parent.sub.push_back(it);
         }
         if (parent.sub.empty()) continue;
         parent.hint = juce::String(static_cast<int>(parent.sub.size()));
+        {  // V6: the footer previews what the category holds
+            juce::StringArray names;
+            for (size_t k = 0; k < parent.sub.size() && k < 4; ++k) names.add(parent.sub[k].text);
+            parent.detail = names.joinIntoString(", ") + (parent.sub.size() > 4 ? " and " + juce::String(static_cast<int>(parent.sub.size()) - 4) + " more" : juce::String());
+        }
         items.push_back(std::move(parent));
     }
     MenuOverlay::Options o;
