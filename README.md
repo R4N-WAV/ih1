@@ -6,9 +6,24 @@ A creative VST3 multi-FX plug-in built around a **commit workflow**. You scroll 
 
 ## Status
 
-Version 0.5.0 (test build, feedback round 5). V5 is documented in `docs/V5_IMPLEMENTATION.md`; open items are in
-`docs/KNOWN_ISSUES.md` (V5 section). Earlier rounds: `docs/V4_IMPLEMENTATION.md`, `docs/V3_IMPLEMENTATION.md`,
+Version 0.6.0 (test build, feedback round 6). V6 is documented in `docs/V6_IMPLEMENTATION.md` (crash diagnosis:
+`docs/V6_CRASH_ANALYSIS.md`; preset audit: `docs/V6_PRESET_AUDIT.md`); open items are in `docs/KNOWN_ISSUES.md` (V6
+section). Earlier rounds: `docs/V5_IMPLEMENTATION.md`, `docs/V4_IMPLEMENTATION.md`, `docs/V3_IMPLEMENTATION.md`,
 `docs/V2_1_IMPLEMENTATION.md`.
+
+**New in V6:**
+- **FL Studio crash fixed.** A right-click on the effect browser read one entry before the effect table (an
+  out-of-bounds read since 0.4.0). It was found in the shipped 0.5.0 binary, proven with AddressSanitizer, and fixed;
+  CI now runs the editor tests under AddressSanitizer.
+- **Readable menus.** The preset browser no longer draws a category over the description, and names are no longer
+  cut off. The FX list describes each effect.
+- **67 effects.** Three are new and vocal: Vowel Morph (talkbox-style vowels), Whisper (singing into breath) and
+  Vocal Throw (ducked, filtered adlib echoes with pitch drops, or Last Word throws).
+- **246 factory presets.** A new Vocal / Voice category holds 37. The whole bank was audited by measurement
+  (`tools/ih1_bank_audit`), and 13 older presets were corrected.
+- **Voice macros** (Voice / Mouth / Throw) on vocal chains.
+
+The V5 state, for reference:
 
 **New in V5:**
 - **COMMIT keeps the browser on the effect.** The committed copy plays; a fresh copy at its defaults waits, muted,
@@ -81,7 +96,7 @@ The build produces:
 - `ih1_uitest`, the editor interaction test (needs a display: `xvfb-run` on Linux)
 - `fx_dump`, which prints the FX parameter schema
 
-To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.5.0 /DTestRound=5 /DSourceDir=<stage> installer\IH1.iss`.
+To build the setup wizard locally, install Inno Setup 6, stage the files the same way CI does, then run `ISCC.exe /DAppVersion=0.6.0 /DTestRound=6 /DSourceDir=<stage> installer\IH1.iss`.
 
 Optional: `-DIH1_JUCE_DIR=<path>` uses a local JUCE checkout instead of fetching it.
 

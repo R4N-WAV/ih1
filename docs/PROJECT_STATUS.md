@@ -1,5 +1,7 @@
 # IH1 — Project Status
 
+> **Current: 0.6.0 (feedback round 6).** See `docs/V6_IMPLEMENTATION.md` for the V6 evidence and `docs/KNOWN_ISSUES.md` for open items. The text below is the original V1 status, kept for history.
+
 **Updated:** 2026-11-18
 **Phase:** 0–5 implemented; Phase 6 (QA/packaging) in progress. Not yet tested in a real DAW.
 
