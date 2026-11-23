@@ -394,7 +394,7 @@ int main() {
         const auto del = d.toPeer(fv, fv.deleteZone().getCentre().toInt());
         bool deleteVisibleWhileDragging = false;
         d.dragTo(item2, del, [&] { deleteVisibleWhileDragging = true; });
-        check(fv.confirmDialog() != nullptr, "dropping on DELETE asks for confirmation");
+        check(waitFor([&] { return fv.confirmDialog() != nullptr; }), "dropping on DELETE asks for confirmation");
         check(chainSize(*proc) == 3, "...and has not deleted anything yet");
         d.key(KeyPress(KeyPress::escapeKey));
         pump(120);
