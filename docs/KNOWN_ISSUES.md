@@ -19,6 +19,11 @@
   timer. The unmodified V5 test missed one in 2 of 6 idle runs (measured), and heavy load could trip others. They now
   poll for the expected state (up to 1-1.5 s): 6 / 6 idle runs and 3 / 3 runs under concurrent CPU load pass.
 
+- **Windows CI runner and synthetic mouse input**: once (run #48, attempt 1), six drag / click checks of `ih1_uitest`
+  failed together on the GitHub Windows runner because the synthetic drags did not register. The plug-in code was
+  identical to the green runs, and the re-run passed. The same issue was worked around in V4 (`8591041`). If it
+  recurs, re-run the job; it is not a plug-in failure.
+
 ### Audio
 - **Whisper output is noise**: its peaks can reach about 5x its RMS (a noise crest factor). On a loud vocal it can
   peak above 0 dBFS before Output Safety (worst measured preset: *Ghost Whisper*, 1.48 on the vocal phrase).

@@ -193,7 +193,9 @@ Evidence (`tests/test_v6.cpp` + registry-wide contracts):
 | VST3 host-lifecycle test (`ih1_hosttest`: rates, odd blocks, automation storm, latency, state null test, hostile state, lifecycle) | Linux | pass |
 | Editor tests (`ih1_uitest`, incl. the V6 crash block) | Linux, release build | **6 / 6 idle runs pass.** The pre-existing intermittent checks were also fixed: the unmodified V5 test misses a fixed 40-60 ms window in 2 of 6 idle runs (measured). Those checks now poll for the expected state, and **3 / 3 runs under concurrent CPU load pass** |
 | Editor tests under AddressSanitizer | Linux | **0 ASan reports** (whole suite, twice: after the P0 fix and on the final code; the ASan build's slowness trips the same timing window once) |
-| pluginval v1.0.4 | CI (Linux strictness 8, Windows) | see the CI run for this push. Not run locally: running the downloaded validator binary was refused by the session's permission policy |
+| pluginval v1.0.4 | CI run #48 (`bfee232`) | **pass**: Linux strictness 8, Windows strictness 5. Not run locally: running the downloaded validator binary was refused by the session's permission policy |
+| Windows (MSVC 2022): unit tests, host test, editor tests, setup wizard, ZIP, PDB artefact | CI runs #46, #47 and #48 (attempt 2) | **pass**. Run #48's first attempt failed 6 drag / click checks on the Windows runner (synthetic mouse input not registering; the plug-in code was identical to the green runs #46 / #47); its re-run passed |
+| Linux CI incl. the new `linux-asan` job | CI run #48 | **pass** (0 ASan reports) |
 | Steinberg vst3 validator | - | not run (the CI step is still not configured with its path) |
 | **FL Studio 25 on Windows** | - | **not performed** (no access). Owner checklist: `docs/FL_STUDIO_TEST_CHECKLIST.md`, V6 |
 
