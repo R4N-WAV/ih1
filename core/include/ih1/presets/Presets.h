@@ -38,6 +38,7 @@ struct FactoryPreset {
 
 // V4 helpers (PresetsV4.cpp): the V4 additions, the V3 -> V4 category remap, default intensity, derived macros.
 void addV4Presets(std::vector<FactoryPreset>& v);
+void addV6Presets(std::vector<FactoryPreset>& v);  // V6: the vocal bank (PresetsV6.cpp)
 std::string v4CategoryFor(const std::string& v3Category);
 std::string v4DefaultIntensity(const std::string& category, const std::string& id);
 std::vector<PresetMacro> deriveMacros(const FactoryPreset& p);  // V4 rule table (kept for reference; no longer applied)

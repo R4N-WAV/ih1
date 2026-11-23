@@ -14,10 +14,10 @@ const std::vector<std::string>& presetCategories() {
     // V2.1 categories (feedback 7). The last one, "User", holds user presets.
     // V3 categories (Phase 7.2). The last one, "User", holds user presets.
     // V4 categories (Phase 1.4): sound-led names, Init pinned first. V3 categories are remapped onto these.
-    // V5 (Phase 4): Drums / Drum Bus and Tremolo / Groove.
+    // V5 (Phase 4): Drums / Drum Bus and Tremolo / Groove. V6 (Phase 3): Vocal / Voice.
     static const std::vector<std::string> c = {"Init / Utility", "Signal Collapse", "Granular / Reconstruction", "Rhythm / Glitch / Stutter",
                                                "Pitch / Reverse / Harmonic", "Spectral / Frequency Space", "Dirt / Degradation", "Musical / Beautiful",
-                                               "Atmosphere / Cinematic / Drone", "Drums / Drum Bus", "Tremolo / Groove", "Experimental / Hybrid", "User"};
+                                               "Atmosphere / Cinematic / Drone", "Drums / Drum Bus", "Tremolo / Groove", "Vocal / Voice", "Experimental / Hybrid", "User"};
     return c;
 }
 
@@ -243,6 +243,7 @@ std::vector<FactoryPreset> build() {
     }
     addV4Presets(v);
     addV5Presets(v);
+    addV6Presets(v);
     // V5 Phase 8: no generic, topology-derived macros any more. A preset keeps only the macros its author wrote;
         // every other preset gets the macros of its effect COMBINATION at load time (Session::refreshMacros), or none.
     // presets are listed (and stepped by the arrows) in category order, curated order inside a category

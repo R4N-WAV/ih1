@@ -172,3 +172,52 @@ TEST_CASE("V6 Vocal Throw: Last Word throws only the end of a phrase, after the 
     CHECK(dbv(rmsT(L, 0.1, 0.95)) < -60.0);      // nothing is thrown while the phrase is still going
     CHECK(dbv(rmsT(L, 1.25, 1.65)) > -30.0);     // phrase end (1.0 s) + 80 ms hold + 200 ms echo: the last word comes back
 }
+
+#include <map>
+#include <set>
+
+#include "ih1/presets/Audition.h"
+#include "ih1/presets/Presets.h"
+
+TEST_CASE("V6 vocal bank: coverage, metadata, every preset audibly transforms a voice, safely") {
+    int n = 0, transformative = 0, moderate = 0;
+    std::set<std::string> types;
+    std::string report;
+    for (const auto& p : factoryPresets()) {
+        if (p.version != 6) continue;
+        ++n;
+        CHECK_MESSAGE(p.category == "Vocal / Voice", p.id);
+        const bool meta = !p.description.empty() && !p.tags.empty() && !p.intensity.empty() && !p.styles.empty();
+        CHECK_MESSAGE(meta, p.id);
+        std::string err;
+        CHECK_MESSAGE(validatePreset(p, &err), p.id << ": " << err);
+        for (const auto& f : p.chain) types.insert(f.type);
+        // a voice through the preset: finite, no overs, a sane level, and a real, audible change
+        for (int s : {0, 1}) {  // vocal phrase, sustained vocal
+            const auto r = audition::run(presetToJson(p), s, 3.0);
+            CHECK_MESSAGE(r.finite, p.id);
+            CHECK_MESSAGE(r.peak < 2.0, p.id << " peak " << r.peak);  // the factory audit's criterion (+6 dBFS, Output Safety off)
+            const bool sane = r.gainDb > -18.0 && r.gainDb < 9.0;
+            CHECK_MESSAGE(sane, p.id << " gain " << r.gainDb << " dB on " << audition::sourceName(s));
+            if (s == 0) {
+                transformative += r.cls == audition::Class::Transformative;
+                moderate += r.cls == audition::Class::Moderate;
+                // honest intensity labels. The audition class measures how much the INPUT is transformed; doubles,
+                // choirs and throws keep the dry voice and ADD to it, so the added content is measured as well: the
+                // residual after the best-aligned input, 10 log10(1 - r^2). MIDI-played presets are exempt (no notes).
+                const double resid = 10.0 * std::log10(std::max(1e-6, 1.0 - r.correlation * r.correlation));
+                const bool midi = p.tags.find("MIDI") != std::string::npos;
+                bool honest = true;
+                if (p.intensity == "Moderate") honest = resid > -14.0 || r.cls != audition::Class::Subtle;
+                if (p.intensity == "Strong" || p.intensity == "Extreme") honest = resid > -8.0 || r.cls != audition::Class::Subtle;
+                CHECK_MESSAGE((honest || midi), p.id << " is marked " << p.intensity << " but adds only " << resid << " dB of new content");
+                report += p.id + " " + audition::className(r.cls) + " " + std::to_string(static_cast<int>(std::lround(r.gainDb))) + " dB; ";
+            }
+        }
+    }
+    MESSAGE(n << " V6 vocal presets: " << transformative << " transformative, " << moderate << " moderate on a vocal phrase. " << report);
+    CHECK(n >= 30);
+    // the new processors are all used, alongside the existing vocal set
+    for (const char* t : {"vowel_morph", "whisper", "vocal_throw", "harmony", "pitch_shift", "formant", "doubler", "pitch_correct", "vocoder", "deesser"})
+        CHECK_MESSAGE(types.count(t) == 1, t << " is not used by the vocal bank");
+}

@@ -62,6 +62,11 @@ const Map kMap[] = {
     {"glitch", "groove", "repeat", 30.0f}, {"glitch", "groove", "jump", 25.0f}, {"stutter", "groove", "chance", 35.0f}, {"slice_shuffle", "groove", "reverse", 40.0f},
     {"spectral_smear", "blur", "smear", 35.0f}, {"spectral_smear", "blur", "time", 35.0f},
     {"pitch_shift", "halo", "mix", 30.0f}, {"pitch_shift", "decay", "feedback", 25.0f}, {"harmony", "halo", "wet", 6.0f}, {"reverse_echo", "halo", "mix", 25.0f},
+    // V6 vocal: "voice" brings the processed voice forward, "mouth" moves its formants / vowel; Vocal Throw is an echo
+    {"vocal_throw", "wet", "mix", 25.0f}, {"vocal_throw", "decay", "feedback", 30.0f}, {"vocal_throw", "echo", "feedback", 30.0f}, {"vocal_throw", "echo", "drop", -5.0f},
+    {"harmony", "voice", "wet", 6.0f}, {"pitch_shift", "voice", "mix", 30.0f}, {"doubler", "voice", "mix", 35.0f}, {"vowel_morph", "voice", "depth", 40.0f},
+    {"whisper", "voice", "mix", 40.0f}, {"vowel_morph", "mouth", "vowel", 2.0f}, {"formant", "mouth", "shift", 5.0f}, {"harmony", "mouth", "character", 5.0f},
+    {"pitch_shift", "mouth", "character", 5.0f}, {"vocoder", "mouth", "shift", 5.0f}, {"whisper", "mouth", "air", 6.0f},
     {"modal", "ring", "decay", 4.0f}, {"modal", "ring", "bright", 30.0f}, {"resonator", "ring", "decay", 3.0f}, {"hit_melody", "ring", "decay", 1.2f}, {"hit_melody", "strike", "mix", 30.0f}, {"modal", "strike", "mix", 30.0f},
 };
 
@@ -70,7 +75,8 @@ struct MacroSpec { const char* name; std::vector<const char*> aspects; };
 struct Combo { const char* name; Role a, b; std::vector<MacroSpec> macros; };
 
 const Role kSpace = {"reverb", "cloud_chamber", "shimmer", "convolution", "reverse_bloom", "drum_space", "reflections"};
-const Role kEcho = {"delay", "tape_echo", "echo_matrix", "reverse_echo", "spectral_delay"};
+const Role kEcho = {"delay", "tape_echo", "echo_matrix", "reverse_echo", "spectral_delay", "vocal_throw"};
+const Role kVoice = {"harmony", "pitch_shift", "doubler", "vowel_morph", "whisper", "formant", "vocoder"};  // V6
 const Role kGrain = {"granular", "grain_engine"};
 const Role kPulse = {"tremolo", "pulse_shaper", "gate"};
 const Role kTrans = {"transient", "band_transients", "transient_split"};
@@ -91,6 +97,9 @@ const std::vector<Combo>& combos() {
         {"Granular Space", kGrain, kSpace, {{"Scatter", {"scatter"}}, {"Cloud", {"cloud", "wet"}}, {"Drift", {"drift"}}}},
         {"Dub Wear", kWear, kEcho, {{"Wear", {"wear"}}, {"Dub", {"echo", "wet"}}}},
         {"Pitch Halo", kPitch, kSpace, {{"Halo", {"halo", "wet"}}, {"Decay", {"decay"}}}},
+        // V6: vocal chains (a voice processor with a space or an echo)
+        {"Voice in Space", kVoice, kSpace, {{"Voice", {"voice", "wet"}}, {"Mouth", {"mouth", "size"}}}},
+        {"Voice Throw", kVoice, kEcho, {{"Voice", {"voice", "wet"}}, {"Throw", {"echo"}}}},
         {"Resonant Space", kRes, kSpace, {{"Ring", {"ring", "decay"}}, {"Strike", {"strike", "wet"}}}},
         {"Spectral Blur", kBlur, kSpace, {{"Blur", {"blur"}}, {"Space", {"wet", "decay"}}}},
         {"Atmosphere", kSpace, kEcho, {{"Bloom", {"wet"}}, {"Decay", {"decay"}}, {"Drift", {"drift"}}}},

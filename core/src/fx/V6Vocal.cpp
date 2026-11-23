@@ -221,11 +221,16 @@ class Whisper final : public FxBase {
         }
         mix_.prepare(sr_, maxBlock_, n_, MixLaw::Linear);
         out_.prepare(sr_, 30.0f);
+        inP_.prepare(sr_, 250.0f);
+        outP_.prepare(sr_, 250.0f);
     }
     int latencySamples() const override { return n_; }
     double tailSeconds() const override { return static_cast<double>(n_) / sr_; }
     void reset() override {
         for (int c = 0; c < 2; ++c) { stft_[c].reset(); prevE_[c] = 0.0f; rng_[c].seed_(0x5A15u + static_cast<uint32_t>(c) * 977u); }
+        inP_.snap(0.0f);
+        outP_.snap(0.0f);
+        makeup_ = 1.0f;
         mix_.reset();
     }
     void applyParams(bool snap) override {
@@ -240,7 +245,18 @@ class Whisper final : public FxBase {
         for (int c = 0; c < 2; ++c) {
             stft_[c].process(ch[c], n, [&](dsp::cfloat* X, int N) { frame(c, X, N, amount, smooth, keep, airDb, lowCut); });
         }
-        for (int i = 0; i < n; ++i) { const float g = out_.next(); ch[0][i] *= g; ch[1][i] *= g; }
+        // level match: output power follows the (latency-aligned) input power; capped at +8 dB, frozen in silence
+        const float* d0 = mix_.dry(0);
+        const float* d1 = mix_.dry(1);
+        for (int i = 0; i < n; ++i) {
+            inP_.setTarget(0.5f * (d0[i] * d0[i] + d1[i] * d1[i]));
+            outP_.setTarget(0.5f * (ch[0][i] * ch[0][i] + ch[1][i] * ch[1][i]));
+            const float ip = inP_.next(), op = outP_.next();
+            if (ip > 1e-6f && op > 1e-9f) makeup_ = std::clamp(std::sqrt(ip / op), 0.4f, 2.5f);  // frozen below -60 dB
+            const float g = out_.next() * makeup_;
+            ch[0][i] *= g;
+            ch[1][i] *= g;
+        }
         mix_.apply(ch, n);
     }
     void frame(int c, dsp::cfloat* X, int N, float amount, float smooth, float keep, float airDb, float lowCut) {
@@ -271,18 +287,16 @@ class Whisper final : public FxBase {
             env[static_cast<size_t>(k)] = mag[static_cast<size_t>(k)] + s * (avg - mag[static_cast<size_t>(k)]);
             e2 += static_cast<double>(env[static_cast<size_t>(k)]) * env[static_cast<size_t>(k)];
         }
-        // keep the frame's energy (smoothing a peaky spectrum loses power) and compensate the overlap-add loss of
-        // incoherent frames. A random-phase frame's time signal is spread evenly over the frame (power = mean of the
-        // analysis-windowed input, 3/8 x^2 for Hann) before the synthesis window; four such frames at 75 % overlap add
-        // in power: 3/8 * sum(w^2) / sum(w^2)^2 = 0.375 * 1.5 / 2.25 = 0.25 of the coherent power (-6 dB, measured).
-        // The coherence of a uniform phase jitter of +-a*pi is sinc(a).
+        // keep the frame's energy (smoothing a peaky spectrum loses power). The overlap-add of incoherent (random-phase)
+        // frames loses level too: for a stationary input, four Hann frames at 75 % overlap add in power, 0.25 of the
+        // coherent power (-6 dB). That figure assumes equally loud frames; at onsets it over-compensates (V6 audit:
+        // +3 dB and 2x peaks on speech and snares), so the loss is corrected in the time domain instead, by matching
+        // the output's smoothed power to the latency-aligned input's (processBlock).
         const float energyFix = e2 > 1e-20 ? static_cast<float>(std::sqrt(e / e2)) : 1.0f;
-        const float coh = a < 1e-4f ? 1.0f : std::sin(dsp::kPi * a) / (dsp::kPi * a);
-        const float olaFix = 1.0f / std::sqrt(coh * coh + (1.0f - coh * coh) * 0.25f);
         const float binHz = srf() / static_cast<float>(N);
         for (int k = 1; k < B - 1; ++k) {
             const float f = static_cast<float>(k) * binHz;
-            float g = energyFix * olaFix;
+            float g = energyFix;
             if (f > 2000.0f) g *= dsp::dbToGain(airDb * std::min(2.0f, std::log2(f / 2000.0f)));  // air above 2 kHz
             const float r = f / std::max(20.0f, lowCut);
             g *= (r * r) / std::sqrt(1.0f + r * r * r * r);                                        // 2nd-order low cut
@@ -301,7 +315,8 @@ class Whisper final : public FxBase {
     float prevE_[2]{};
     dsp::Rng rng_[2];
     MixStage mix_;
-    dsp::Smoother out_;
+    dsp::Smoother out_, inP_, outP_;
+    float makeup_ = 1.0f;
 };
 
 // ============================================================================================== Vocal Throw
